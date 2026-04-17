@@ -54,7 +54,7 @@ Implementation tasks:
 
 Expected touch points:
 
-- `docs/`
+- `dev_docs/`
 - benchmark planning notes
 
 Validation checklist:
@@ -84,7 +84,7 @@ Expected touch points:
 
 - new benchmark tooling
 - `README.md`
-- `docs/`
+- `dev_docs/`
 
 Validation checklist:
 
@@ -153,7 +153,7 @@ Implementation tasks:
 Expected touch points:
 
 - benchmark tooling
-- `docs/`
+- `dev_docs/`
 
 Validation checklist:
 

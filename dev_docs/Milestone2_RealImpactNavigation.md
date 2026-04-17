@@ -87,7 +87,7 @@ Implementation tasks:
 
 Expected touch points:
 
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 - `indexer/src/models.rs`
 - `server/src/models/*`
 
@@ -243,7 +243,7 @@ Expected touch points:
 
 - `server/src/models/responses.ts`
 - `server/src/mcp.ts`
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 
 Validation checklist:
 

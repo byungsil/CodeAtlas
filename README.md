@@ -64,7 +64,7 @@ npm install
 
 The indexer creates a `.codeatlas/index.db` SQLite database inside the workspace root. The database uses a dual-table architecture (`symbols_raw` for per-file parsed symbols, `symbols` for merged representatives) to support correct incremental updates when header/source pairs change independently.
 
-For large real-world C++ repositories, indexing scope matters a lot. If the workspace contains heavy `tests/`, `docs/`, generated code, or vendored mirrors, add a `.codeatlasignore` before relying on heuristic lookup. This keeps the symbol set focused on the code agents actually need to reason about.
+For large real-world C++ repositories, indexing scope matters a lot. If the workspace contains heavy `tests/`, `docs/`, `dev_docs/`, generated code, or vendored mirrors, add a `.codeatlasignore` before relying on heuristic lookup. This keeps the symbol set focused on the code agents actually need to reason about.
 
 ### 4. Start the HTTP server (standalone)
 
@@ -157,6 +157,7 @@ Practical starter preset:
 # Keep the index focused on production code first
 ^tests/
 ^docs/
+^dev_docs/
 ^generated/
 ^build/
 ^out/
@@ -319,7 +320,7 @@ server/            Node.js MCP server + HTTP API + Dashboard
   public/
     index.html     Dashboard UI
 
-docs/              Documentation
+dev_docs/          Development documentation
 samples/           Sample C++ workspace for testing
 ```
 

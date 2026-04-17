@@ -56,8 +56,8 @@ Implementation tasks:
 
 Expected touch points:
 
-- `docs/`
-- `NestTask.md` or a dedicated incremental design doc
+- `dev_docs/`
+- `dev_docs/NestTask.md` or a dedicated incremental design doc
 
 Validation checklist:
 

@@ -55,8 +55,8 @@ Implementation tasks:
 
 Expected touch points:
 
-- `docs/API_CONTRACT.md`
-- `docs/AGENT_WORKFLOW.md`
+- `dev_docs/API_CONTRACT.md`
+- `dev_docs/AGENT_WORKFLOW.md`
 - `README.md`
 - `server/src/models/*`
 
@@ -1102,7 +1102,7 @@ Expected touch points:
 - `server/src/models/responses.ts`
 - `server/src/mcp.ts`
 - `server/src/app.ts`
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 
 Validation checklist:
 
@@ -1724,7 +1724,7 @@ Tasks:
 
 Decision:
 
-- `M1-T38` adds a short release-style checklist document at `docs/Milestone1_Acceptance_Checklist.md`.
+- `M1-T38` adds a short release-style checklist document at `dev_docs/Milestone1_Acceptance_Checklist.md`.
 - The checklist covers:
   - exact lookup
   - ambiguity handling

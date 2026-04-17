@@ -934,7 +934,7 @@ These rules apply across all phases:
 
 Detailed plan:
 
-- [Milestone1_TrustworthyLookup.md](E:\Dev\CodeAtlas\Milestone1_TrustworthyLookup.md)
+- [Milestone1_TrustworthyLookup.md](Milestone1_TrustworthyLookup.md)
 
 Includes:
 
@@ -954,7 +954,7 @@ Success outcome:
 
 Detailed plan:
 
-- [Milestone2_RealImpactNavigation.md](E:\Dev\CodeAtlas\Milestone2_RealImpactNavigation.md)
+- [Milestone2_RealImpactNavigation.md](Milestone2_RealImpactNavigation.md)
 
 Includes:
 
@@ -971,7 +971,7 @@ Success outcome:
 
 Detailed plan:
 
-- [Milestone3_ProductionGradeIncrementalOperation.md](E:\Dev\CodeAtlas\Milestone3_ProductionGradeIncrementalOperation.md)
+- [Milestone3_ProductionGradeIncrementalOperation.md](Milestone3_ProductionGradeIncrementalOperation.md)
 
 Includes:
 
@@ -988,7 +988,7 @@ Success outcome:
 
 Detailed plan:
 
-- [Milestone4_LargeProjectIntelligence.md](E:\Dev\CodeAtlas\Milestone4_LargeProjectIntelligence.md)
+- [Milestone4_LargeProjectIntelligence.md](Milestone4_LargeProjectIntelligence.md)
 
 Includes:
 
@@ -1005,7 +1005,7 @@ Success outcome:
 
 Detailed plan:
 
-- [Milestone5_PerformanceProof.md](E:\Dev\CodeAtlas\Milestone5_PerformanceProof.md)
+- [Milestone5_PerformanceProof.md](Milestone5_PerformanceProof.md)
 
 Includes:
 
@@ -1025,11 +1025,11 @@ Success outcome:
 
 Primary execution documents:
 
-- [Milestone1_TrustworthyLookup.md](E:\Dev\CodeAtlas\Milestone1_TrustworthyLookup.md)
-- [Milestone2_RealImpactNavigation.md](E:\Dev\CodeAtlas\Milestone2_RealImpactNavigation.md)
-- [Milestone3_ProductionGradeIncrementalOperation.md](E:\Dev\CodeAtlas\Milestone3_ProductionGradeIncrementalOperation.md)
-- [Milestone4_LargeProjectIntelligence.md](E:\Dev\CodeAtlas\Milestone4_LargeProjectIntelligence.md)
-- [Milestone5_PerformanceProof.md](E:\Dev\CodeAtlas\Milestone5_PerformanceProof.md)
+- [Milestone1_TrustworthyLookup.md](Milestone1_TrustworthyLookup.md)
+- [Milestone2_RealImpactNavigation.md](Milestone2_RealImpactNavigation.md)
+- [Milestone3_ProductionGradeIncrementalOperation.md](Milestone3_ProductionGradeIncrementalOperation.md)
+- [Milestone4_LargeProjectIntelligence.md](Milestone4_LargeProjectIntelligence.md)
+- [Milestone5_PerformanceProof.md](Milestone5_PerformanceProof.md)
 
 Use the milestone files as the primary implementation plans. This section remains as an embedded reference copy.
 
@@ -1080,8 +1080,8 @@ Tasks:
 
 Expected touch points:
 
-- `docs/API_CONTRACT.md`
-- `docs/AGENT_WORKFLOW.md`
+- `dev_docs/API_CONTRACT.md`
+- `dev_docs/AGENT_WORKFLOW.md`
 - `README.md`
 - `server/src/models/*`
 
@@ -1206,7 +1206,7 @@ Expected touch points:
 - `server/src/models/responses.ts`
 - `server/src/mcp.ts`
 - `server/src/app.ts`
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 
 Validation checklist:
 
@@ -1316,7 +1316,7 @@ Tasks:
 
 Expected touch points:
 
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 - `indexer/src/models.rs`
 - `server/src/models/*`
 
@@ -1423,7 +1423,7 @@ Expected touch points:
 
 - `server/src/models/responses.ts`
 - `server/src/mcp.ts`
-- `docs/API_CONTRACT.md`
+- `dev_docs/API_CONTRACT.md`
 
 Exit criteria:
 
@@ -1457,8 +1457,8 @@ Tasks:
 
 Expected touch points:
 
-- `docs/`
-- `NestTask.md` or a dedicated incremental design doc
+- `dev_docs/`
+- `dev_docs/NestTask.md` or a dedicated incremental design doc
 
 Validation checklist:
 
@@ -1713,7 +1713,7 @@ Tasks:
 
 Expected touch points:
 
-- `docs/`
+- `dev_docs/`
 - benchmark scripts folder if created
 
 #### M5-E2. Benchmark Harness Implementation
@@ -1752,7 +1752,7 @@ Tasks:
 Expected touch points:
 
 - benchmark tooling
-- `docs/`
+- `dev_docs/`
 
 #### M5-E5. Build Metadata Ingestion
 
