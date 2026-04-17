@@ -24,3 +24,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local tooling/cache
+.npm-cache/
+.tools/
