@@ -14,6 +14,16 @@ CREATE TABLE IF NOT EXISTS symbols_raw (
     line        INTEGER NOT NULL,
     end_line    INTEGER NOT NULL,
     signature   TEXT,
+    parameter_count INTEGER,
+    scope_qualified_name TEXT,
+    scope_kind  TEXT,
+    symbol_role TEXT,
+    declaration_file_path TEXT,
+    declaration_line INTEGER,
+    declaration_end_line INTEGER,
+    definition_file_path TEXT,
+    definition_line INTEGER,
+    definition_end_line INTEGER,
     parent_id   TEXT
 );
 
@@ -26,6 +36,16 @@ CREATE TABLE IF NOT EXISTS symbols (
     line        INTEGER NOT NULL,
     end_line    INTEGER NOT NULL,
     signature   TEXT,
+    parameter_count INTEGER,
+    scope_qualified_name TEXT,
+    scope_kind  TEXT,
+    symbol_role TEXT,
+    declaration_file_path TEXT,
+    declaration_line INTEGER,
+    declaration_end_line INTEGER,
+    definition_file_path TEXT,
+    definition_line INTEGER,
+    definition_end_line INTEGER,
     parent_id   TEXT
 );
 
@@ -67,6 +87,7 @@ impl Database {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch(SCHEMA)?;
         Self::migrate_symbol_storage(&conn)?;
+        Self::migrate_symbol_metadata(&conn)?;
         Self::migrate_fts(&conn)?;
         Ok(Database { conn })
     }
@@ -80,6 +101,48 @@ impl Database {
                 "INSERT INTO symbols_raw(id, name, qualified_name, type, file_path, line, end_line, signature, parent_id)
                  SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id FROM symbols;",
             )?;
+        }
+
+        Ok(())
+    }
+
+    fn migrate_symbol_metadata(conn: &Connection) -> SqlResult<()> {
+        Self::ensure_column(conn, "symbols_raw", "parameter_count", "INTEGER")?;
+        Self::ensure_column(conn, "symbols_raw", "scope_qualified_name", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "scope_kind", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "symbol_role", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "declaration_file_path", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "declaration_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols_raw", "declaration_end_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols_raw", "definition_file_path", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "definition_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols_raw", "definition_end_line", "INTEGER")?;
+
+        Self::ensure_column(conn, "symbols", "parameter_count", "INTEGER")?;
+        Self::ensure_column(conn, "symbols", "scope_qualified_name", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "scope_kind", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "symbol_role", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "declaration_file_path", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "declaration_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols", "declaration_end_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols", "definition_file_path", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "definition_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols", "definition_end_line", "INTEGER")?;
+
+        Ok(())
+    }
+
+    fn ensure_column(conn: &Connection, table: &str, column: &str, column_def: &str) -> SqlResult<()> {
+        let pragma = format!("PRAGMA table_info({})", table);
+        let mut stmt = conn.prepare(&pragma)?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if !existing.iter().any(|c| c == column) {
+            let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
+            conn.execute(&alter, [])?;
         }
 
         Ok(())
@@ -121,20 +184,31 @@ impl Database {
 
     pub fn write_raw_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )?;
         for s in symbols {
+            let normalized = normalize_dual_locations(s);
             stmt.execute(params![
-                s.id,
-                s.name,
-                s.qualified_name,
-                s.symbol_type,
-                s.file_path,
-                s.line,
-                s.end_line,
-                s.signature,
-                s.parent_id,
+                normalized.id,
+                normalized.name,
+                normalized.qualified_name,
+                normalized.symbol_type,
+                normalized.file_path,
+                normalized.line,
+                normalized.end_line,
+                normalized.signature,
+                normalized.parameter_count,
+                normalized.scope_qualified_name,
+                normalized.scope_kind,
+                normalized.symbol_role,
+                normalized.declaration_file_path,
+                normalized.declaration_line,
+                normalized.declaration_end_line,
+                normalized.definition_file_path,
+                normalized.definition_line,
+                normalized.definition_end_line,
+                normalized.parent_id,
             ])?;
         }
         Ok(())
@@ -142,20 +216,31 @@ impl Database {
 
     pub fn write_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )?;
         for s in symbols {
+            let normalized = normalize_dual_locations(s);
             stmt.execute(params![
-                s.id,
-                s.name,
-                s.qualified_name,
-                s.symbol_type,
-                s.file_path,
-                s.line,
-                s.end_line,
-                s.signature,
-                s.parent_id,
+                normalized.id,
+                normalized.name,
+                normalized.qualified_name,
+                normalized.symbol_type,
+                normalized.file_path,
+                normalized.line,
+                normalized.end_line,
+                normalized.signature,
+                normalized.parameter_count,
+                normalized.scope_qualified_name,
+                normalized.scope_kind,
+                normalized.symbol_role,
+                normalized.declaration_file_path,
+                normalized.declaration_line,
+                normalized.declaration_end_line,
+                normalized.definition_file_path,
+                normalized.definition_line,
+                normalized.definition_end_line,
+                normalized.parent_id,
             ])?;
         }
         Ok(())
@@ -252,7 +337,7 @@ impl Database {
 
         let placeholders = vec!["?"; file_paths.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id
+            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
              FROM symbols_raw WHERE file_path IN ({})",
             placeholders,
         );
@@ -267,7 +352,17 @@ impl Database {
                 line: row.get(5)?,
                 end_line: row.get(6)?,
                 signature: row.get(7)?,
-                parent_id: row.get(8)?,
+                parameter_count: row.get(8)?,
+                scope_qualified_name: row.get(9)?,
+                scope_kind: row.get(10)?,
+                symbol_role: row.get(11)?,
+                declaration_file_path: row.get(12)?,
+                declaration_line: row.get(13)?,
+                declaration_end_line: row.get(14)?,
+                definition_file_path: row.get(15)?,
+                definition_line: row.get(16)?,
+                definition_end_line: row.get(17)?,
+                parent_id: row.get(18)?,
             })
         })?;
         rows.collect()
@@ -275,7 +370,7 @@ impl Database {
 
     fn read_all_raw_symbols(&self) -> SqlResult<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id FROM symbols_raw",
+            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id FROM symbols_raw",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Symbol {
@@ -287,7 +382,17 @@ impl Database {
                 line: row.get(5)?,
                 end_line: row.get(6)?,
                 signature: row.get(7)?,
-                parent_id: row.get(8)?,
+                parameter_count: row.get(8)?,
+                scope_qualified_name: row.get(9)?,
+                scope_kind: row.get(10)?,
+                symbol_role: row.get(11)?,
+                declaration_file_path: row.get(12)?,
+                declaration_line: row.get(13)?,
+                declaration_end_line: row.get(14)?,
+                definition_file_path: row.get(15)?,
+                definition_line: row.get(16)?,
+                definition_end_line: row.get(17)?,
+                parent_id: row.get(18)?,
             })
         })?;
         rows.collect()
@@ -300,7 +405,7 @@ impl Database {
 
         let placeholders = vec!["?"; symbol_ids.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id
+            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
              FROM symbols_raw WHERE id IN ({})",
             placeholders,
         );
@@ -315,7 +420,17 @@ impl Database {
                 line: row.get(5)?,
                 end_line: row.get(6)?,
                 signature: row.get(7)?,
-                parent_id: row.get(8)?,
+                parameter_count: row.get(8)?,
+                scope_qualified_name: row.get(9)?,
+                scope_kind: row.get(10)?,
+                symbol_role: row.get(11)?,
+                declaration_file_path: row.get(12)?,
+                declaration_line: row.get(13)?,
+                declaration_end_line: row.get(14)?,
+                definition_file_path: row.get(15)?,
+                definition_line: row.get(16)?,
+                definition_end_line: row.get(17)?,
+                parent_id: row.get(18)?,
             })
         })?;
         rows.collect()
@@ -323,7 +438,7 @@ impl Database {
 
     pub fn find_symbols_by_name(&self, name: &str) -> SqlResult<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id FROM symbols WHERE name = ?1 AND (type = 'function' OR type = 'method')",
+            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id FROM symbols WHERE name = ?1 AND (type = 'function' OR type = 'method')",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(Symbol {
@@ -335,7 +450,17 @@ impl Database {
                 line: row.get(5)?,
                 end_line: row.get(6)?,
                 signature: row.get(7)?,
-                parent_id: row.get(8)?,
+                parameter_count: row.get(8)?,
+                scope_qualified_name: row.get(9)?,
+                scope_kind: row.get(10)?,
+                symbol_role: row.get(11)?,
+                declaration_file_path: row.get(12)?,
+                declaration_line: row.get(13)?,
+                declaration_end_line: row.get(14)?,
+                definition_file_path: row.get(15)?,
+                definition_line: row.get(16)?,
+                definition_end_line: row.get(17)?,
+                parent_id: row.get(18)?,
             })
         })?;
         rows.collect()
@@ -372,7 +497,7 @@ impl Database {
 
         let placeholders = vec!["?"; symbol_ids.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parent_id
+            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
              FROM symbols WHERE id IN ({})",
             placeholders,
         );
@@ -387,7 +512,17 @@ impl Database {
                 line: row.get(5)?,
                 end_line: row.get(6)?,
                 signature: row.get(7)?,
-                parent_id: row.get(8)?,
+                parameter_count: row.get(8)?,
+                scope_qualified_name: row.get(9)?,
+                scope_kind: row.get(10)?,
+                symbol_role: row.get(11)?,
+                declaration_file_path: row.get(12)?,
+                declaration_line: row.get(13)?,
+                declaration_end_line: row.get(14)?,
+                definition_file_path: row.get(15)?,
+                definition_line: row.get(16)?,
+                definition_end_line: row.get(17)?,
+                parent_id: row.get(18)?,
             })
         })?;
         rows.collect()
@@ -457,6 +592,38 @@ impl Database {
     }
 }
 
+fn normalize_dual_locations(symbol: &Symbol) -> Symbol {
+    let mut normalized = symbol.clone();
+
+    match normalized.symbol_role.as_deref() {
+        Some("declaration") => {
+            if normalized.declaration_file_path.is_none() {
+                normalized.declaration_file_path = Some(normalized.file_path.clone());
+            }
+            if normalized.declaration_line.is_none() {
+                normalized.declaration_line = Some(normalized.line);
+            }
+            if normalized.declaration_end_line.is_none() {
+                normalized.declaration_end_line = Some(normalized.end_line);
+            }
+        }
+        Some("definition") | Some("inline_definition") => {
+            if normalized.definition_file_path.is_none() {
+                normalized.definition_file_path = Some(normalized.file_path.clone());
+            }
+            if normalized.definition_line.is_none() {
+                normalized.definition_line = Some(normalized.line);
+            }
+            if normalized.definition_end_line.is_none() {
+                normalized.definition_end_line = Some(normalized.end_line);
+            }
+        }
+        _ => {}
+    }
+
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,7 +632,11 @@ mod tests {
         Symbol {
             id: id.into(), name: name.into(), qualified_name: id.into(),
             symbol_type: "function".into(), file_path: "test.cpp".into(),
-            line: 1, end_line: 5, signature: Some("void foo()".into()), parent_id: None,
+            line: 1, end_line: 5, signature: Some("void foo()".into()),
+            parameter_count: None, scope_qualified_name: None, scope_kind: None, symbol_role: None,
+            declaration_file_path: None, declaration_line: None, declaration_end_line: None,
+            definition_file_path: None, definition_line: None, definition_end_line: None,
+            parent_id: None,
         }
     }
 
@@ -526,6 +697,16 @@ mod tests {
             line: 5,
             end_line: 5,
             signature: Some("void Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
             parent_id: Some("Foo".into()),
         };
         let source = Symbol {
@@ -537,6 +718,16 @@ mod tests {
             line: 10,
             end_line: 15,
             signature: Some("void Foo::Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
             parent_id: Some("Foo".into()),
         };
 
@@ -553,5 +744,140 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].file_path, "foo.h");
         assert_eq!(after[0].line, 5);
+    }
+
+    #[test]
+    fn dual_location_metadata_is_normalized_and_round_tripped() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+
+        let declaration = Symbol {
+            id: "Foo::Bar".into(),
+            name: "Bar".into(),
+            qualified_name: "Foo::Bar".into(),
+            symbol_type: "method".into(),
+            file_path: "foo.h".into(),
+            line: 5,
+            end_line: 5,
+            signature: Some("void Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Foo".into()),
+        };
+
+        let definition = Symbol {
+            id: "Foo::Bar".into(),
+            name: "Bar".into(),
+            qualified_name: "Foo::Bar".into(),
+            symbol_type: "method".into(),
+            file_path: "foo.cpp".into(),
+            line: 10,
+            end_line: 15,
+            signature: Some("void Foo::Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: Some("foo.h".into()),
+            declaration_line: Some(5),
+            declaration_end_line: Some(5),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Foo".into()),
+        };
+
+        db.write_raw_symbols(&[declaration]).unwrap();
+        db.write_symbols(&[definition]).unwrap();
+
+        let stored = db.find_symbols_by_ids(&["Foo::Bar".into()]).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].declaration_file_path.as_deref(), Some("foo.h"));
+        assert_eq!(stored[0].declaration_line, Some(5));
+        assert_eq!(stored[0].definition_file_path.as_deref(), Some("foo.cpp"));
+        assert_eq!(stored[0].definition_line, Some(10));
+        assert_eq!(stored[0].definition_end_line, Some(15));
+    }
+
+    #[test]
+    fn merged_symbol_refresh_keeps_call_edges_on_logical_id() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+
+        let caller = make_sym("Game::Tick", "Tick");
+        let declaration = Symbol {
+            id: "Foo::Bar".into(),
+            name: "Bar".into(),
+            qualified_name: "Foo::Bar".into(),
+            symbol_type: "method".into(),
+            file_path: "foo.h".into(),
+            line: 5,
+            end_line: 5,
+            signature: Some("void Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Foo".into()),
+        };
+        let definition = Symbol {
+            id: "Foo::Bar".into(),
+            name: "Bar".into(),
+            qualified_name: "Foo::Bar".into(),
+            symbol_type: "method".into(),
+            file_path: "foo.cpp".into(),
+            line: 10,
+            end_line: 15,
+            signature: Some("void Foo::Bar()".into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Foo".into()),
+        };
+
+        db.write_raw_symbols(&[caller.clone(), declaration.clone(), definition]).unwrap();
+        db.refresh_symbols_for_ids(&["Game::Tick".into(), "Foo::Bar".into()]).unwrap();
+        db.write_calls(&[Call {
+            caller_id: "Game::Tick".into(),
+            callee_id: "Foo::Bar".into(),
+            file_path: "game.cpp".into(),
+            line: 42,
+        }]).unwrap();
+
+        db.delete_raw_symbols_for_file("foo.cpp").unwrap();
+        db.refresh_symbols_for_ids(&["Foo::Bar".into()]).unwrap();
+
+        let affected = db.cleanup_dangling_calls().unwrap();
+        assert!(affected.is_empty());
+
+        let representative = db.find_symbols_by_ids(&["Foo::Bar".into()]).unwrap();
+        assert_eq!(representative.len(), 1);
+        assert_eq!(representative[0].file_path, "foo.h");
+
+        let call_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM calls WHERE callee_id = 'Foo::Bar'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(call_count, 1);
     }
 }

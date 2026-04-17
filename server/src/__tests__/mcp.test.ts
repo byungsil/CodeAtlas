@@ -22,13 +22,114 @@ const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVe
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 describe("MCP payload contracts", () => {
-  it("tools/list returns 4 tools", () => {
+  it("tools/list returns 5 tools", () => {
     const responses = mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(4);
+    expect(toolList.result.tools).toHaveLength(5);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
-    expect(names).toEqual(["get_callgraph", "lookup_class", "lookup_function", "search_symbols"]);
+    expect(names).toEqual(["get_callgraph", "lookup_class", "lookup_function", "lookup_symbol", "search_symbols"]);
+  });
+
+  it("lookup_symbol returns exact response by id", () => {
+    const responses = mcpCall([
+      INIT, INITIALIZED,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "lookup_symbol", arguments: { id: "Game::AIComponent::UpdateAI" } },
+      },
+    ]);
+    const res = responses.find((r) => r.id === 3);
+    expect(res).toBeDefined();
+    expect(res.result.isError).toBeUndefined();
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.lookupMode).toBe("exact");
+    expect(payload.confidence).toBe("exact");
+    expect(payload.matchReasons).toEqual(["exact_id_match"]);
+    expect(payload.symbol.qualifiedName).toBe("Game::AIComponent::UpdateAI");
+    expect(payload.callers).toBeInstanceOf(Array);
+    expect(payload.callees).toBeInstanceOf(Array);
+  });
+
+  it("lookup_symbol returns exact response by qualifiedName", () => {
+    const responses = mcpCall([
+      INIT, INITIALIZED,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "lookup_symbol", arguments: { qualifiedName: "Game::GameObject" } },
+      },
+    ]);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.lookupMode).toBe("exact");
+    expect(payload.confidence).toBe("exact");
+    expect(payload.matchReasons).toEqual(["exact_qualified_name_match"]);
+    expect(payload.symbol.qualifiedName).toBe("Game::GameObject");
+    expect(payload.members).toBeInstanceOf(Array);
+    expect(payload.members.length).toBeGreaterThan(0);
+  });
+
+  it("lookup_symbol rejects mismatched id and qualifiedName", () => {
+    const responses = mcpCall([
+      INIT, INITIALIZED,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "lookup_symbol",
+          arguments: {
+            id: "Game::AIComponent::UpdateAI",
+            qualifiedName: "Game::GameObject",
+          },
+        },
+      },
+    ]);
+    const res = responses.find((r) => r.id === 3);
+    expect(res.result.isError).toBe(true);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.code).toBe("BAD_REQUEST");
+    expect(payload.error).toBe("Invalid exact lookup request");
+  });
+
+  it("lookup_symbol rejects missing exact lookup arguments", () => {
+    const responses = mcpCall([
+      INIT, INITIALIZED,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "lookup_symbol", arguments: {} },
+      },
+    ]);
+    const res = responses.find((r) => r.id === 3);
+    expect(res.result.isError).toBe(true);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.code).toBe("BAD_REQUEST");
+    expect(payload.error).toBe("Invalid exact lookup request");
+  });
+
+  it("lookup_symbol returns NOT_FOUND for unknown exact symbol", () => {
+    const responses = mcpCall([
+      INIT, INITIALIZED,
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "lookup_symbol", arguments: { id: "Game::DoesNotExist" } },
+      },
+    ]);
+    const res = responses.find((r) => r.id === 3);
+    expect(res.result.isError).toBe(true);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.code).toBe("NOT_FOUND");
+    expect(payload.error).toBe("Symbol not found");
+    expect(payload.symbol).toBeUndefined();
+    expect(payload.confidence).toBeUndefined();
   });
 
   it("lookup_function returns correct shape", () => {
@@ -42,8 +143,15 @@ describe("MCP payload contracts", () => {
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.symbol).toBeDefined();
     expect(payload.symbol.name).toBe("UpdateAI");
+    expect(payload.lookupMode).toBe("heuristic");
+    expect(payload.confidence).toBe("high_confidence_heuristic");
+    expect(payload.matchReasons).toEqual([]);
     expect(payload.callers).toBeInstanceOf(Array);
     expect(payload.callees).toBeInstanceOf(Array);
+    for (const ref of [...payload.callers, ...payload.callees]) {
+      expect(ref.confidence).toBe("high_confidence_heuristic");
+      expect(ref.matchReasons).toEqual([]);
+    }
   });
 
   it("lookup_class returns correct shape", () => {
@@ -54,6 +162,9 @@ describe("MCP payload contracts", () => {
     const res = responses.find((r) => r.id === 3);
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.symbol.name).toBe("GameObject");
+    expect(payload.lookupMode).toBe("heuristic");
+    expect(payload.confidence).toBe("high_confidence_heuristic");
+    expect(payload.matchReasons).toEqual([]);
     expect(payload.members).toBeInstanceOf(Array);
     expect(payload.members.length).toBeGreaterThan(0);
   });
@@ -95,5 +206,8 @@ describe("MCP payload contracts", () => {
     expect(res.result.isError).toBe(true);
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.code).toBe("NOT_FOUND");
+    expect(payload.error).toBe("Symbol not found");
+    expect(payload.symbol).toBeUndefined();
+    expect(payload.confidence).toBeUndefined();
   });
 });

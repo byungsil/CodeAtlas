@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+
 use tree_sitter::{Node, Parser, Tree};
-use crate::models::{ParseResult, RawCallSite, Symbol};
+use crate::models::{
+    ParseResult, RawCallKind, RawCallSite, RawQualifierKind, RawReceiverKind, Symbol,
+};
 
 struct Ctx {
     file_path: String,
@@ -7,6 +11,7 @@ struct Ctx {
     symbols: Vec<Symbol>,
     raw_calls: Vec<RawCallSite>,
     ns_stack: Vec<String>,
+    namespace_ids: HashSet<String>,
 }
 
 impl Ctx {
@@ -38,6 +43,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         symbols: Vec::new(),
         raw_calls: Vec::new(),
         ns_stack: Vec::new(),
+        namespace_ids: HashSet::new(),
     };
 
     visit_node(tree.root_node(), &mut ctx);
@@ -74,6 +80,8 @@ fn visit_namespace(node: Node, ctx: &mut Ctx) {
 
     if let (Some(name), Some(body)) = (name_node, body_node) {
         let ns_name = ctx.node_text(name);
+        let ns_id = ctx.qualify(&ns_name);
+        ctx.namespace_ids.insert(ns_id);
         ctx.ns_stack.push(ns_name);
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
@@ -100,6 +108,16 @@ fn visit_class(node: Node, ctx: &mut Ctx, kind: &str) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: None,
+        parameter_count: None,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: None,
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: None,
     });
 
@@ -136,6 +154,7 @@ fn visit_field_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
     let method_name = ctx.node_text(name_node);
     let method_id = ctx.qualify(&method_name);
     let sig = build_decl_signature(node, ctx);
+    let parameter_count = count_parameters(func_decl, ctx);
 
     ctx.symbols.push(Symbol {
         id: method_id.clone(),
@@ -146,6 +165,16 @@ fn visit_field_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: Some(sig),
+        parameter_count,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: Some("declaration".to_string()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
     });
 }
@@ -165,6 +194,7 @@ fn visit_member_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
     }
     let method_id = ctx.qualify(&name);
     let sig = build_decl_signature(node, ctx);
+    let parameter_count = count_parameters(func_decl, ctx);
 
     ctx.symbols.push(Symbol {
         id: method_id.clone(),
@@ -175,6 +205,16 @@ fn visit_member_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: Some(sig),
+        parameter_count,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: Some("declaration".to_string()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
     });
 }
@@ -191,6 +231,7 @@ fn visit_inline_method(node: Node, ctx: &mut Ctx, parent_id: &str) {
     let method_name = ctx.node_text(name_node);
     let method_id = ctx.qualify(&method_name);
     let sig = build_func_signature(node, ctx);
+    let parameter_count = count_parameters(decl_node, ctx);
 
     ctx.symbols.push(Symbol {
         id: method_id.clone(),
@@ -201,6 +242,16 @@ fn visit_inline_method(node: Node, ctx: &mut Ctx, parent_id: &str) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: Some(sig),
+        parameter_count,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: Some("inline_definition".to_string()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
     });
 
@@ -226,6 +277,16 @@ fn visit_enum(node: Node, ctx: &mut Ctx) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: None,
+        parameter_count: None,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: None,
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: None,
     });
 }
@@ -272,6 +333,7 @@ fn visit_function_definition(node: Node, ctx: &mut Ctx) {
     };
 
     let sig = build_func_signature(node, ctx);
+    let parameter_count = count_parameters(func_decl, ctx);
     let sym_type = if parent_id.is_some() { "method" } else { "function" };
 
     ctx.symbols.push(Symbol {
@@ -283,6 +345,16 @@ fn visit_function_definition(node: Node, ctx: &mut Ctx) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: Some(sig),
+        parameter_count,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: Some("definition".to_string()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id,
     });
 
@@ -309,6 +381,7 @@ fn visit_declaration(node: Node, ctx: &mut Ctx) {
         return;
     }
     let sig = build_decl_signature(node, ctx);
+    let parameter_count = count_parameters(func_decl, ctx);
 
     ctx.symbols.push(Symbol {
         id: func_id.clone(),
@@ -319,6 +392,16 @@ fn visit_declaration(node: Node, ctx: &mut Ctx) {
         line: node.start_position().row + 1,
         end_line: node.end_position().row + 1,
         signature: Some(sig),
+        parameter_count,
+        scope_qualified_name: None,
+        scope_kind: None,
+        symbol_role: Some("declaration".to_string()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
         parent_id: None,
     });
 }
@@ -351,13 +434,11 @@ fn visit_template_in_class(node: Node, ctx: &mut Ctx, parent_id: &str) {
 fn extract_call_sites(node: Node, caller_id: &str, ctx: &mut Ctx) {
     if node.kind() == "call_expression" {
         if let Some(func_node) = node.child_by_field_name("function") {
-            if let Some((name, receiver)) = parse_call_expr(func_node, ctx) {
+            if let Some(raw_call) = parse_call_expr(func_node, caller_id, node, ctx) {
                 ctx.raw_calls.push(RawCallSite {
-                    caller_id: caller_id.to_string(),
-                    called_name: name,
-                    receiver,
                     file_path: ctx.file_path.clone(),
                     line: node.start_position().row + 1,
+                    ..raw_call
                 });
             }
         }
@@ -369,18 +450,77 @@ fn extract_call_sites(node: Node, caller_id: &str, ctx: &mut Ctx) {
     }
 }
 
-fn parse_call_expr(func_node: Node, ctx: &Ctx) -> Option<(String, Option<String>)> {
+fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx) -> Option<RawCallSite> {
+    let argument_count = call_node
+        .child_by_field_name("arguments")
+        .map(|args| count_arguments(args, ctx));
+
     match func_node.kind() {
-        "identifier" => Some((ctx.node_text(func_node), None)),
+        "identifier" => Some(RawCallSite {
+            caller_id: caller_id.to_string(),
+            called_name: ctx.node_text(func_node),
+            call_kind: RawCallKind::Unqualified,
+            argument_count,
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: String::new(),
+            line: call_node.start_position().row + 1,
+        }),
         "field_expression" => {
             let field = func_node.child_by_field_name("field")?;
             let arg = func_node.child_by_field_name("argument");
             let receiver = arg.map(|a| extract_receiver(a, ctx));
-            Some((ctx.node_text(field), receiver))
+            let receiver_kind = arg.map(detect_receiver_kind);
+            let separator = field_expr_separator(func_node, ctx);
+            let call_kind = match (receiver.as_deref(), separator.as_str()) {
+                (Some("this"), "->") => RawCallKind::ThisPointerAccess,
+                (_, "->") => RawCallKind::PointerMemberAccess,
+                _ => RawCallKind::MemberAccess,
+            };
+            Some(RawCallSite {
+                caller_id: caller_id.to_string(),
+                called_name: ctx.node_text(field),
+                call_kind,
+                argument_count,
+                receiver,
+                receiver_kind,
+                qualifier: None,
+                qualifier_kind: None,
+                file_path: String::new(),
+                line: call_node.start_position().row + 1,
+            })
         }
         "qualified_identifier" => {
-            let last = func_node.named_child(func_node.named_child_count().checked_sub(1)?)?;
-            Some((ctx.node_text(last), None))
+            let count = func_node.named_child_count();
+            let last = func_node.named_child(count.checked_sub(1)?)?;
+            let mut parts = Vec::new();
+            for i in 0..count.saturating_sub(1) {
+                if let Some(child) = func_node.named_child(i) {
+                    parts.push(ctx.node_text(child));
+                }
+            }
+            let qualifier = if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("::"))
+            };
+            let qualifier_kind = qualifier
+                .as_deref()
+                .and_then(|value| classify_qualifier_kind(value, ctx));
+            Some(RawCallSite {
+                caller_id: caller_id.to_string(),
+                called_name: ctx.node_text(last),
+                call_kind: RawCallKind::Qualified,
+                argument_count,
+                receiver: None,
+                receiver_kind: None,
+                qualifier,
+                qualifier_kind,
+                file_path: String::new(),
+                line: call_node.start_position().row + 1,
+            })
         }
         _ => None,
     }
@@ -398,6 +538,65 @@ fn extract_receiver(node: Node, ctx: &Ctx) -> String {
         }
         _ => ctx.node_text(node),
     }
+}
+
+fn detect_receiver_kind(node: Node) -> RawReceiverKind {
+    match node.kind() {
+        "identifier" => RawReceiverKind::Identifier,
+        "this" => RawReceiverKind::This,
+        "pointer_expression" => RawReceiverKind::PointerExpression,
+        "field_expression" => RawReceiverKind::FieldExpression,
+        "qualified_identifier" => RawReceiverKind::QualifiedIdentifier,
+        _ => RawReceiverKind::Other,
+    }
+}
+
+fn field_expr_separator(node: Node, ctx: &Ctx) -> String {
+    let argument = match node.child_by_field_name("argument") {
+        Some(arg) => arg,
+        None => return ".".to_string(),
+    };
+    let field = match node.child_by_field_name("field") {
+        Some(field) => field,
+        None => return ".".to_string(),
+    };
+    let start = argument.end_byte();
+    let end = field.start_byte();
+    if start >= end || end > ctx.source.len() {
+        return ".".to_string();
+    }
+    let between = std::str::from_utf8(&ctx.source[start..end]).unwrap_or("");
+    if between.contains("->") {
+        "->".to_string()
+    } else {
+        ".".to_string()
+    }
+}
+
+fn classify_qualifier_kind(qualifier: &str, ctx: &Ctx) -> Option<RawQualifierKind> {
+    if is_known_type_qualifier(qualifier, ctx) {
+        return Some(RawQualifierKind::Type);
+    }
+
+    if is_known_namespace_qualifier(qualifier, ctx) {
+        return Some(RawQualifierKind::Namespace);
+    }
+
+    None
+}
+
+fn is_known_type_qualifier(qualifier: &str, ctx: &Ctx) -> bool {
+    let contextual = ctx.qualify(qualifier);
+    ctx.symbols.iter().any(|sym| {
+        (sym.symbol_type == "class" || sym.symbol_type == "struct")
+            && (sym.qualified_name == qualifier
+                || sym.qualified_name == contextual
+                || sym.name == qualifier)
+    })
+}
+
+fn is_known_namespace_qualifier(qualifier: &str, ctx: &Ctx) -> bool {
+    ctx.namespace_ids.contains(qualifier) || ctx.namespace_ids.contains(&ctx.qualify(qualifier))
 }
 
 fn parse_qualified_id(node: Node, ctx: &Ctx) -> (String, String) {
@@ -512,6 +711,33 @@ fn build_decl_signature(node: Node, ctx: &Ctx) -> String {
     }
 }
 
+fn count_parameters(func_decl: Node, ctx: &Ctx) -> Option<usize> {
+    let params = func_decl.child_by_field_name("parameters")?;
+    Some(count_parameter_like_list(params, ctx))
+}
+
+fn count_arguments(args_node: Node, ctx: &Ctx) -> usize {
+    count_parameter_like_list(args_node, ctx)
+}
+
+fn count_parameter_like_list(list_node: Node, ctx: &Ctx) -> usize {
+    let named_count = list_node.named_child_count();
+    if named_count == 0 {
+        return 0;
+    }
+
+    if named_count == 1 {
+        if let Some(child) = list_node.named_child(0) {
+            let text = ctx.node_text(child);
+            if child.kind() == "primitive_type" && text == "void" {
+                return 0;
+            }
+        }
+    }
+
+    named_count
+}
+
 fn find_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
     let result = node.children(&mut cursor).find(|c| c.kind() == kind);
@@ -542,7 +768,12 @@ mod tests {
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].name, "foo");
         assert_eq!(result.symbols[0].symbol_type, "function");
-        assert!(result.raw_calls.iter().any(|c| c.called_name == "bar"));
+        assert_eq!(result.symbols[0].parameter_count, Some(1));
+        assert!(result.raw_calls.iter().any(|c| {
+            c.called_name == "bar"
+                && matches!(c.call_kind, RawCallKind::Unqualified)
+                && c.argument_count == Some(1)
+        }));
     }
 
     #[test]
@@ -576,7 +807,10 @@ void Player::Update(float dt) {
         let method = result.symbols.iter().find(|s| s.name == "Update").unwrap();
         assert_eq!(method.id, "Game::Player::Update");
         assert_eq!(method.symbol_type, "method");
-        assert!(result.raw_calls.iter().any(|c| c.called_name == "Render"));
+        assert_eq!(method.parameter_count, Some(1));
+        assert!(result.raw_calls.iter().any(|c| {
+            c.called_name == "Render" && matches!(c.call_kind, RawCallKind::Unqualified)
+        }));
     }
 
     #[test]
@@ -612,7 +846,11 @@ template <typename T>
 T Max(T a, T b) { return a > b ? a : b; }
 "#;
         let result = parse_cpp_file("test.h", src).unwrap();
-        assert!(result.symbols.iter().any(|s| s.name == "Max" && s.symbol_type == "function"));
+        assert!(result.symbols.iter().any(|s| {
+            s.name == "Max"
+                && s.symbol_type == "function"
+                && s.symbol_role.as_deref() == Some("definition")
+        }));
     }
 
     #[test]
@@ -657,5 +895,346 @@ public:
         assert_eq!(class.id, "EA::Ant::Controllers::ControllerAsset");
         let method = result.symbols.iter().find(|s| s.name == "Load").unwrap();
         assert_eq!(method.parent_id.as_deref(), Some("EA::Ant::Controllers::ControllerAsset"));
+    }
+
+    #[test]
+    fn parses_member_call_shapes() {
+        let src = r#"
+namespace Game {
+class Worker {
+public:
+    void Update();
+    void Tick(Worker* other) {
+        this->Update();
+        other->Update();
+    }
+};
+}
+"#;
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        let this_call = result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::ThisPointerAccess))
+            .unwrap();
+        assert_eq!(this_call.called_name, "Update");
+        assert_eq!(this_call.receiver.as_deref(), Some("this"));
+        assert_eq!(this_call.receiver_kind, Some(RawReceiverKind::This));
+
+        let pointer_call = result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::PointerMemberAccess))
+            .unwrap();
+        assert_eq!(pointer_call.called_name, "Update");
+        assert_eq!(pointer_call.receiver.as_deref(), Some("other"));
+        assert_eq!(pointer_call.receiver_kind, Some(RawReceiverKind::Identifier));
+    }
+
+    #[test]
+    fn parses_dot_member_call_shape() {
+        let src = r#"
+namespace Game {
+class Worker {
+public:
+    void Update();
+};
+
+void Tick() {
+    Worker local;
+    local.Update();
+}
+}
+"#;
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        let member_call = result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::MemberAccess))
+            .unwrap();
+        assert_eq!(member_call.called_name, "Update");
+        assert_eq!(member_call.argument_count, Some(0));
+        assert_eq!(member_call.receiver.as_deref(), Some("local"));
+        assert_eq!(member_call.receiver_kind, Some(RawReceiverKind::Identifier));
+    }
+
+    #[test]
+    fn parses_namespace_qualified_call_shape() {
+        let src = r#"
+namespace Gameplay {
+void Update();
+}
+
+namespace AI {
+class Controller {
+public:
+    void Tick() {
+        Gameplay::Update();
+    }
+};
+}
+"#;
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        let qualified_call = result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::Qualified))
+            .unwrap();
+        assert_eq!(qualified_call.called_name, "Update");
+        assert_eq!(qualified_call.argument_count, Some(0));
+        assert_eq!(qualified_call.qualifier.as_deref(), Some("Gameplay"));
+        assert_eq!(qualified_call.qualifier_kind, Some(RawQualifierKind::Namespace));
+    }
+
+    #[test]
+    fn parses_type_qualified_call_shape() {
+        let src = r#"
+namespace Game {
+class Worker {
+public:
+    static void Update();
+};
+
+void Tick() {
+    Worker::Update();
+}
+}
+"#;
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        let qualified_call = result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::Qualified))
+            .unwrap();
+        assert_eq!(qualified_call.called_name, "Update");
+        assert_eq!(qualified_call.argument_count, Some(0));
+        assert_eq!(qualified_call.qualifier.as_deref(), Some("Worker"));
+        assert_eq!(qualified_call.qualifier_kind, Some(RawQualifierKind::Type));
+    }
+
+    #[test]
+    fn parses_parameter_and_argument_counts() {
+        let src = r#"
+namespace Math {
+void Blend(int a);
+void Compose(float a, float b);
+
+void Tick() {
+    Blend(1);
+    Compose(1.0f, 2.0f);
+}
+}
+"#;
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        let one_arg = result
+            .symbols
+            .iter()
+            .find(|s| s.signature.as_deref() == Some("void Blend(int a)"))
+            .unwrap();
+        let two_arg = result
+            .symbols
+            .iter()
+            .find(|s| s.signature.as_deref() == Some("void Compose(float a, float b)"))
+            .unwrap();
+        assert_eq!(one_arg.parameter_count, Some(1));
+        assert_eq!(two_arg.parameter_count, Some(2));
+
+        assert!(result
+            .raw_calls
+            .iter()
+            .any(|c| c.called_name == "Blend" && c.argument_count == Some(1)));
+        assert!(result
+            .raw_calls
+            .iter()
+            .any(|c| c.called_name == "Compose" && c.argument_count == Some(2)));
+    }
+
+    #[test]
+    fn tags_free_function_declaration_and_definition_roles() {
+        let decl_src = "void Tick();";
+        let decl_result = parse_cpp_file("test.h", decl_src).unwrap();
+        let decl = decl_result.symbols.iter().find(|s| s.name == "Tick").unwrap();
+        assert_eq!(decl.symbol_role.as_deref(), Some("declaration"));
+
+        let def_src = "void Tick() {}";
+        let def_result = parse_cpp_file("test.cpp", def_src).unwrap();
+        let def = def_result.symbols.iter().find(|s| s.name == "Tick").unwrap();
+        assert_eq!(def.symbol_role.as_deref(), Some("definition"));
+    }
+
+    #[test]
+    fn tags_method_declaration_definition_and_inline_definition_roles() {
+        let decl_src = r#"
+namespace Game {
+class Worker {
+public:
+    void Update();
+};
+}
+"#;
+        let decl_result = parse_cpp_file("worker.h", decl_src).unwrap();
+        let decl = decl_result
+            .symbols
+            .iter()
+            .find(|s| s.id == "Game::Worker::Update")
+            .unwrap();
+        assert_eq!(decl.symbol_role.as_deref(), Some("declaration"));
+
+        let def_src = r#"
+namespace Game {
+void Worker::Update() {}
+}
+"#;
+        let def_result = parse_cpp_file("worker.cpp", def_src).unwrap();
+        let def = def_result
+            .symbols
+            .iter()
+            .find(|s| s.id == "Game::Worker::Update")
+            .unwrap();
+        assert_eq!(def.symbol_role.as_deref(), Some("definition"));
+
+        let inline_src = r#"
+namespace Game {
+class Worker {
+public:
+    void Update() {}
+};
+}
+"#;
+        let inline_result = parse_cpp_file("worker_inline.h", inline_src).unwrap();
+        let inline = inline_result
+            .symbols
+            .iter()
+            .find(|s| s.id == "Game::Worker::Update")
+            .unwrap();
+        assert_eq!(inline.symbol_role.as_deref(), Some("inline_definition"));
+    }
+
+    #[test]
+    fn ambiguity_namespace_fixture_parses_qualified_calls() {
+        let src = include_str!("../../samples/ambiguity/src/namespace_dupes.cpp");
+        let result = parse_cpp_file("samples/ambiguity/src/namespace_dupes.cpp", src).unwrap();
+
+        let controller = result
+            .symbols
+            .iter()
+            .find(|s| s.id == "AI::Controller::Update")
+            .unwrap();
+        assert_eq!(controller.symbol_role.as_deref(), Some("definition"));
+
+        let qualified_calls: Vec<_> = result
+            .raw_calls
+            .iter()
+            .filter(|c| matches!(c.call_kind, RawCallKind::Qualified))
+            .collect();
+        assert_eq!(qualified_calls.len(), 2);
+        assert!(qualified_calls.iter().any(|c| {
+            c.called_name == "Update"
+                && c.qualifier.as_deref() == Some("Gameplay")
+                && c.qualifier_kind == Some(RawQualifierKind::Namespace)
+        }));
+        assert!(qualified_calls.iter().any(|c| {
+            c.called_name == "Update"
+                && c.qualifier.as_deref() == Some("UI")
+                && c.qualifier_kind == Some(RawQualifierKind::Namespace)
+        }));
+    }
+
+    #[test]
+    fn ambiguity_overloads_fixture_parses_arity_metadata() {
+        let header = include_str!("../../samples/ambiguity/src/overloads.h");
+        let header_result = parse_cpp_file("samples/ambiguity/src/overloads.h", header).unwrap();
+
+        let decls: Vec<_> = header_result
+            .symbols
+            .iter()
+            .filter(|s| s.name == "Blend")
+            .collect();
+        assert_eq!(decls.len(), 2);
+        assert!(decls.iter().any(|s| {
+            s.id == "Math::Blend"
+                && s.parameter_count == Some(1)
+                && s.symbol_role.as_deref() == Some("declaration")
+        }));
+        assert!(decls.iter().any(|s| {
+            s.id == "Renderer::Blend"
+                && s.parameter_count == Some(2)
+                && s.symbol_role.as_deref() == Some("declaration")
+        }));
+
+        let source = include_str!("../../samples/ambiguity/src/overloads.cpp");
+        let source_result = parse_cpp_file("samples/ambiguity/src/overloads.cpp", source).unwrap();
+        let blend_call = source_result
+            .raw_calls
+            .iter()
+            .find(|c| c.caller_id == "Renderer::Blend" && c.called_name == "Blend")
+            .unwrap();
+        assert_eq!(blend_call.argument_count, Some(1));
+        assert!(matches!(blend_call.call_kind, RawCallKind::Qualified));
+        assert_eq!(blend_call.qualifier.as_deref(), Some("Math"));
+        assert_eq!(blend_call.qualifier_kind, Some(RawQualifierKind::Namespace));
+    }
+
+    #[test]
+    fn ambiguity_sibling_methods_fixture_parses_this_calls() {
+        let header = include_str!("../../samples/ambiguity/src/sibling_methods.h");
+        let header_result = parse_cpp_file("samples/ambiguity/src/sibling_methods.h", header).unwrap();
+        assert!(header_result.symbols.iter().any(|s| {
+            s.id == "Game::Player::Process" && s.symbol_role.as_deref() == Some("declaration")
+        }));
+        assert!(header_result.symbols.iter().any(|s| {
+            s.id == "Game::Enemy::Run" && s.symbol_role.as_deref() == Some("declaration")
+        }));
+
+        let source = include_str!("../../samples/ambiguity/src/sibling_methods.cpp");
+        let source_result = parse_cpp_file("samples/ambiguity/src/sibling_methods.cpp", source).unwrap();
+        let this_calls: Vec<_> = source_result
+            .raw_calls
+            .iter()
+            .filter(|c| matches!(c.call_kind, RawCallKind::ThisPointerAccess))
+            .collect();
+        assert_eq!(this_calls.len(), 2);
+        assert!(this_calls.iter().all(|c| c.called_name == "Run"));
+        assert!(this_calls.iter().all(|c| c.receiver.as_deref() == Some("this")));
+        assert!(this_calls.iter().all(|c| c.receiver_kind == Some(RawReceiverKind::This)));
+    }
+
+    #[test]
+    fn ambiguity_split_update_fixture_parses_split_roles_and_pointer_calls() {
+        let header = include_str!("../../samples/ambiguity/src/split_update.h");
+        let header_result = parse_cpp_file("samples/ambiguity/src/split_update.h", header).unwrap();
+        assert!(header_result.symbols.iter().any(|s| {
+            s.id == "Game::Worker::Update"
+                && s.symbol_role.as_deref() == Some("declaration")
+                && s.parent_id.as_deref() == Some("Game::Worker")
+        }));
+        assert!(header_result.symbols.iter().any(|s| {
+            s.id == "Game::Worker::Tick"
+                && s.parameter_count == Some(1)
+                && s.symbol_role.as_deref() == Some("declaration")
+        }));
+
+        let source = include_str!("../../samples/ambiguity/src/split_update.cpp");
+        let source_result = parse_cpp_file("samples/ambiguity/src/split_update.cpp", source).unwrap();
+        assert!(source_result.symbols.iter().any(|s| {
+            s.id == "Game::Worker::Update" && s.symbol_role.as_deref() == Some("definition")
+        }));
+
+        let this_call = source_result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::ThisPointerAccess))
+            .unwrap();
+        assert_eq!(this_call.called_name, "Update");
+        assert_eq!(this_call.receiver.as_deref(), Some("this"));
+
+        let pointer_call = source_result
+            .raw_calls
+            .iter()
+            .find(|c| matches!(c.call_kind, RawCallKind::PointerMemberAccess))
+            .unwrap();
+        assert_eq!(pointer_call.called_name, "Update");
+        assert_eq!(pointer_call.receiver.as_deref(), Some("other"));
+        assert_eq!(pointer_call.receiver_kind, Some(RawReceiverKind::Identifier));
     }
 }

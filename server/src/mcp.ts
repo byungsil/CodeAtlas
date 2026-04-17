@@ -14,7 +14,14 @@ import { JsonStore } from "./storage/json-store";
 import {
   CallReference,
   CallGraphEdge,
+  SymbolLookupResponse,
 } from "./models/responses";
+import {
+  buildClassResponse,
+  buildExactLookupResponse,
+  buildFunctionResponse,
+  makeResolvedCallReference,
+} from "./response-metadata";
 
 const dataDir = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
 
@@ -33,6 +40,113 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+function buildCallReferences(calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[], targetField: "callerId" | "calleeId"): CallReference[] {
+  return calls
+    .map((c) => {
+      const targetId = c[targetField];
+      if (!targetId) return null;
+      const s = store.getSymbolById(targetId);
+      if (!s) return null;
+      return makeResolvedCallReference({
+        symbol: s,
+        filePath: c.filePath,
+        line: c.line,
+      });
+    })
+    .filter((r): r is CallReference => r !== null);
+}
+
+function buildExactSymbolPayload(params: { matchedBy: "id" | "qualifiedName" | "both"; symbol: ReturnType<Store["getSymbolById"]> }): SymbolLookupResponse | null {
+  const { symbol, matchedBy } = params;
+  if (!symbol) return null;
+
+  const base = buildExactLookupResponse({ symbol, matchedBy });
+
+  if (symbol.type === "function" || symbol.type === "method") {
+    return {
+      ...base,
+      callers: buildCallReferences(store.getCallers(symbol.id), "callerId"),
+      callees: buildCallReferences(store.getCallees(symbol.id), "calleeId"),
+    } as SymbolLookupResponse;
+  }
+
+  if (symbol.type === "class" || symbol.type === "struct") {
+    return {
+      ...base,
+      members: store.getMembers(symbol.id),
+    } as SymbolLookupResponse;
+  }
+
+  return base;
+}
+
+function badRequestPayload() {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ error: "Invalid exact lookup request", code: "BAD_REQUEST" }) }],
+    isError: true,
+  };
+}
+
+function notFoundPayload() {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ error: "Symbol not found", code: "NOT_FOUND" }) }],
+    isError: true,
+  };
+}
+
+server.tool(
+  "lookup_symbol",
+  "Look up one symbol by canonical exact identity. Accepts id and/or qualifiedName and never falls back to short-name heuristics.",
+  {
+    id: z.string().optional().describe("Canonical exact symbol identity"),
+    qualifiedName: z.string().optional().describe("Canonical exact human-readable symbol identity"),
+  },
+  async ({ id, qualifiedName }) => {
+    if (!id && !qualifiedName) {
+      return badRequestPayload();
+    }
+
+    const byId = id ? store.getSymbolById(id) : undefined;
+    const byQualifiedName = qualifiedName ? store.getSymbolByQualifiedName(qualifiedName) : undefined;
+
+    if (id && qualifiedName) {
+      if (!byId || !byQualifiedName) {
+        return notFoundPayload();
+      }
+      if (byId.id !== byQualifiedName.id) {
+        return badRequestPayload();
+      }
+
+      const payload = buildExactSymbolPayload({ matchedBy: "both", symbol: byId });
+      if (!payload) {
+        return notFoundPayload();
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    }
+
+    const symbol = byId ?? byQualifiedName;
+    if (!symbol) {
+      return notFoundPayload();
+    }
+
+    const payload = buildExactSymbolPayload({
+      matchedBy: id ? "id" : "qualifiedName",
+      symbol,
+    });
+
+    if (!payload) {
+      return notFoundPayload();
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    };
+  },
+);
+
 server.tool(
   "lookup_function",
   "Look up a function or method by name. Returns the symbol definition, its callers, and its callees.",
@@ -44,33 +158,22 @@ server.tool(
     const sym = symbols.find((s) => s.type === "function" || s.type === "method");
 
     if (!sym) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ error: "Symbol not found", code: "NOT_FOUND" }) }],
-        isError: true,
-      };
+      return notFoundPayload();
     }
 
-    const callerCalls = store.getCallers(sym.id);
-    const calleeCalls = store.getCallees(sym.id);
-
-    const callers: CallReference[] = callerCalls
-      .map((c) => {
-        const s = store.getSymbolById(c.callerId);
-        if (!s) return null;
-        return { symbolId: s.id, symbolName: s.name, qualifiedName: s.qualifiedName, filePath: c.filePath, line: c.line };
-      })
-      .filter((r): r is CallReference => r !== null);
-
-    const callees: CallReference[] = calleeCalls
-      .map((c) => {
-        const s = store.getSymbolById(c.calleeId);
-        if (!s) return null;
-        return { symbolId: s.id, symbolName: s.name, qualifiedName: s.qualifiedName, filePath: c.filePath, line: c.line };
-      })
-      .filter((r): r is CallReference => r !== null);
+    const callers = buildCallReferences(store.getCallers(sym.id), "callerId");
+    const callees = buildCallReferences(store.getCallees(sym.id), "calleeId");
 
     return {
-      content: [{ type: "text", text: JSON.stringify({ symbol: sym, callers, callees }, null, 2) }],
+      content: [{
+        type: "text",
+        text: JSON.stringify(buildFunctionResponse({
+          symbol: sym,
+          candidateCount: symbols.filter((s) => s.type === "function" || s.type === "method").length,
+          callers,
+          callees,
+        }), null, 2),
+      }],
     };
   },
 );
@@ -86,15 +189,19 @@ server.tool(
     const sym = symbols.find((s) => s.type === "class" || s.type === "struct");
 
     if (!sym) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ error: "Symbol not found", code: "NOT_FOUND" }) }],
-        isError: true,
-      };
+      return notFoundPayload();
     }
 
     const members = store.getMembers(sym.id);
     return {
-      content: [{ type: "text", text: JSON.stringify({ symbol: sym, members }, null, 2) }],
+      content: [{
+        type: "text",
+        text: JSON.stringify(buildClassResponse({
+          symbol: sym,
+          candidateCount: symbols.filter((s) => s.type === "class" || s.type === "struct").length,
+          members,
+        }), null, 2),
+      }],
     };
   },
 );
@@ -166,10 +273,7 @@ server.tool(
     const sym = symbols.find((s) => s.type === "function" || s.type === "method");
 
     if (!sym) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ error: "Symbol not found", code: "NOT_FOUND" }) }],
-        isError: true,
-      };
+      return notFoundPayload();
     }
 
     const visited = new Set<string>();

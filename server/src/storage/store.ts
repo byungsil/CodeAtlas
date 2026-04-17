@@ -4,6 +4,7 @@ import { Call } from "../models/call";
 export interface Store {
   getSymbolsByName(name: string): Symbol[];
   getSymbolById(id: string): Symbol | undefined;
+  getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined;
   searchSymbols(query: string, type?: string, limit?: number): { results: Symbol[]; totalCount: number };
   getCallers(symbolId: string): Call[];
   getCallees(symbolId: string): Call[];

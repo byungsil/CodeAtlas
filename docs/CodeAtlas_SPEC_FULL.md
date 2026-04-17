@@ -75,6 +75,16 @@ Schema:
 symbols:
 - id, name, type, file, line
 
+Identity rules:
+- `id` is the canonical exact symbol identity
+- `qualifiedName` is the canonical exact human-readable alias
+- in the current model, `id` and `qualifiedName` are expected to be identical for exact-match behavior
+- declaration and definition pairs must share one logical symbol identity
+- declaration-only symbols remain valid logical symbols; they are not dropped just because no definition is present yet
+- definition-only symbols remain valid logical symbols; they are not forced to invent a declaration record
+- when declaration and definition coexist under the same canonical `id`, CodeAtlas exposes one logical symbol and prefers the definition as the representative view
+- inline/header-only implementations are treated as `inline_definition` lifecycle variants, not as incomplete declaration/definition pairs
+
 calls:
 - caller, callee
 
@@ -91,6 +101,7 @@ Responsibilities:
 - Return structured JSON
 
 Endpoints:
+- GET /symbol?id=&qualifiedName=
 - GET /function/:name
 - GET /class/:name
 - GET /search?q=
@@ -100,6 +111,42 @@ Constraints:
 - <50ms response
 - partial results
 - scalable
+- exact lookup must not fall back to short-name heuristics
+
+Exact and heuristic lookup behavior:
+- `GET /symbol` is the canonical exact lookup route
+- exact success responses include:
+  - `lookupMode = exact`
+  - `confidence = exact`
+  - `matchReasons`
+- `GET /function/:name` and `GET /class/:name` remain heuristic
+- heuristic lookup responses include:
+  - `lookupMode = heuristic`
+  - `confidence`
+  - `matchReasons`
+  - optional `ambiguity`
+
+MCP tools:
+- `lookup_symbol`
+- `lookup_function`
+- `lookup_class`
+- `search_symbols`
+- `get_callgraph`
+
+MCP exact lookup behavior:
+- `lookup_symbol` is the canonical exact MCP lookup tool
+- accepts `id` and/or `qualifiedName`
+- returns `BAD_REQUEST` when neither is supplied
+- returns `BAD_REQUEST` when both are supplied but identify different logical symbols
+- returns `NOT_FOUND` when the exact symbol is missing
+
+Confidence semantics:
+- CodeAtlas confidence is structural query confidence, not compiler-complete semantic certainty
+- `exact` means canonical identity targeting succeeded
+- `high_confidence_heuristic` means one structural best candidate was selected
+- `ambiguous` means multiple candidates remain plausible
+- `unresolved` means no viable structural answer is currently available
+- agents should prefer exact lookup when exact identity is known and treat heuristic results as progressively weaker evidence
 
 ---
 

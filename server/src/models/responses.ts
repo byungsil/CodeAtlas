@@ -1,14 +1,62 @@
 import { Symbol } from "./symbol";
 import { Call } from "./call";
 
-export interface FunctionResponse {
+export type LookupMode = "exact" | "heuristic";
+
+export type ConfidenceLevel =
+  | "exact"
+  | "high_confidence_heuristic"
+  | "ambiguous"
+  | "unresolved";
+
+export type MatchReason =
+  | "exact_id_match"
+  | "exact_qualified_name_match"
+  | "same_parent_match"
+  | "same_namespace_match"
+  | "this_receiver_match"
+  | "member_call_prefers_method"
+  | "qualified_type_match"
+  | "qualified_namespace_match"
+  | "parameter_count_match"
+  | "signature_arity_hint"
+  | "ambiguous_top_score"
+  | "no_viable_candidate";
+
+export interface AmbiguityInfo {
+  candidateCount: number;
+}
+
+export interface ConfidenceMetadata {
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
+}
+
+export interface SymbolLookupResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
   symbol: Symbol;
+  callers?: CallReference[];
+  callees?: CallReference[];
+  members?: Symbol[];
+}
+
+export interface FunctionResponse {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
   callers: CallReference[];
   callees: CallReference[];
 }
 
 export interface ClassResponse {
+  lookupMode: LookupMode;
   symbol: Symbol;
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
   members: Symbol[];
 }
 
@@ -46,6 +94,9 @@ export interface CallReference {
   qualifiedName: string;
   filePath: string;
   line: number;
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
 }
 
 export interface ErrorResponse {

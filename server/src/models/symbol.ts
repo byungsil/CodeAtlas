@@ -17,5 +17,15 @@ export interface Symbol {
   line: number;
   endLine: number;
   signature?: string;
+  parameterCount?: number;
+  scopeQualifiedName?: string;
+  scopeKind?: "namespace" | "class" | "struct";
+  symbolRole?: "declaration" | "definition" | "inline_definition";
+  declarationFilePath?: string;
+  declarationLine?: number;
+  declarationEndLine?: number;
+  definitionFilePath?: string;
+  definitionLine?: number;
+  definitionEndLine?: number;
   parentId?: string;
 }

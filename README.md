@@ -64,6 +64,8 @@ npm install
 
 The indexer creates a `.codeatlas/index.db` SQLite database inside the workspace root. The database uses a dual-table architecture (`symbols_raw` for per-file parsed symbols, `symbols` for merged representatives) to support correct incremental updates when header/source pairs change independently.
 
+For large real-world C++ repositories, indexing scope matters a lot. If the workspace contains heavy `tests/`, `docs/`, generated code, or vendored mirrors, add a `.codeatlasignore` before relying on heuristic lookup. This keeps the symbol set focused on the code agents actually need to reason about.
+
 ### 4. Start the HTTP server (standalone)
 
 ```bash
@@ -139,9 +141,71 @@ _test\.cpp$
 - Invalid regex patterns are silently skipped.
 - Ignore rules apply consistently to full indexing, incremental indexing, and watcher events.
 
+Recommended onboarding flow for large C++ repositories:
+
+1. Run one full index.
+2. Inspect which top-level directories dominate the symbol count.
+3. Add `.codeatlasignore` entries for irrelevant trees such as tests, docs, generated code, vendored mirrors, and build output.
+4. Reindex before evaluating heuristic lookup quality.
+
+Practical starter preset:
+
+```gitignore
+# Keep the index focused on production code first
+^tests/
+^docs/
+^generated/
+^build/
+^out/
+```
+
+This does not affect exact lookup semantics, but it can dramatically improve heuristic lookup quality by reducing noisy duplicate symbols.
+
 ## MCP Tools
 
-When registered as an MCP server, CodeAtlas exposes four tools:
+When registered as an MCP server, CodeAtlas currently exposes five core tools:
+
+- `lookup_symbol` for canonical exact identity lookup by `id` or `qualifiedName`
+- `lookup_function` and `lookup_class` as backward-compatible name-based convenience tools
+- `search_symbols`
+- `get_callgraph`
+
+`lookup_symbol` is the canonical exact MCP lookup path. `lookup_function` and `lookup_class` remain heuristic when duplicate short names exist.
+
+Recommended usage flow:
+
+1. Use `search_symbols` to discover candidates.
+2. Use `lookup_function` / `lookup_class` only as heuristic convenience lookups.
+3. Switch to `lookup_symbol` once the intended `qualifiedName` or `id` is known.
+
+### `lookup_symbol`
+
+Look up one symbol by canonical exact identity. Never falls back to short-name heuristics.
+
+```json
+{ "qualifiedName": "Game::GameObject::Update" }
+```
+
+Alternative exact input:
+
+```json
+{ "id": "Game::GameObject::Update" }
+```
+
+If both are supplied, they must identify the same logical symbol:
+
+```json
+{ "id": "Game::GameObject::Update", "qualifiedName": "Game::GameObject::Update" }
+```
+
+Successful responses include:
+
+- `lookupMode: "exact"`
+- `confidence: "exact"`
+- `matchReasons`
+- `symbol`
+- `callers` / `callees` for callable symbols
+- `members` for class or struct symbols
 
 ### `lookup_function`
 
@@ -151,6 +215,10 @@ Look up a function or method by name. Returns symbol definition, callers, and ca
 { "name": "UpdateAI" }
 ```
 
+This path is heuristic. Responses include `lookupMode`, `confidence`, `matchReasons`, and optional `ambiguity` when duplicate short names exist.
+
+If duplicate short names exist, the response stays backward compatible by returning one selected symbol, but callers should treat it as heuristic unless they switch to `lookup_symbol`.
+
 ### `lookup_class`
 
 Look up a class or struct by name. Returns class definition and member list.
@@ -158,6 +226,8 @@ Look up a class or struct by name. Returns class definition and member list.
 ```json
 { "name": "GameObject" }
 ```
+
+This path is heuristic. Responses include `lookupMode`, `confidence`, `matchReasons`, and optional `ambiguity` when duplicate short names exist.
 
 ### `search_symbols`
 
@@ -181,6 +251,7 @@ The same queries are available as REST endpoints:
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /symbol?id=&qualifiedName=` | Canonical exact symbol lookup |
 | `GET /function/:name` | Function/method lookup with callers and callees |
 | `GET /class/:name` | Class/struct lookup with members |
 | `GET /search?q=&type=&limit=` | Symbol search |
@@ -188,6 +259,27 @@ The same queries are available as REST endpoints:
 | `GET /dashboard/` | Web dashboard |
 
 All responses are structured JSON with workspace-relative file paths.
+
+`GET /symbol` is the canonical HTTP exact lookup path. `GET /function/:name` and `GET /class/:name` remain name-based convenience endpoints.
+
+Exact lookup responses include:
+
+- `lookupMode: "exact"`
+- `confidence: "exact"`
+- `matchReasons`
+
+Heuristic lookup responses from `/function/:name` and `/class/:name` include:
+
+- `lookupMode: "heuristic"`
+- `confidence`
+- `matchReasons`
+- optional `ambiguity`
+
+Recommended HTTP usage flow:
+
+1. Use `GET /search` for discovery.
+2. Use `/function/:name` and `/class/:name` as convenience heuristics.
+3. Use `GET /symbol` for deterministic exact targeting.
 
 ## Web Dashboard
 

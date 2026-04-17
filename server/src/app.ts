@@ -13,7 +13,14 @@ import {
   CallGraphEdge,
   CallReference,
   ErrorResponse,
+  SymbolLookupResponse,
 } from "./models/responses";
+import {
+  buildClassResponse,
+  buildExactLookupResponse,
+  buildFunctionResponse,
+  makeResolvedCallReference,
+} from "./response-metadata";
 
 export function createApp(store: Store): express.Express {
   const app = express();
@@ -21,19 +28,90 @@ export function createApp(store: Store): express.Express {
   app.use("/dashboard", express.static(path.join(__dirname, "../public"), { index: "index.html" }));
   app.get("/dashboard", (_req, res) => res.redirect("/dashboard/"));
 
+  function notFound(res: express.Response) {
+    return res.status(404).json({ error: "Symbol not found", code: "NOT_FOUND" } as ErrorResponse);
+  }
+
+  function badRequest(res: express.Response) {
+    return res.status(400).json({ error: "Invalid exact lookup request", code: "BAD_REQUEST" } as ErrorResponse);
+  }
+
   function makeCallRef(call: { callerId?: string; calleeId?: string; filePath: string; line: number }, targetField: "callerId" | "calleeId"): CallReference | null {
     const targetId = call[targetField];
     if (!targetId) return null;
     const sym = store.getSymbolById(targetId);
     if (!sym) return null;
-    return {
-      symbolId: sym.id,
-      symbolName: sym.name,
-      qualifiedName: sym.qualifiedName,
+    return makeResolvedCallReference({
+      symbol: sym,
       filePath: call.filePath,
       line: call.line,
-    };
+    });
   }
+
+  function buildCallRefs(calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[], targetField: "callerId" | "calleeId"): CallReference[] {
+    return calls
+      .map((c) => makeCallRef(c, targetField))
+      .filter((r): r is CallReference => r !== null);
+  }
+
+  function buildExactSymbolResponse(params: { matchedBy: "id" | "qualifiedName" | "both"; symbol: ReturnType<Store["getSymbolById"]> }): SymbolLookupResponse | null {
+    const { symbol, matchedBy } = params;
+    if (!symbol) return null;
+
+    const base = buildExactLookupResponse({ symbol, matchedBy });
+
+    if (symbol.type === "function" || symbol.type === "method") {
+      return {
+        ...base,
+        callers: buildCallRefs(store.getCallers(symbol.id), "callerId"),
+        callees: buildCallRefs(store.getCallees(symbol.id), "calleeId"),
+      };
+    }
+
+    if (symbol.type === "class" || symbol.type === "struct") {
+      return {
+        ...base,
+        members: store.getMembers(symbol.id),
+      };
+    }
+
+    return base;
+  }
+
+  app.get("/symbol", (req, res) => {
+    const id = typeof req.query.id === "string" ? req.query.id : undefined;
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+
+    if (!id && !qualifiedName) {
+      return badRequest(res);
+    }
+
+    const byId = id ? store.getSymbolById(id) : undefined;
+    const byQualifiedName = qualifiedName ? store.getSymbolByQualifiedName(qualifiedName) : undefined;
+
+    if (id && qualifiedName) {
+      if (!byId || !byQualifiedName) {
+        return notFound(res);
+      }
+      if (byId.id !== byQualifiedName.id) {
+        return badRequest(res);
+      }
+
+      const response = buildExactSymbolResponse({ matchedBy: "both", symbol: byId });
+      return response ? res.json(response) : notFound(res);
+    }
+
+    const symbol = byId ?? byQualifiedName;
+    if (!symbol) {
+      return notFound(res);
+    }
+
+    const response = buildExactSymbolResponse({
+      matchedBy: id ? "id" : "qualifiedName",
+      symbol,
+    });
+    return response ? res.json(response) : notFound(res);
+  });
 
   app.get("/function/:name", (req, res) => {
     const { name } = req.params;
@@ -41,21 +119,18 @@ export function createApp(store: Store): express.Express {
     const sym = symbols.find((s) => s.type === "function" || s.type === "method");
 
     if (!sym) {
-      return res.status(404).json({ error: "Symbol not found", code: "NOT_FOUND" } as ErrorResponse);
+      return notFound(res);
     }
 
-    const callerCalls = store.getCallers(sym.id);
-    const calleeCalls = store.getCallees(sym.id);
+    const callers = buildCallRefs(store.getCallers(sym.id), "callerId");
+    const callees = buildCallRefs(store.getCallees(sym.id), "calleeId");
 
-    const callers: CallReference[] = callerCalls
-      .map((c) => makeCallRef(c, "callerId"))
-      .filter((r): r is CallReference => r !== null);
-
-    const callees: CallReference[] = calleeCalls
-      .map((c) => makeCallRef(c, "calleeId"))
-      .filter((r): r is CallReference => r !== null);
-
-    const response: FunctionResponse = { symbol: sym, callers, callees };
+    const response: FunctionResponse = buildFunctionResponse({
+      symbol: sym,
+      candidateCount: symbols.filter((s) => s.type === "function" || s.type === "method").length,
+      callers,
+      callees,
+    });
     return res.json(response);
   });
 
@@ -65,11 +140,15 @@ export function createApp(store: Store): express.Express {
     const sym = symbols.find((s) => s.type === "class" || s.type === "struct");
 
     if (!sym) {
-      return res.status(404).json({ error: "Symbol not found", code: "NOT_FOUND" } as ErrorResponse);
+      return notFound(res);
     }
 
     const members = store.getMembers(sym.id);
-    const response: ClassResponse = { symbol: sym, members };
+    const response: ClassResponse = buildClassResponse({
+      symbol: sym,
+      candidateCount: symbols.filter((s) => s.type === "class" || s.type === "struct").length,
+      members,
+    });
     return res.json(response);
   });
 
@@ -129,7 +208,7 @@ export function createApp(store: Store): express.Express {
     const sym = symbols.find((s) => s.type === "function" || s.type === "method");
 
     if (!sym) {
-      return res.status(404).json({ error: "Symbol not found", code: "NOT_FOUND" } as ErrorResponse);
+      return notFound(res);
     }
 
     const visited = new Set<string>();

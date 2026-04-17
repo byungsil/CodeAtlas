@@ -26,6 +26,13 @@ export class SqliteStore {
     return row ? toSymbol(row) : undefined;
   }
 
+  getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM symbols WHERE qualified_name = ?")
+      .get(qualifiedName) as RawRow | undefined;
+    return row ? toSymbol(row) : undefined;
+  }
+
   searchSymbols(query: string, type?: string, limit = SEARCH_DEFAULT_LIMIT): { results: Symbol[]; totalCount: number } {
     if (query.length < SEARCH_MIN_QUERY_LENGTH) {
       return { results: [], totalCount: 0 };
@@ -131,6 +138,16 @@ interface RawRow {
   line: number;
   end_line: number;
   signature: string | null;
+  parameter_count: number | null;
+  scope_qualified_name: string | null;
+  scope_kind: string | null;
+  symbol_role: string | null;
+  declaration_file_path: string | null;
+  declaration_line: number | null;
+  declaration_end_line: number | null;
+  definition_file_path: string | null;
+  definition_line: number | null;
+  definition_end_line: number | null;
   parent_id: string | null;
 }
 
@@ -151,6 +168,16 @@ function toSymbol(row: RawRow): Symbol {
     line: row.line,
     endLine: row.end_line,
     ...(row.signature ? { signature: row.signature } : {}),
+    ...(row.parameter_count !== null ? { parameterCount: row.parameter_count } : {}),
+    ...(row.scope_qualified_name ? { scopeQualifiedName: row.scope_qualified_name } : {}),
+    ...(row.scope_kind ? { scopeKind: row.scope_kind as "namespace" | "class" | "struct" } : {}),
+    ...(row.symbol_role ? { symbolRole: row.symbol_role as "declaration" | "definition" | "inline_definition" } : {}),
+    ...(row.declaration_file_path ? { declarationFilePath: row.declaration_file_path } : {}),
+    ...(row.declaration_line !== null ? { declarationLine: row.declaration_line } : {}),
+    ...(row.declaration_end_line !== null ? { declarationEndLine: row.declaration_end_line } : {}),
+    ...(row.definition_file_path ? { definitionFilePath: row.definition_file_path } : {}),
+    ...(row.definition_line !== null ? { definitionLine: row.definition_line } : {}),
+    ...(row.definition_end_line !== null ? { definitionEndLine: row.definition_end_line } : {}),
     ...(row.parent_id ? { parentId: row.parent_id } : {}),
   };
 }

@@ -2,6 +2,8 @@ import request from "supertest";
 import { createApp } from "../app";
 import { SqliteStore } from "../storage/sqlite-store";
 import * as path from "path";
+import { Store } from "../storage/store";
+import { Symbol } from "../models/symbol";
 
 const DB_PATH = path.resolve(__dirname, "../../../samples/.codeatlas/index.db");
 let store: SqliteStore;
@@ -16,20 +18,99 @@ afterAll(() => {
   store.close();
 });
 
+describe("GET /symbol", () => {
+  it("returns exact callable lookup by id", async () => {
+    const res = await request(app)
+      .get("/symbol")
+      .query({ id: "Game::AIComponent::UpdateAI" })
+      .expect(200);
+
+    expect(res.body.lookupMode).toBe("exact");
+    expect(res.body.confidence).toBe("exact");
+    expect(res.body.matchReasons).toEqual(["exact_id_match"]);
+    expect(res.body.symbol.qualifiedName).toBe("Game::AIComponent::UpdateAI");
+    expect(res.body.callers).toBeInstanceOf(Array);
+    expect(res.body.callees).toBeInstanceOf(Array);
+  });
+
+  it("returns exact class lookup by qualifiedName", async () => {
+    const res = await request(app)
+      .get("/symbol")
+      .query({ qualifiedName: "Game::GameObject" })
+      .expect(200);
+
+    expect(res.body.lookupMode).toBe("exact");
+    expect(res.body.confidence).toBe("exact");
+    expect(res.body.matchReasons).toEqual(["exact_qualified_name_match"]);
+    expect(res.body.symbol.qualifiedName).toBe("Game::GameObject");
+    expect(res.body.members).toBeInstanceOf(Array);
+    expect(res.body.members.length).toBeGreaterThan(0);
+  });
+
+  it("returns both exact reasons when id and qualifiedName match", async () => {
+    const res = await request(app)
+      .get("/symbol")
+      .query({ id: "Game::AIComponent::UpdateAI", qualifiedName: "Game::AIComponent::UpdateAI" })
+      .expect(200);
+
+    expect(res.body.lookupMode).toBe("exact");
+    expect(res.body.confidence).toBe("exact");
+    expect(res.body.matchReasons).toEqual(["exact_id_match", "exact_qualified_name_match"]);
+  });
+
+  it("returns 400 when id and qualifiedName target different symbols", async () => {
+    const res = await request(app)
+      .get("/symbol")
+      .query({ id: "Game::AIComponent::UpdateAI", qualifiedName: "Game::GameObject" })
+      .expect(400);
+
+    expect(res.body.code).toBe("BAD_REQUEST");
+    expect(res.body.error).toBe("Invalid exact lookup request");
+    expect(res.body.symbol).toBeUndefined();
+  });
+
+  it("returns 400 when no exact lookup argument is supplied", async () => {
+    const res = await request(app).get("/symbol").expect(400);
+    expect(res.body.code).toBe("BAD_REQUEST");
+    expect(res.body.error).toBe("Invalid exact lookup request");
+  });
+
+  it("returns 404 for unknown exact symbol", async () => {
+    const res = await request(app)
+      .get("/symbol")
+      .query({ id: "Game::DoesNotExist" })
+      .expect(404);
+
+    expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+    expect(res.body.confidence).toBeUndefined();
+  });
+});
+
 describe("GET /function/:name", () => {
   it("returns symbol with callers and callees", async () => {
     const res = await request(app).get("/function/UpdateAI").expect(200);
     expect(res.body.symbol).toBeDefined();
     expect(res.body.symbol.name).toBe("UpdateAI");
     expect(res.body.symbol.type).toBe("method");
+    expect(res.body.lookupMode).toBe("heuristic");
+    expect(res.body.confidence).toBe("high_confidence_heuristic");
+    expect(res.body.matchReasons).toEqual([]);
     expect(res.body.callers).toBeInstanceOf(Array);
     expect(res.body.callees).toBeInstanceOf(Array);
     expect(res.body.callees.length).toBeGreaterThan(0);
+    for (const ref of [...res.body.callers, ...res.body.callees]) {
+      expect(ref.confidence).toBe("high_confidence_heuristic");
+      expect(ref.matchReasons).toEqual([]);
+    }
   });
 
   it("returns 404 for unknown symbol", async () => {
     const res = await request(app).get("/function/NonExistentXYZ").expect(404);
     expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+    expect(res.body.symbol).toBeUndefined();
+    expect(res.body.confidence).toBeUndefined();
   });
 });
 
@@ -39,6 +120,9 @@ describe("GET /class/:name", () => {
     expect(res.body.symbol).toBeDefined();
     expect(res.body.symbol.name).toBe("GameObject");
     expect(res.body.symbol.type).toBe("class");
+    expect(res.body.lookupMode).toBe("heuristic");
+    expect(res.body.confidence).toBe("high_confidence_heuristic");
+    expect(res.body.matchReasons).toEqual([]);
     expect(res.body.members).toBeInstanceOf(Array);
     expect(res.body.members.length).toBeGreaterThan(0);
   });
@@ -46,6 +130,61 @@ describe("GET /class/:name", () => {
   it("returns 404 for unknown class", async () => {
     const res = await request(app).get("/class/FakeClass").expect(404);
     expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+    expect(res.body.symbol).toBeUndefined();
+    expect(res.body.confidence).toBeUndefined();
+  });
+});
+
+describe("Heuristic ambiguity metadata", () => {
+  it("marks duplicate legacy function lookup as ambiguous", async () => {
+    const makeSymbol = (id: string, filePath: string): Symbol => ({
+      id,
+      name: "Tick",
+      qualifiedName: id,
+      type: "method",
+      filePath,
+      line: 1,
+      endLine: 3,
+      parentId: filePath,
+    });
+
+    const symbols = [
+      makeSymbol("Gameplay::Actor::Tick", "src/gameplay_actor.h"),
+      makeSymbol("UI::Widget::Tick", "src/ui_widget.h"),
+    ];
+
+    const ambiguousStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "Tick" ? symbols : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+    };
+
+    const ambiguousApp = createApp(ambiguousStore);
+    const res = await request(ambiguousApp).get("/function/Tick").expect(200);
+    expect(res.body.symbol.qualifiedName).toBe("Gameplay::Actor::Tick");
+    expect(res.body.lookupMode).toBe("heuristic");
+    expect(res.body.confidence).toBe("ambiguous");
+    expect(res.body.matchReasons).toEqual(["ambiguous_top_score"]);
+    expect(res.body.ambiguity).toEqual({ candidateCount: 2 });
   });
 });
 
@@ -101,6 +240,8 @@ describe("GET /callgraph/:name", () => {
   it("returns 404 for unknown symbol", async () => {
     const res = await request(app).get("/callgraph/FakeFunc").expect(404);
     expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+    expect(res.body.root).toBeUndefined();
   });
 });
 

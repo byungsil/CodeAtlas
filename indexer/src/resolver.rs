@@ -1,35 +1,57 @@
 use std::collections::{HashMap, HashSet};
-use crate::models::{Call, RawCallSite, Symbol};
+
+use crate::models::{Call, RawCallKind, RawCallSite, RawQualifierKind, Symbol};
 use crate::storage::Database;
 
-pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call> {
-    let by_name: HashMap<&str, Vec<&Symbol>> = {
-        let mut map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
-        for sym in symbols {
-            if sym.symbol_type == "function" || sym.symbol_type == "method" {
-                map.entry(sym.name.as_str()).or_default().push(sym);
-            }
-        }
-        map
-    };
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RankingReason {
+    kind: &'static str,
+    score: i32,
+}
 
-    let parent_of: HashMap<&str, &str> = symbols
-        .iter()
-        .filter_map(|s| s.parent_id.as_deref().map(|p| (s.id.as_str(), p)))
-        .collect();
+#[derive(Debug, Clone)]
+struct RankedCandidate<'a> {
+    symbol: &'a Symbol,
+    score: i32,
+    reasons: Vec<RankingReason>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolutionDecision<'a> {
+    ranked: Vec<RankedCandidate<'a>>,
+    status: ResolutionStatus,
+    chosen: Option<&'a Symbol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolutionStatus {
+    Resolved,
+    Ambiguous,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolutionContext<'a> {
+    caller_parent: Option<&'a str>,
+    caller_namespace: Option<&'a str>,
+}
+
+pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call> {
+    let by_name = build_callable_index(symbols);
+    let parent_of = build_parent_index(symbols);
 
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
 
     for raw in raw_calls {
-        let candidates = match by_name.get(raw.called_name.as_str()) {
-            Some(c) => c,
-            None => continue,
+        let candidates = collect_candidates(raw, &by_name);
+        let context = ResolutionContext {
+            caller_parent: parent_of.get(raw.caller_id.as_str()).copied(),
+            caller_namespace: namespace_scope(raw.caller_id.as_str(), parent_of.get(raw.caller_id.as_str()).copied()),
         };
+        let decision = resolve_one(raw, candidates, context);
 
-        let callee = resolve_one(raw, candidates, &parent_of);
-
-        if let Some(callee) = callee {
+        if let Some(callee) = decision.chosen {
             if callee.id == raw.caller_id {
                 continue;
             }
@@ -48,25 +70,214 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
     calls
 }
 
+fn build_callable_index<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
+    let mut map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
+    for sym in symbols {
+        if sym.symbol_type == "function" || sym.symbol_type == "method" {
+            map.entry(sym.name.as_str()).or_default().push(sym);
+        }
+    }
+    map
+}
+
+fn build_parent_index<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, &'a str> {
+    symbols
+        .iter()
+        .filter_map(|s| s.parent_id.as_deref().map(|p| (s.id.as_str(), p)))
+        .collect()
+}
+
+fn collect_candidates<'a>(
+    raw: &RawCallSite,
+    by_name: &HashMap<&'a str, Vec<&'a Symbol>>,
+) -> Vec<&'a Symbol> {
+    by_name
+        .get(raw.called_name.as_str())
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn resolve_one<'a>(
     raw: &RawCallSite,
-    candidates: &[&'a Symbol],
-    parent_of: &HashMap<&str, &str>,
-) -> Option<&'a Symbol> {
-    if candidates.len() == 1 {
-        return Some(candidates[0]);
+    candidates: Vec<&'a Symbol>,
+    context: ResolutionContext<'_>,
+) -> ResolutionDecision<'a> {
+    if candidates.is_empty() {
+        return ResolutionDecision {
+            ranked: Vec::new(),
+            status: ResolutionStatus::Unresolved,
+            chosen: None,
+        };
     }
 
-    let caller_parent = parent_of.get(raw.caller_id.as_str()).copied();
+    let ranked = score_candidates(raw, candidates, context);
+    let (status, chosen) = tie_break(&ranked);
 
-    if let Some(parent) = caller_parent {
-        let sibling = candidates.iter().find(|s| s.parent_id.as_deref() == Some(parent));
-        if sibling.is_some() {
-            return sibling.copied();
+    ResolutionDecision {
+        ranked,
+        status,
+        chosen,
+    }
+}
+
+fn score_candidates<'a>(
+    raw: &RawCallSite,
+    candidates: Vec<&'a Symbol>,
+    context: ResolutionContext<'_>,
+) -> Vec<RankedCandidate<'a>> {
+    let mut ranked: Vec<RankedCandidate<'a>> = candidates
+        .into_iter()
+        .map(|symbol| {
+            let mut reasons = Vec::new();
+
+            if !matches!(raw.call_kind, RawCallKind::Qualified) {
+                if let Some(parent) = context.caller_parent {
+                    if symbol.parent_id.as_deref() == Some(parent) {
+                        reasons.push(RankingReason {
+                            kind: "same_parent",
+                            score: 100,
+                        });
+                    }
+                }
+            }
+
+            if let Some(namespace) = context.caller_namespace {
+                if candidate_namespace(symbol) == Some(namespace) {
+                    reasons.push(RankingReason {
+                        kind: "same_namespace",
+                        score: 50,
+                    });
+                }
+            }
+
+            for reason in receiver_aware_reasons(raw, symbol, context) {
+                reasons.push(reason);
+            }
+
+            for reason in arity_hint_reasons(raw, symbol) {
+                reasons.push(reason);
+            }
+
+            let score = reasons.iter().map(|reason| reason.score).sum();
+
+            RankedCandidate {
+                symbol,
+                score,
+                reasons,
+            }
+        })
+        .collect();
+
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.symbol.id.cmp(&right.symbol.id))
+    });
+
+    ranked
+}
+
+fn tie_break<'a>(ranked: &[RankedCandidate<'a>]) -> (ResolutionStatus, Option<&'a Symbol>) {
+    let first = match ranked.first() {
+        Some(first) => first,
+        None => return (ResolutionStatus::Unresolved, None),
+    };
+
+    let top_score = first.score;
+    let top_count = ranked.iter().take_while(|candidate| candidate.score == top_score).count();
+
+    if top_count > 1 {
+        return (ResolutionStatus::Ambiguous, None);
+    }
+
+    (ResolutionStatus::Resolved, Some(first.symbol))
+}
+
+fn receiver_aware_reasons(
+    raw: &RawCallSite,
+    symbol: &Symbol,
+    context: ResolutionContext<'_>,
+) -> Vec<RankingReason> {
+    let mut reasons = Vec::new();
+
+    match raw.call_kind {
+        RawCallKind::ThisPointerAccess => {
+            if let Some(parent) = context.caller_parent {
+                if symbol.parent_id.as_deref() == Some(parent) {
+                    reasons.push(RankingReason {
+                        kind: "this_receiver_match",
+                        score: 80,
+                    });
+                }
+            }
+        }
+        RawCallKind::MemberAccess | RawCallKind::PointerMemberAccess => {
+            if symbol.symbol_type == "method" {
+                reasons.push(RankingReason {
+                    kind: "member_call_prefers_method",
+                    score: 30,
+                });
+            }
+        }
+        RawCallKind::Qualified => {
+            if let Some(qualifier) = raw.qualifier.as_deref() {
+                match raw.qualifier_kind {
+                    Some(RawQualifierKind::Type) => {
+                        if symbol.parent_id.as_deref() == Some(qualifier)
+                            || type_name_of_parent(symbol.parent_id.as_deref()) == Some(qualifier)
+                        {
+                            reasons.push(RankingReason {
+                                kind: "qualified_type_match",
+                                score: 90,
+                            });
+                        }
+                    }
+                    Some(RawQualifierKind::Namespace) => {
+                        if candidate_namespace(symbol) == Some(qualifier) {
+                            reasons.push(RankingReason {
+                                kind: "qualified_namespace_match",
+                                score: 70,
+                            });
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        RawCallKind::Unqualified => {}
+    }
+
+    reasons
+}
+
+fn arity_hint_reasons(raw: &RawCallSite, symbol: &Symbol) -> Vec<RankingReason> {
+    let mut reasons = Vec::new();
+    let argument_count = match raw.argument_count {
+        Some(count) => count,
+        None => return reasons,
+    };
+
+    if let Some(parameter_count) = symbol.parameter_count {
+        if parameter_count == argument_count {
+            reasons.push(RankingReason {
+                kind: "parameter_count_match",
+                score: 60,
+            });
+        }
+        return reasons;
+    }
+
+    if let Some(signature_arity) = infer_parameter_count_from_signature(symbol.signature.as_deref()) {
+        if signature_arity == argument_count {
+            reasons.push(RankingReason {
+                kind: "signature_arity_hint",
+                score: 40,
+            });
         }
     }
 
-    candidates.first().copied()
+    reasons
 }
 
 pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
@@ -76,14 +287,7 @@ pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
         let entry = by_id.entry(sym.id.clone());
         entry
             .and_modify(|existing| {
-                if sym.file_path.ends_with(".cpp") && existing.file_path.ends_with(".h") {
-                    existing.file_path = sym.file_path.clone();
-                    existing.line = sym.line;
-                    existing.end_line = sym.end_line;
-                    if sym.signature.is_some() {
-                        existing.signature = sym.signature.clone();
-                    }
-                }
+                merge_symbol_variant(existing, sym);
             })
             .or_insert_with(|| sym.clone());
     }
@@ -91,21 +295,123 @@ pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
     by_id.into_values().collect()
 }
 
-pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], db: &Database) -> Vec<Call> {
-    let new_by_name: HashMap<&str, Vec<&Symbol>> = {
-        let mut map: HashMap<&str, Vec<&Symbol>> = HashMap::new();
-        for sym in new_symbols {
-            if sym.symbol_type == "function" || sym.symbol_type == "method" {
-                map.entry(sym.name.as_str()).or_default().push(sym);
+fn merge_symbol_variant(existing: &mut Symbol, incoming: &Symbol) {
+    merge_dual_locations(existing, incoming);
+
+    if incoming_replaces_representative(existing, incoming) {
+        existing.name = incoming.name.clone();
+        existing.qualified_name = incoming.qualified_name.clone();
+        existing.symbol_type = incoming.symbol_type.clone();
+        existing.file_path = incoming.file_path.clone();
+        existing.line = incoming.line;
+        existing.end_line = incoming.end_line;
+        existing.signature = incoming.signature.clone();
+        existing.parameter_count = incoming.parameter_count;
+        existing.scope_qualified_name = incoming.scope_qualified_name.clone();
+        existing.scope_kind = incoming.scope_kind.clone();
+        existing.symbol_role = incoming.symbol_role.clone();
+        existing.parent_id = incoming.parent_id.clone();
+    } else {
+        if existing.signature.is_none() && incoming.signature.is_some() {
+            existing.signature = incoming.signature.clone();
+        }
+        if existing.parameter_count.is_none() && incoming.parameter_count.is_some() {
+            existing.parameter_count = incoming.parameter_count;
+        }
+        if existing.scope_qualified_name.is_none() && incoming.scope_qualified_name.is_some() {
+            existing.scope_qualified_name = incoming.scope_qualified_name.clone();
+        }
+        if existing.scope_kind.is_none() && incoming.scope_kind.is_some() {
+            existing.scope_kind = incoming.scope_kind.clone();
+        }
+        if existing.parent_id.is_none() && incoming.parent_id.is_some() {
+            existing.parent_id = incoming.parent_id.clone();
+        }
+    }
+}
+
+fn merge_dual_locations(existing: &mut Symbol, incoming: &Symbol) {
+    if existing.declaration_file_path.is_none() && incoming.declaration_file_path.is_some() {
+        existing.declaration_file_path = incoming.declaration_file_path.clone();
+        existing.declaration_line = incoming.declaration_line;
+        existing.declaration_end_line = incoming.declaration_end_line;
+    }
+    if existing.definition_file_path.is_none() && incoming.definition_file_path.is_some() {
+        existing.definition_file_path = incoming.definition_file_path.clone();
+        existing.definition_line = incoming.definition_line;
+        existing.definition_end_line = incoming.definition_end_line;
+    }
+
+    match incoming.symbol_role.as_deref() {
+        Some("declaration") => {
+            if existing.declaration_file_path.is_none() {
+                existing.declaration_file_path = Some(incoming.file_path.clone());
+                existing.declaration_line = Some(incoming.line);
+                existing.declaration_end_line = Some(incoming.end_line);
             }
         }
-        map
-    };
+        Some("definition") => {
+            existing.definition_file_path = Some(incoming.file_path.clone());
+            existing.definition_line = Some(incoming.line);
+            existing.definition_end_line = Some(incoming.end_line);
+        }
+        Some("inline_definition") => {
+            if existing.definition_file_path.is_none() {
+                existing.definition_file_path = Some(incoming.file_path.clone());
+                existing.definition_line = Some(incoming.line);
+                existing.definition_end_line = Some(incoming.end_line);
+            }
+        }
+        _ => {
+            if incoming.file_path.ends_with(".h") && existing.declaration_file_path.is_none() {
+                existing.declaration_file_path = Some(incoming.file_path.clone());
+                existing.declaration_line = Some(incoming.line);
+                existing.declaration_end_line = Some(incoming.end_line);
+            }
+            if incoming.file_path.ends_with(".cpp") && existing.definition_file_path.is_none() {
+                existing.definition_file_path = Some(incoming.file_path.clone());
+                existing.definition_line = Some(incoming.line);
+                existing.definition_end_line = Some(incoming.end_line);
+            }
+        }
+    }
+}
 
-    let new_parent_of: HashMap<&str, &str> = new_symbols
-        .iter()
-        .filter_map(|s| s.parent_id.as_deref().map(|p| (s.id.as_str(), p)))
-        .collect();
+fn incoming_replaces_representative(existing: &Symbol, incoming: &Symbol) -> bool {
+    let existing_rank = representative_rank(existing);
+    let incoming_rank = representative_rank(incoming);
+
+    if incoming_rank != existing_rank {
+        return incoming_rank > existing_rank;
+    }
+
+    let existing_cpp = existing.file_path.ends_with(".cpp");
+    let incoming_cpp = incoming.file_path.ends_with(".cpp");
+    if incoming_cpp != existing_cpp {
+        return incoming_cpp;
+    }
+
+    false
+}
+
+fn representative_rank(symbol: &Symbol) -> i32 {
+    match symbol.symbol_role.as_deref() {
+        Some("definition") => 3,
+        Some("inline_definition") => 2,
+        Some("declaration") => 1,
+        _ => {
+            if symbol.file_path.ends_with(".cpp") {
+                2
+            } else {
+                1
+            }
+        }
+    }
+}
+
+pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], db: &Database) -> Vec<Call> {
+    let new_by_name = build_callable_index(new_symbols);
+    let new_parent_of = build_parent_index(new_symbols);
 
     let mut caller_ids: Vec<String> = raw_calls
         .iter()
@@ -126,50 +432,91 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
             .copied()
             .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|p| p.as_str()));
 
-        let mut candidates: Vec<Symbol> = Vec::new();
-        if let Some(local) = new_by_name.get(raw.called_name.as_str()) {
-            candidates.extend(local.iter().map(|s| (*s).clone()));
-        }
-        let db_candidates = db.find_symbols_by_name(&raw.called_name).unwrap_or_default();
-        for db_sym in db_candidates {
-            if !candidates.iter().any(|c| c.id == db_sym.id) {
-                candidates.push(db_sym);
-            }
-        }
-
-        if candidates.is_empty() {
-            continue;
-        }
-
-        let callee = if candidates.len() == 1 {
-            &candidates[0]
-        } else if let Some(parent) = caller_parent {
-            candidates.iter().find(|s| s.parent_id.as_deref() == Some(parent))
-                .unwrap_or(&candidates[0])
-        } else {
-            &candidates[0]
+        let owned_candidates = collect_candidates_with_db(raw, &new_by_name, db);
+        let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
+        let context = ResolutionContext {
+            caller_parent,
+            caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
         };
+        let decision = resolve_one(raw, candidates, context);
 
-        if callee.id == raw.caller_id {
-            continue;
-        }
-        let key = format!("{}->{}@{}:{}", raw.caller_id, callee.id, raw.file_path, raw.line);
-        if seen.insert(key) {
-            calls.push(Call {
-                caller_id: raw.caller_id.clone(),
-                callee_id: callee.id.clone(),
-                file_path: raw.file_path.clone(),
-                line: raw.line,
-            });
+        if let Some(callee) = decision.chosen {
+            if callee.id == raw.caller_id {
+                continue;
+            }
+            let key = format!("{}->{}@{}:{}", raw.caller_id, callee.id, raw.file_path, raw.line);
+            if seen.insert(key) {
+                calls.push(Call {
+                    caller_id: raw.caller_id.clone(),
+                    callee_id: callee.id.clone(),
+                    file_path: raw.file_path.clone(),
+                    line: raw.line,
+                });
+            }
         }
     }
 
     calls
 }
 
+fn candidate_namespace<'a>(symbol: &'a Symbol) -> Option<&'a str> {
+    namespace_scope(symbol.qualified_name.as_str(), symbol.parent_id.as_deref())
+}
+
+fn namespace_scope<'a>(qualified_id: &'a str, parent_id: Option<&'a str>) -> Option<&'a str> {
+    if let Some(parent) = parent_id {
+        return parent.rsplit_once("::").map(|(namespace, _)| namespace);
+    }
+
+    qualified_id.rsplit_once("::").map(|(namespace, _)| namespace)
+}
+
+fn type_name_of_parent(parent_id: Option<&str>) -> Option<&str> {
+    parent_id
+        .and_then(|parent| parent.rsplit_once("::").map(|(_, type_name)| type_name).or(Some(parent)))
+}
+
+fn infer_parameter_count_from_signature(signature: Option<&str>) -> Option<usize> {
+    let signature = signature?;
+    let start = signature.find('(')?;
+    let end = signature.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+
+    let params = signature[start + 1..end].trim();
+    if params.is_empty() || params == "void" {
+        return Some(0);
+    }
+
+    Some(params.split(',').count())
+}
+
+fn collect_candidates_with_db<'a>(
+    raw: &RawCallSite,
+    new_by_name: &HashMap<&'a str, Vec<&'a Symbol>>,
+    db: &Database,
+) -> Vec<Symbol> {
+    let mut candidates: Vec<Symbol> = collect_candidates(raw, new_by_name)
+        .into_iter()
+        .cloned()
+        .collect();
+    let db_candidates = db.find_symbols_by_name(&raw.called_name).unwrap_or_default();
+
+    for db_sym in db_candidates {
+        if !candidates.iter().any(|candidate| candidate.id == db_sym.id) {
+            candidates.push(db_sym);
+        }
+    }
+
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{RawCallKind, RawQualifierKind};
+    use crate::parser::parse_cpp_file;
     use std::path::Path;
 
     fn make_sym(id: &str, name: &str, stype: &str, parent: Option<&str>) -> Symbol {
@@ -182,8 +529,80 @@ mod tests {
             line: 1,
             end_line: 1,
             signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
             parent_id: parent.map(|p| p.to_string()),
         }
+    }
+
+    fn make_raw(caller_id: &str, called_name: &str) -> RawCallSite {
+        RawCallSite {
+            caller_id: caller_id.to_string(),
+            called_name: called_name.to_string(),
+            call_kind: RawCallKind::Unqualified,
+            argument_count: None,
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        }
+    }
+
+    fn make_member_raw(caller_id: &str, called_name: &str, call_kind: RawCallKind) -> RawCallSite {
+        RawCallSite {
+            caller_id: caller_id.to_string(),
+            called_name: called_name.to_string(),
+            call_kind,
+            argument_count: None,
+            receiver: Some("this".to_string()),
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        }
+    }
+
+    fn resolve_fixture_source(path: &str, source: &str) -> (Vec<Symbol>, Vec<RawCallSite>, Vec<Call>) {
+        let parsed = parse_cpp_file(path, source).unwrap();
+        let calls = resolve_calls(&parsed.raw_calls, &parsed.symbols);
+        (parsed.symbols, parsed.raw_calls, calls)
+    }
+
+    fn resolve_fixture_decision<'a>(
+        raw_calls: &'a [RawCallSite],
+        symbols: &'a [Symbol],
+        caller_id: &str,
+        called_name: &str,
+        qualifier: Option<&str>,
+    ) -> ResolutionDecision<'a> {
+        let raw = raw_calls
+            .iter()
+            .find(|raw| {
+                raw.caller_id == caller_id
+                    && raw.called_name == called_name
+                    && raw.qualifier.as_deref() == qualifier
+            })
+            .unwrap();
+        let by_name = build_callable_index(symbols);
+        let parent_of = build_parent_index(symbols);
+        let candidates = collect_candidates(raw, &by_name);
+        let caller_parent = parent_of.get(raw.caller_id.as_str()).copied();
+        let context = ResolutionContext {
+            caller_parent,
+            caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
+        };
+        resolve_one(raw, candidates, context)
     }
 
     #[test]
@@ -192,13 +611,7 @@ mod tests {
             make_sym("main", "main", "function", None),
             make_sym("foo", "foo", "function", None),
         ];
-        let raw = vec![RawCallSite {
-            caller_id: "main".to_string(),
-            called_name: "foo".to_string(),
-            receiver: None,
-            file_path: "test.cpp".to_string(),
-            line: 5,
-        }];
+        let raw = vec![make_raw("main", "foo")];
         let calls = resolve_calls(&raw, &symbols);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee_id, "foo");
@@ -210,10 +623,7 @@ mod tests {
             make_sym("main", "main", "function", None),
             make_sym("foo", "foo", "function", None),
         ];
-        let raw = vec![
-            RawCallSite { caller_id: "main".into(), called_name: "foo".into(), receiver: None, file_path: "t.cpp".into(), line: 5 },
-            RawCallSite { caller_id: "main".into(), called_name: "foo".into(), receiver: None, file_path: "t.cpp".into(), line: 5 },
-        ];
+        let raw = vec![make_raw("main", "foo"), make_raw("main", "foo")];
         let calls = resolve_calls(&raw, &symbols);
         assert_eq!(calls.len(), 1);
     }
@@ -221,13 +631,7 @@ mod tests {
     #[test]
     fn skips_self_calls() {
         let symbols = vec![make_sym("foo", "foo", "function", None)];
-        let raw = vec![RawCallSite {
-            caller_id: "foo".into(),
-            called_name: "foo".into(),
-            receiver: None,
-            file_path: "t.cpp".into(),
-            line: 2,
-        }];
+        let raw = vec![make_raw("foo", "foo")];
         let calls = resolve_calls(&raw, &symbols);
         assert_eq!(calls.len(), 0);
     }
@@ -236,20 +640,164 @@ mod tests {
     fn merge_prefers_cpp_over_h() {
         let syms = vec![
             Symbol {
-                id: "Foo::Bar".into(), name: "Bar".into(), qualified_name: "Foo::Bar".into(),
-                symbol_type: "method".into(), file_path: "foo.h".into(),
-                line: 5, end_line: 5, signature: Some("void Bar()".into()), parent_id: Some("Foo".into()),
+                id: "Foo::Bar".into(),
+                name: "Bar".into(),
+                qualified_name: "Foo::Bar".into(),
+                symbol_type: "method".into(),
+                file_path: "foo.h".into(),
+                line: 5,
+                end_line: 5,
+                signature: Some("void Bar()".into()),
+                parameter_count: None,
+                scope_qualified_name: None,
+                scope_kind: None,
+                symbol_role: Some("declaration".into()),
+                declaration_file_path: Some("foo.h".into()),
+                declaration_line: Some(5),
+                declaration_end_line: Some(5),
+                definition_file_path: None,
+                definition_line: None,
+                definition_end_line: None,
+                parent_id: Some("Foo".into()),
             },
             Symbol {
-                id: "Foo::Bar".into(), name: "Bar".into(), qualified_name: "Foo::Bar".into(),
-                symbol_type: "method".into(), file_path: "foo.cpp".into(),
-                line: 10, end_line: 15, signature: Some("void Foo::Bar()".into()), parent_id: Some("Foo".into()),
+                id: "Foo::Bar".into(),
+                name: "Bar".into(),
+                qualified_name: "Foo::Bar".into(),
+                symbol_type: "method".into(),
+                file_path: "foo.cpp".into(),
+                line: 10,
+                end_line: 15,
+                signature: Some("void Foo::Bar()".into()),
+                parameter_count: None,
+                scope_qualified_name: None,
+                scope_kind: None,
+                symbol_role: Some("definition".into()),
+                declaration_file_path: None,
+                declaration_line: None,
+                declaration_end_line: None,
+                definition_file_path: Some("foo.cpp".into()),
+                definition_line: Some(10),
+                definition_end_line: Some(15),
+                parent_id: Some("Foo".into()),
             },
         ];
         let merged = merge_symbols(&syms);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].file_path, "foo.cpp");
         assert_eq!(merged[0].line, 10);
+        assert_eq!(merged[0].symbol_role.as_deref(), Some("definition"));
+        assert_eq!(merged[0].declaration_file_path.as_deref(), Some("foo.h"));
+        assert_eq!(merged[0].definition_file_path.as_deref(), Some("foo.cpp"));
+    }
+
+    #[test]
+    fn merge_combines_declaration_and_definition_locations() {
+        let declaration = Symbol {
+            id: "Game::Worker::Update".into(),
+            name: "Update".into(),
+            qualified_name: "Game::Worker::Update".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.h".into(),
+            line: 4,
+            end_line: 4,
+            signature: Some("void Update()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("worker.h".into()),
+            declaration_line: Some(4),
+            declaration_end_line: Some(4),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Game::Worker".into()),
+        };
+        let definition = Symbol {
+            id: "Game::Worker::Update".into(),
+            name: "Update".into(),
+            qualified_name: "Game::Worker::Update".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.cpp".into(),
+            line: 12,
+            end_line: 18,
+            signature: Some("void Worker::Update()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: Some("worker.cpp".into()),
+            definition_line: Some(12),
+            definition_end_line: Some(18),
+            parent_id: Some("Game::Worker".into()),
+        };
+
+        let merged = merge_symbols(&[declaration, definition]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "worker.cpp");
+        assert_eq!(merged[0].line, 12);
+        assert_eq!(merged[0].declaration_file_path.as_deref(), Some("worker.h"));
+        assert_eq!(merged[0].declaration_line, Some(4));
+        assert_eq!(merged[0].definition_file_path.as_deref(), Some("worker.cpp"));
+        assert_eq!(merged[0].definition_line, Some(12));
+    }
+
+    #[test]
+    fn merge_prefers_definition_over_inline_definition() {
+        let inline = Symbol {
+            id: "Game::Worker::Tick".into(),
+            name: "Tick".into(),
+            qualified_name: "Game::Worker::Tick".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.h".into(),
+            line: 6,
+            end_line: 8,
+            signature: Some("void Tick()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("inline_definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: Some("worker.h".into()),
+            definition_line: Some(6),
+            definition_end_line: Some(8),
+            parent_id: Some("Game::Worker".into()),
+        };
+        let definition = Symbol {
+            id: "Game::Worker::Tick".into(),
+            name: "Tick".into(),
+            qualified_name: "Game::Worker::Tick".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.cpp".into(),
+            line: 20,
+            end_line: 24,
+            signature: Some("void Worker::Tick()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: Some("worker.cpp".into()),
+            definition_line: Some(20),
+            definition_end_line: Some(24),
+            parent_id: Some("Game::Worker".into()),
+        };
+
+        let merged = merge_symbols(&[inline, definition]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "worker.cpp");
+        assert_eq!(merged[0].symbol_role.as_deref(), Some("definition"));
+        assert_eq!(merged[0].definition_file_path.as_deref(), Some("worker.cpp"));
     }
 
     #[test]
@@ -258,22 +806,480 @@ mod tests {
         db.write_symbols(&[
             make_sym("Alpha::Caller", "Caller", "method", Some("Alpha")),
             make_sym("Alpha::Target", "Target", "method", Some("Alpha")),
-        ]).unwrap();
+        ])
+        .unwrap();
 
-        let new_symbols = vec![
-            make_sym("Beta::Target", "Target", "method", Some("Beta")),
-        ];
+        let new_symbols = vec![make_sym("Beta::Target", "Target", "method", Some("Beta"))];
 
-        let raw = vec![RawCallSite {
-            caller_id: "Alpha::Caller".into(),
-            called_name: "Target".into(),
-            receiver: None,
-            file_path: "alpha.cpp".into(),
-            line: 7,
-        }];
+        let raw = vec![make_raw("Alpha::Caller", "Target")];
 
         let calls = resolve_calls_with_db(&raw, &new_symbols, &db);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee_id, "Alpha::Target");
+    }
+
+    #[test]
+    fn same_parent_score_is_visible_in_ranking_decision() {
+        let raw = make_raw("Alpha::Caller", "Target");
+        let alpha = make_sym("Alpha::Target", "Target", "method", Some("Alpha"));
+        let beta = make_sym("Beta::Target", "Target", "method", Some("Beta"));
+        let candidates = vec![&beta, &alpha];
+        let context = ResolutionContext {
+            caller_parent: Some("Alpha"),
+            caller_namespace: None,
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Alpha::Target"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert_eq!(decision.ranked.len(), 2);
+        assert_eq!(decision.ranked[0].symbol.id, "Alpha::Target");
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "same_parent" && reason.score == 100));
+    }
+
+    #[test]
+    fn same_namespace_score_is_visible_in_ranking_decision() {
+        let raw = make_raw("Gameplay::Tick", "Update");
+        let gameplay = make_sym("Gameplay::Update", "Update", "function", None);
+        let ui = make_sym("UI::Update", "Update", "function", None);
+        let candidates = vec![&ui, &gameplay];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Gameplay"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Gameplay::Update"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert_eq!(decision.ranked[0].symbol.id, "Gameplay::Update");
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "same_namespace" && reason.score == 50));
+    }
+
+    #[test]
+    fn same_parent_outranks_same_namespace() {
+        let raw = make_raw("Game::Player::Process", "Run");
+        let sibling = make_sym("Game::Player::Run", "Run", "method", Some("Game::Player"));
+        let same_namespace = make_sym("Game::Enemy::Run", "Run", "method", Some("Game::Enemy"));
+        let candidates = vec![&same_namespace, &sibling];
+        let context = ResolutionContext {
+            caller_parent: Some("Game::Player"),
+            caller_namespace: Some("Game"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Game::Player::Run"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert_eq!(decision.ranked[0].score, 150);
+        assert_eq!(decision.ranked[1].score, 50);
+    }
+
+    #[test]
+    fn this_receiver_match_is_visible_in_ranking_decision() {
+        let raw = make_member_raw("Game::Player::Process", "Run", RawCallKind::ThisPointerAccess);
+        let sibling = make_sym("Game::Player::Run", "Run", "method", Some("Game::Player"));
+        let other = make_sym("Game::Enemy::Run", "Run", "method", Some("Game::Enemy"));
+        let candidates = vec![&other, &sibling];
+        let context = ResolutionContext {
+            caller_parent: Some("Game::Player"),
+            caller_namespace: Some("Game"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Game::Player::Run"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "this_receiver_match" && reason.score == 80));
+    }
+
+    #[test]
+    fn member_call_prefers_method_over_free_function() {
+        let raw = RawCallSite {
+            caller_id: "Game::Tick".to_string(),
+            called_name: "Update".to_string(),
+            call_kind: RawCallKind::MemberAccess,
+            argument_count: Some(0),
+            receiver: Some("actor".to_string()),
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let method = make_sym("Game::Actor::Update", "Update", "method", Some("Game::Actor"));
+        let function = make_sym("Game::Update", "Update", "function", None);
+        let candidates = vec![&function, &method];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Game"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Game::Actor::Update"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "member_call_prefers_method" && reason.score == 30));
+    }
+
+    #[test]
+    fn qualified_type_match_is_visible_in_ranking_decision() {
+        let raw = RawCallSite {
+            caller_id: "Game::Tick".to_string(),
+            called_name: "Update".to_string(),
+            call_kind: RawCallKind::Qualified,
+            argument_count: Some(0),
+            receiver: None,
+            receiver_kind: None,
+            qualifier: Some("Worker".to_string()),
+            qualifier_kind: Some(RawQualifierKind::Type),
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let method = make_sym("Game::Worker::Update", "Update", "method", Some("Game::Worker"));
+        let function = make_sym("Game::Update", "Update", "function", None);
+        let candidates = vec![&function, &method];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Game"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Game::Worker::Update"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "qualified_type_match" && reason.score == 90));
+    }
+
+    #[test]
+    fn qualified_namespace_match_is_visible_in_ranking_decision() {
+        let raw = RawCallSite {
+            caller_id: "AI::Controller::Update".to_string(),
+            called_name: "Update".to_string(),
+            call_kind: RawCallKind::Qualified,
+            argument_count: Some(0),
+            receiver: None,
+            receiver_kind: None,
+            qualifier: Some("Gameplay".to_string()),
+            qualifier_kind: Some(RawQualifierKind::Namespace),
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let gameplay = make_sym("Gameplay::Update", "Update", "function", None);
+        let ui = make_sym("UI::Update", "Update", "function", None);
+        let candidates = vec![&ui, &gameplay];
+        let context = ResolutionContext {
+            caller_parent: Some("AI::Controller"),
+            caller_namespace: Some("AI"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Gameplay::Update"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "qualified_namespace_match" && reason.score == 70));
+    }
+
+    #[test]
+    fn explicit_qualifier_overrides_same_parent_locality() {
+        let raw = RawCallSite {
+            caller_id: "AI::Controller::Update".to_string(),
+            called_name: "Update".to_string(),
+            call_kind: RawCallKind::Qualified,
+            argument_count: Some(0),
+            receiver: None,
+            receiver_kind: None,
+            qualifier: Some("Gameplay".to_string()),
+            qualifier_kind: Some(RawQualifierKind::Namespace),
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let self_method = make_sym("AI::Controller::Update", "Update", "method", Some("AI::Controller"));
+        let gameplay = make_sym("Gameplay::Update", "Update", "function", None);
+        let candidates = vec![&self_method, &gameplay];
+        let context = ResolutionContext {
+            caller_parent: Some("AI::Controller"),
+            caller_namespace: Some("AI"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Gameplay::Update"));
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .all(|reason| reason.kind != "same_parent"));
+    }
+
+    #[test]
+    fn parameter_count_match_is_visible_in_ranking_decision() {
+        let raw = RawCallSite {
+            caller_id: "Math::Tick".to_string(),
+            called_name: "Blend".to_string(),
+            call_kind: RawCallKind::Unqualified,
+            argument_count: Some(2),
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let one = Symbol {
+            parameter_count: Some(1),
+            signature: Some("void Blend(int a)".to_string()),
+            ..make_sym("Math::Blend#1", "Blend", "function", None)
+        };
+        let two = Symbol {
+            parameter_count: Some(2),
+            signature: Some("void Blend(float a, float b)".to_string()),
+            ..make_sym("Math::Blend#2", "Blend", "function", None)
+        };
+        let candidates = vec![&one, &two];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Math"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Math::Blend#2"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "parameter_count_match" && reason.score == 60));
+    }
+
+    #[test]
+    fn signature_arity_hint_is_used_when_parameter_count_is_missing() {
+        let raw = RawCallSite {
+            caller_id: "Math::Tick".to_string(),
+            called_name: "Blend".to_string(),
+            call_kind: RawCallKind::Unqualified,
+            argument_count: Some(2),
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "test.cpp".to_string(),
+            line: 5,
+        };
+        let one = Symbol {
+            signature: Some("void Blend(int a)".to_string()),
+            ..make_sym("Math::Blend#1", "Blend", "function", None)
+        };
+        let two = Symbol {
+            signature: Some("void Blend(float a, float b)".to_string()),
+            ..make_sym("Math::Blend#2", "Blend", "function", None)
+        };
+        let candidates = vec![&one, &two];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Math"),
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Math::Blend#2"));
+        assert_eq!(decision.status, ResolutionStatus::Resolved);
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "signature_arity_hint" && reason.score == 40));
+    }
+
+    #[test]
+    fn no_candidates_is_unresolved() {
+        let raw = make_raw("Game::Tick", "Missing");
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: Some("Game"),
+        };
+
+        let decision = resolve_one(&raw, Vec::new(), context);
+
+        assert_eq!(decision.status, ResolutionStatus::Unresolved);
+        assert!(decision.chosen.is_none());
+        assert!(decision.ranked.is_empty());
+    }
+
+    #[test]
+    fn top_score_tie_is_ambiguous() {
+        let raw = make_raw("Game::Tick", "Update");
+        let left = make_sym("Gameplay::Update", "Update", "function", None);
+        let right = make_sym("UI::Update", "Update", "function", None);
+        let candidates = vec![&left, &right];
+        let context = ResolutionContext {
+            caller_parent: None,
+            caller_namespace: None,
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+
+        assert_eq!(decision.status, ResolutionStatus::Ambiguous);
+        assert!(decision.chosen.is_none());
+        assert_eq!(decision.ranked.len(), 2);
+        assert_eq!(decision.ranked[0].score, decision.ranked[1].score);
+    }
+
+    #[test]
+    fn ambiguous_edges_are_not_emitted() {
+        let symbols = vec![
+            make_sym("Gameplay::Update", "Update", "function", None),
+            make_sym("UI::Update", "Update", "function", None),
+        ];
+        let raw = vec![make_raw("Game::Tick", "Update")];
+
+        let calls = resolve_calls(&raw, &symbols);
+
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn sibling_methods_fixture_prefers_containing_class_method() {
+        let source = include_str!("../../samples/ambiguity/src/sibling_methods.cpp");
+        let (symbols, raw_calls, calls) =
+            resolve_fixture_source("samples/ambiguity/src/sibling_methods.cpp", source);
+
+        let player_decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "Game::Player::Process",
+            "Run",
+            None,
+        );
+        assert_eq!(player_decision.status, ResolutionStatus::Resolved);
+        assert_eq!(
+            player_decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("Game::Player::Run")
+        );
+
+        let enemy_decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "Game::Enemy::Process",
+            "Run",
+            None,
+        );
+        assert_eq!(enemy_decision.status, ResolutionStatus::Resolved);
+        assert_eq!(
+            enemy_decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("Game::Enemy::Run")
+        );
+
+        assert!(calls.iter().any(|call| {
+            call.caller_id == "Game::Player::Process" && call.callee_id == "Game::Player::Run"
+        }));
+        assert!(calls.iter().any(|call| {
+            call.caller_id == "Game::Enemy::Process" && call.callee_id == "Game::Enemy::Run"
+        }));
+    }
+
+    #[test]
+    fn namespace_dupes_fixture_resolves_qualified_targets() {
+        let source = include_str!("../../samples/ambiguity/src/namespace_dupes.cpp");
+        let (symbols, raw_calls, calls) =
+            resolve_fixture_source("samples/ambiguity/src/namespace_dupes.cpp", source);
+
+        let gameplay_decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "AI::Controller::Update",
+            "Update",
+            Some("Gameplay"),
+        );
+        assert_eq!(gameplay_decision.status, ResolutionStatus::Resolved);
+        assert_eq!(
+            gameplay_decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("Gameplay::Update")
+        );
+
+        let ui_decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "AI::Controller::Update",
+            "Update",
+            Some("UI"),
+        );
+        assert_eq!(ui_decision.status, ResolutionStatus::Resolved);
+        assert_eq!(
+            ui_decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("UI::Update")
+        );
+
+        assert!(calls.iter().any(|call| {
+            call.caller_id == "AI::Controller::Update" && call.callee_id == "Gameplay::Update"
+        }));
+        assert!(calls.iter().any(|call| {
+            call.caller_id == "AI::Controller::Update" && call.callee_id == "UI::Update"
+        }));
+    }
+
+    #[test]
+    fn split_update_fixture_resolves_this_and_pointer_member_calls() {
+        let source = include_str!("../../samples/ambiguity/src/split_update.cpp");
+        let (symbols, raw_calls, calls) =
+            resolve_fixture_source("samples/ambiguity/src/split_update.cpp", source);
+
+        let this_decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "Game::Worker::Tick",
+            "Update",
+            None,
+        );
+        assert_eq!(this_decision.status, ResolutionStatus::Resolved);
+        assert_eq!(
+            this_decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("Game::Worker::Update")
+        );
+
+        let matched_edges: Vec<&Call> = calls
+            .iter()
+            .filter(|call| {
+                call.caller_id == "Game::Worker::Tick" && call.callee_id == "Game::Worker::Update"
+            })
+            .collect();
+        assert_eq!(matched_edges.len(), 2);
+    }
+
+    #[test]
+    fn overloads_fixture_keeps_same_arity_namespace_call_ambiguous() {
+        let source = include_str!("../../samples/ambiguity/src/overloads.cpp");
+        let (symbols, raw_calls, calls) =
+            resolve_fixture_source("samples/ambiguity/src/overloads.cpp", source);
+
+        let decision = resolve_fixture_decision(
+            &raw_calls,
+            &symbols,
+            "Renderer::Blend",
+            "Blend",
+            Some("Math"),
+        );
+        assert_eq!(decision.status, ResolutionStatus::Ambiguous);
+        assert!(decision.chosen.is_none());
+
+        assert!(calls.is_empty());
     }
 }

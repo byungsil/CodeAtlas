@@ -45,6 +45,11 @@ export class JsonStore {
     return data.symbols.find((s) => s.id === id);
   }
 
+  getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
+    const data = this.load();
+    return data.symbols.find((s) => s.qualifiedName === qualifiedName);
+  }
+
   getSymbolsByType(type: string): Symbol[] {
     const data = this.load();
     return data.symbols.filter((s) => s.type === type);
