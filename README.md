@@ -1,5 +1,9 @@
 # CodeAtlas
 
+[![GitHub](https://img.shields.io/badge/GitHub-byungsil%2FCodeAtlas-blue)](https://github.com/byungsil/CodeAtlas)
+
+**Repository:** https://github.com/byungsil/CodeAtlas.git
+
 CodeAtlas is a local AI-powered code intelligence system for large-scale C++ codebases. It indexes source code with Tree-sitter and serves structured queries through MCP, so AI agents can reason about code without scanning raw files.
 
 ## Architecture
@@ -23,6 +27,13 @@ AI Agents / Web Dashboard
 - **npm** - for package management
 
 ## Quick Start
+
+### 0. Clone the repository
+
+```bash
+git clone https://github.com/byungsil/CodeAtlas.git
+cd CodeAtlas
+```
 
 ### 1. Build the indexer
 
