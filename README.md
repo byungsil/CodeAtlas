@@ -117,8 +117,11 @@ All configuration is through environment variables, set in the MCP client config
 ## Indexer CLI
 
 ```
+codeatlas-indexer --help                         # show usage
 codeatlas-indexer <workspace-root>              # incremental index
+codeatlas-indexer <workspace-root> --verbose     # incremental index with per-file logs
 codeatlas-indexer <workspace-root> --full        # full rebuild
+codeatlas-indexer <workspace-root> --full --verbose  # full rebuild with per-file logs
 codeatlas-indexer <workspace-root> --full --json  # full rebuild + JSON output
 codeatlas-indexer watch <workspace-root>          # watch mode
 ```

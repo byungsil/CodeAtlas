@@ -45,7 +45,7 @@ fn is_in_codeatlas_dir(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == DATA_DIR_NAME)
 }
 
-pub fn watch(workspace_root: &Path) -> Result<(), String> {
+pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     let workspace_root = workspace_root
         .canonicalize()
         .map_err(|e| format!("Failed to resolve workspace root: {}", e))?;
@@ -63,10 +63,10 @@ pub fn watch(workspace_root: &Path) -> Result<(), String> {
         let db = Database::open(&db_path).map_err(|e| format!("DB open: {}", e))?;
         if db.has_data() {
             println!("Existing index found, running incremental catch-up...");
-            run_incremental_index(&workspace_root, &db_path)?;
+            run_incremental_index(&workspace_root, &db_path, verbose)?;
         } else {
             println!("No existing index, running full initial index...");
-            run_full_index(&workspace_root, &db_path)?;
+            run_full_index(&workspace_root, &db_path, verbose)?;
         }
     }
 
@@ -122,7 +122,7 @@ pub fn watch(workspace_root: &Path) -> Result<(), String> {
                 changed.len()
             );
 
-            if let Err(e) = run_incremental_index(&workspace_root, &db_path) {
+            if let Err(e) = run_incremental_index(&workspace_root, &db_path, verbose) {
                 eprintln!("  Indexing error: {}", e);
             }
         }
@@ -131,7 +131,7 @@ pub fn watch(workspace_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run_full_index(workspace_root: &Path, db_path: &Path) -> Result<(), String> {
+fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
     let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
     let files = discovery::find_cpp_files(workspace_root);
     let all_relative: Vec<String> = files
@@ -142,7 +142,7 @@ fn run_full_index(workspace_root: &Path, db_path: &Path) -> Result<(), String> {
     println!("Initial index: {} files", all_relative.len());
     let start = Instant::now();
 
-    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, &all_relative);
+    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, &all_relative, verbose);
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
     db.write_all(&raw_symbols, &symbols, &calls, &file_records)
@@ -157,7 +157,7 @@ fn run_full_index(workspace_root: &Path, db_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run_incremental_index(workspace_root: &Path, db_path: &Path) -> Result<(), String> {
+fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
     let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
     let files = discovery::find_cpp_files(workspace_root);
     let all_relative: Vec<String> = files
@@ -176,7 +176,7 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path) -> Result<(), St
     let start = Instant::now();
 
     let (parsed_symbols, new_raw_calls, new_files) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index)?
+        parse_files_strict(workspace_root, &plan.to_index, verbose)?
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
@@ -242,7 +242,10 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path) -> Result<(), St
                 continue;
             }
 
-            let (result, _) = parse_file_strict(workspace_root, path)?;
+            let (result, _, lossy) = parse_file_strict(workspace_root, path)?;
+            if verbose && lossy {
+                println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
+            }
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("DB delete calls: {}", e))?;
             all_raw_calls.extend(result.raw_calls);

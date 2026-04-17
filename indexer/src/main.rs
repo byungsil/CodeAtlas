@@ -19,15 +19,22 @@ use indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return;
+    }
+
     let watch_mode = args.get(1).map(|s| s.as_str()) == Some("watch");
     let full_mode = args.iter().any(|a| a == "--full");
     let json_mode = args.iter().any(|a| a == "--json");
+    let verbose_mode = args.iter().any(|a| a == "--verbose");
     let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-') && a.as_str() != "watch").collect();
 
     let workspace_root = match positional.first() {
         Some(p) => PathBuf::from(p),
         None => {
             eprintln!("Usage: codeatlas-indexer [watch] <workspace-root> [--full] [--json]");
+            eprintln!("Try `codeatlas-indexer --help` for more information.");
             std::process::exit(1);
         }
     };
@@ -38,7 +45,7 @@ fn main() {
     }
 
     if watch_mode {
-        if let Err(e) = watcher::watch(&workspace_root) {
+        if let Err(e) = watcher::watch(&workspace_root, verbose_mode) {
             eprintln!("Watch error: {}", e);
             std::process::exit(1);
         }
@@ -63,7 +70,7 @@ fn main() {
 
     if full_mode {
         println!("Mode: full rebuild");
-        run_full(&db, &workspace_root, &all_relative, json_mode, &data_dir);
+        run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
     } else {
         let stored = db.read_file_records().unwrap_or_default();
         let plan = incremental::plan(&all_relative, &stored, &workspace_root);
@@ -80,7 +87,7 @@ fn main() {
             return;
         }
 
-        if let Err(e) = run_incremental(&db, &workspace_root, &plan) {
+        if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
             eprintln!("Incremental indexing failed: {}", e);
             std::process::exit(1);
         }
@@ -91,14 +98,40 @@ fn main() {
     println!("  Output: {}", data_dir.display());
 }
 
+fn print_help() {
+    println!("CodeAtlas Indexer");
+    println!();
+    println!("Usage:");
+    println!("  codeatlas-indexer <workspace-root>");
+    println!("  codeatlas-indexer <workspace-root> --full");
+    println!("  codeatlas-indexer <workspace-root> --full --json");
+    println!("  codeatlas-indexer watch <workspace-root>");
+    println!("  codeatlas-indexer --help");
+    println!();
+    println!("Modes:");
+    println!("  incremental  Re-index only changed files and remove deleted files");
+    println!("  --full       Rebuild the entire index from scratch");
+    println!("  watch        Monitor the workspace and re-index on file changes");
+    println!();
+    println!("Options:");
+    println!("  --verbose    Print per-file indexing logs and lossy-read warnings");
+    println!("  --json       Write JSON snapshots alongside the SQLite database");
+    println!("  -h, --help   Show this help message");
+    println!();
+    println!("Output:");
+    println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
+    println!("  Supported file extensions: .cpp, .h, .hpp, .cc, .cxx, .inl, .inc");
+}
+
 fn run_full(
     db: &storage::Database,
     workspace_root: &Path,
     all_relative: &[String],
     json_mode: bool,
+    verbose: bool,
     data_dir: &Path,
 ) {
-    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, all_relative);
+    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, all_relative, verbose);
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
 
@@ -119,9 +152,10 @@ fn run_incremental(
     db: &storage::Database,
     workspace_root: &Path,
     plan: &incremental::IncrementalPlan,
+    verbose: bool,
 ) -> Result<(), String> {
     let (parsed_symbols, new_raw_calls, new_files) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index)?
+        parse_files_strict(workspace_root, &plan.to_index, verbose)?
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
@@ -189,7 +223,10 @@ fn run_incremental(
                 continue;
             }
 
-            let (result, _) = parse_file_strict(workspace_root, path)?;
+            let (result, _, lossy) = parse_file_strict(workspace_root, path)?;
+            if verbose && lossy {
+                println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
+            }
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
             all_calls.extend(result.raw_calls);

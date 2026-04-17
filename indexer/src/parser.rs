@@ -26,6 +26,13 @@ impl Ctx {
     }
 }
 
+enum WalkItem<'a> {
+    Enter(Node<'a>),
+    EnterClassMember(Node<'a>, String),
+    ExitNamespace,
+    ExitClass,
+}
+
 pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, String> {
     let mut parser = Parser::new();
     let lang = tree_sitter_cpp::LANGUAGE;
@@ -46,7 +53,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         namespace_ids: HashSet::new(),
     };
 
-    visit_node(tree.root_node(), &mut ctx);
+    visit_tree(tree.root_node(), &mut ctx);
 
     Ok(ParseResult {
         symbols: ctx.symbols,
@@ -54,27 +61,38 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     })
 }
 
-fn visit_node(node: Node, ctx: &mut Ctx) {
-    match node.kind() {
-        "namespace_definition" => visit_namespace(node, ctx),
-        "class_specifier" => visit_class(node, ctx, "class"),
-        "struct_specifier" => visit_class(node, ctx, "struct"),
-        "enum_specifier" => visit_enum(node, ctx),
-        "function_definition" => visit_function_definition(node, ctx),
-        "declaration" => visit_declaration(node, ctx),
-        "template_declaration" => visit_template_declaration(node, ctx),
-        _ => visit_children(node, ctx),
+fn visit_tree(root: Node, ctx: &mut Ctx) {
+    let mut stack = vec![WalkItem::Enter(root)];
+
+    while let Some(item) = stack.pop() {
+        match item {
+            WalkItem::Enter(node) => match node.kind() {
+                "namespace_definition" => enter_namespace(node, ctx, &mut stack),
+                "class_specifier" => enter_class(node, ctx, "class", &mut stack),
+                "struct_specifier" => enter_class(node, ctx, "struct", &mut stack),
+                "enum_specifier" => visit_enum(node, ctx),
+                "function_definition" => visit_function_definition(node, ctx),
+                "declaration" => visit_declaration(node, ctx),
+                "template_declaration" => enter_template_declaration(node, &mut stack),
+                _ => push_children(node, &mut stack),
+            },
+            WalkItem::EnterClassMember(node, parent_id) => match node.kind() {
+                "field_declaration" => visit_field_declaration(node, ctx, &parent_id),
+                "function_definition" => visit_inline_method(node, ctx, &parent_id),
+                "declaration" => visit_member_declaration(node, ctx, &parent_id),
+                "class_specifier" => enter_class(node, ctx, "class", &mut stack),
+                "struct_specifier" => enter_class(node, ctx, "struct", &mut stack),
+                "template_declaration" => enter_template_declaration_in_class(node, parent_id, &mut stack),
+                _ => {}
+            },
+            WalkItem::ExitNamespace | WalkItem::ExitClass => {
+                ctx.ns_stack.pop();
+            }
+        }
     }
 }
 
-fn visit_children(node: Node, ctx: &mut Ctx) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        visit_node(child, ctx);
-    }
-}
-
-fn visit_namespace(node: Node, ctx: &mut Ctx) {
+fn enter_namespace<'a>(node: Node<'a>, ctx: &mut Ctx, stack: &mut Vec<WalkItem<'a>>) {
     let name_node = node.child_by_field_name("name");
     let body_node = node.child_by_field_name("body");
 
@@ -83,15 +101,12 @@ fn visit_namespace(node: Node, ctx: &mut Ctx) {
         let ns_id = ctx.qualify(&ns_name);
         ctx.namespace_ids.insert(ns_id);
         ctx.ns_stack.push(ns_name);
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            visit_node(child, ctx);
-        }
-        ctx.ns_stack.pop();
+        stack.push(WalkItem::ExitNamespace);
+        push_children(body, stack);
     }
 }
 
-fn visit_class(node: Node, ctx: &mut Ctx, kind: &str) {
+fn enter_class<'a>(node: Node<'a>, ctx: &mut Ctx, kind: &str, stack: &mut Vec<WalkItem<'a>>) {
     let name_node = node.child_by_field_name("name");
     let name = match name_node {
         Some(n) => ctx.node_text(n),
@@ -127,19 +142,34 @@ fn visit_class(node: Node, ctx: &mut Ctx, kind: &str) {
     };
 
     ctx.ns_stack.push(name);
+    stack.push(WalkItem::ExitClass);
+    push_class_body(body, &class_id, stack);
+}
+
+fn push_children<'a>(node: Node<'a>, stack: &mut Vec<WalkItem<'a>>) {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+    for child in children.into_iter().rev() {
+        stack.push(WalkItem::Enter(child));
+    }
+}
+
+fn push_class_body<'a>(body: Node<'a>, parent_id: &str, stack: &mut Vec<WalkItem<'a>>) {
     let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
+    let children: Vec<Node<'a>> = body.children(&mut cursor).collect();
+    for child in children.into_iter().rev() {
         match child.kind() {
-            "field_declaration" => visit_field_declaration(child, ctx, &class_id),
-            "function_definition" => visit_inline_method(child, ctx, &class_id),
-            "declaration" => visit_member_declaration(child, ctx, &class_id),
-            "class_specifier" => visit_class(child, ctx, "class"),
-            "struct_specifier" => visit_class(child, ctx, "struct"),
-            "template_declaration" => visit_template_in_class(child, ctx, &class_id),
+            "field_declaration"
+            | "function_definition"
+            | "declaration"
+            | "class_specifier"
+            | "struct_specifier"
+            | "template_declaration" => {
+                stack.push(WalkItem::EnterClassMember(child, parent_id.to_string()))
+            }
             _ => {}
         }
     }
-    ctx.ns_stack.pop();
 }
 
 fn visit_field_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
@@ -406,47 +436,62 @@ fn visit_declaration(node: Node, ctx: &mut Ctx) {
     });
 }
 
-fn visit_template_declaration(node: Node, ctx: &mut Ctx) {
+fn enter_template_declaration<'a>(node: Node<'a>, stack: &mut Vec<WalkItem<'a>>) {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+    for child in children.into_iter().rev() {
         match child.kind() {
-            "class_specifier" => visit_class(child, ctx, "class"),
-            "struct_specifier" => visit_class(child, ctx, "struct"),
-            "function_definition" => visit_function_definition(child, ctx),
-            "declaration" => visit_declaration(child, ctx),
+            "class_specifier" | "struct_specifier" | "function_definition" | "declaration" => {
+                stack.push(WalkItem::Enter(child));
+            }
             _ => {}
         }
     }
 }
 
-fn visit_template_in_class(node: Node, ctx: &mut Ctx, parent_id: &str) {
+fn enter_template_declaration_in_class<'a>(
+    node: Node<'a>,
+    parent_id: String,
+    stack: &mut Vec<WalkItem<'a>>,
+) {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    let children: Vec<Node<'a>> = node.children(&mut cursor).collect();
+    for child in children.into_iter().rev() {
         match child.kind() {
-            "function_definition" => visit_inline_method(child, ctx, parent_id),
-            "field_declaration" => visit_field_declaration(child, ctx, parent_id),
-            "declaration" => visit_member_declaration(child, ctx, parent_id),
+            "function_definition"
+            | "field_declaration"
+            | "declaration"
+            | "class_specifier"
+            | "struct_specifier"
+            | "template_declaration" => {
+                stack.push(WalkItem::EnterClassMember(child, parent_id.clone()));
+            }
             _ => {}
         }
     }
 }
 
 fn extract_call_sites(node: Node, caller_id: &str, ctx: &mut Ctx) {
-    if node.kind() == "call_expression" {
-        if let Some(func_node) = node.child_by_field_name("function") {
-            if let Some(raw_call) = parse_call_expr(func_node, caller_id, node, ctx) {
-                ctx.raw_calls.push(RawCallSite {
-                    file_path: ctx.file_path.clone(),
-                    line: node.start_position().row + 1,
-                    ..raw_call
-                });
+    let mut stack = vec![node];
+
+    while let Some(current) = stack.pop() {
+        if current.kind() == "call_expression" {
+            if let Some(func_node) = current.child_by_field_name("function") {
+                if let Some(raw_call) = parse_call_expr(func_node, caller_id, current, ctx) {
+                    ctx.raw_calls.push(RawCallSite {
+                        file_path: ctx.file_path.clone(),
+                        line: current.start_position().row + 1,
+                        ..raw_call
+                    });
+                }
             }
         }
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        extract_call_sites(child, caller_id, ctx);
+        let mut cursor = current.walk();
+        let children: Vec<Node> = current.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
     }
 }
 
@@ -745,15 +790,20 @@ fn find_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
 }
 
 fn find_descendant<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
-    if node.kind() == kind {
-        return Some(node);
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(found) = find_descendant(child, kind) {
-            return Some(found);
+    let mut stack = vec![node];
+
+    while let Some(current) = stack.pop() {
+        if current.kind() == kind {
+            return Some(current);
+        }
+
+        let mut cursor = current.walk();
+        let children: Vec<Node> = current.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
+
     None
 }
 
