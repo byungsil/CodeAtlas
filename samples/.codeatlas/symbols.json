@@ -1,0 +1,277 @@
+[
+  {
+    "id": "Game::GameWorld::RemoveObject",
+    "name": "RemoveObject",
+    "qualifiedName": "Game::GameWorld::RemoveObject",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 32,
+    "endLine": 37,
+    "signature": "void GameWorld::RemoveObject(const std::string& name)",
+    "parentId": "Game::GameWorld"
+  },
+  {
+    "id": "Game::GameObject",
+    "name": "GameObject",
+    "qualifiedName": "Game::GameObject",
+    "type": "class",
+    "filePath": "src/game_object.h",
+    "line": 8,
+    "endLine": 24
+  },
+  {
+    "id": "Game::GameObject::GetName",
+    "name": "GetName",
+    "qualifiedName": "Game::GameObject::GetName",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 18,
+    "endLine": 20,
+    "signature": "const std::string & GameObject::GetName() const",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "RunGameLoop",
+    "name": "RunGameLoop",
+    "qualifiedName": "RunGameLoop",
+    "type": "function",
+    "filePath": "src/main.cpp",
+    "line": 6,
+    "endLine": 9,
+    "signature": "void RunGameLoop(GameWorld& world, float deltaTime)"
+  },
+  {
+    "id": "Game::AIState",
+    "name": "AIState",
+    "qualifiedName": "Game::AIState",
+    "type": "enum",
+    "filePath": "src/ai_system.h",
+    "line": 7,
+    "endLine": 12
+  },
+  {
+    "id": "main",
+    "name": "main",
+    "qualifiedName": "main",
+    "type": "function",
+    "filePath": "src/main.cpp",
+    "line": 11,
+    "endLine": 31,
+    "signature": "int main()"
+  },
+  {
+    "id": "Game::GameWorld",
+    "name": "GameWorld",
+    "qualifiedName": "Game::GameWorld",
+    "type": "class",
+    "filePath": "src/game_object.h",
+    "line": 26,
+    "endLine": 37
+  },
+  {
+    "id": "Game::GameWorld::UpdateAll",
+    "name": "UpdateAll",
+    "qualifiedName": "Game::GameWorld::UpdateAll",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 39,
+    "endLine": 43,
+    "signature": "void GameWorld::UpdateAll(float deltaTime)",
+    "parentId": "Game::GameWorld"
+  },
+  {
+    "id": "Game::AIComponent::SetState",
+    "name": "SetState",
+    "qualifiedName": "Game::AIComponent::SetState",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 16,
+    "endLine": 18,
+    "signature": "void AIComponent::SetState(AIState state)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::AIComponent::GetState",
+    "name": "GetState",
+    "qualifiedName": "Game::AIComponent::GetState",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 20,
+    "endLine": 22,
+    "signature": "AIState AIComponent::GetState() const",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::GameWorld::AddObject",
+    "name": "AddObject",
+    "qualifiedName": "Game::GameWorld::AddObject",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 28,
+    "endLine": 30,
+    "signature": "void GameWorld::AddObject(GameObject* obj)",
+    "parentId": "Game::GameWorld"
+  },
+  {
+    "id": "Game::InitializeAISystem",
+    "name": "InitializeAISystem",
+    "qualifiedName": "Game::InitializeAISystem",
+    "type": "function",
+    "filePath": "src/ai_system.cpp",
+    "line": 41,
+    "endLine": 46,
+    "signature": "void InitializeAISystem(GameWorld* world)"
+  },
+  {
+    "id": "Game::GameWorld::FindObject",
+    "name": "FindObject",
+    "qualifiedName": "Game::GameWorld::FindObject",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 51,
+    "endLine": 58,
+    "signature": "GameObject * GameWorld::FindObject(const std::string& name)",
+    "parentId": "Game::GameWorld"
+  },
+  {
+    "id": "Game::GameObject::GameObject",
+    "name": "GameObject",
+    "qualifiedName": "Game::GameObject::GameObject",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 6,
+    "endLine": 6,
+    "signature": "GameObject::GameObject(const std::string& name)",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "Game::AIComponent::UpdateAI",
+    "name": "UpdateAI",
+    "qualifiedName": "Game::AIComponent::UpdateAI",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 7,
+    "endLine": 14,
+    "signature": "void AIComponent::UpdateAI(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::GameObject::SetPosition",
+    "name": "SetPosition",
+    "qualifiedName": "Game::GameObject::SetPosition",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 22,
+    "endLine": 26,
+    "signature": "void GameObject::SetPosition(float x, float y, float z)",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "Game::GameWorld::RenderAll",
+    "name": "RenderAll",
+    "qualifiedName": "Game::GameWorld::RenderAll",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 45,
+    "endLine": 49,
+    "signature": "void GameWorld::RenderAll()",
+    "parentId": "Game::GameWorld"
+  },
+  {
+    "id": "Game::AIComponent::AIComponent",
+    "name": "AIComponent",
+    "qualifiedName": "Game::AIComponent::AIComponent",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 5,
+    "endLine": 5,
+    "signature": "AIComponent::AIComponent(GameObject* owner)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::AIComponent::ProcessAttack",
+    "name": "ProcessAttack",
+    "qualifiedName": "Game::AIComponent::ProcessAttack",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 37,
+    "endLine": 39,
+    "signature": "void AIComponent::ProcessAttack(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::AIComponent",
+    "name": "AIComponent",
+    "qualifiedName": "Game::AIComponent",
+    "type": "class",
+    "filePath": "src/ai_system.h",
+    "line": 14,
+    "endLine": 30
+  },
+  {
+    "id": "Game::GameObject::~GameObject",
+    "name": "~GameObject",
+    "qualifiedName": "Game::GameObject::~GameObject",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 8,
+    "endLine": 8,
+    "signature": "GameObject::~GameObject()",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "Game::GameObject::Update",
+    "name": "Update",
+    "qualifiedName": "Game::GameObject::Update",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 10,
+    "endLine": 12,
+    "signature": "void GameObject::Update(float deltaTime)",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "Game::GameObject::Render",
+    "name": "Render",
+    "qualifiedName": "Game::GameObject::Render",
+    "type": "method",
+    "filePath": "src/game_object.cpp",
+    "line": 14,
+    "endLine": 16,
+    "signature": "void GameObject::Render()",
+    "parentId": "Game::GameObject"
+  },
+  {
+    "id": "Game::AIComponent::ProcessIdle",
+    "name": "ProcessIdle",
+    "qualifiedName": "Game::AIComponent::ProcessIdle",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 24,
+    "endLine": 26,
+    "signature": "void AIComponent::ProcessIdle(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::AIComponent::ProcessChase",
+    "name": "ProcessChase",
+    "qualifiedName": "Game::AIComponent::ProcessChase",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 33,
+    "endLine": 35,
+    "signature": "void AIComponent::ProcessChase(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  },
+  {
+    "id": "Game::AIComponent::ProcessPatrol",
+    "name": "ProcessPatrol",
+    "qualifiedName": "Game::AIComponent::ProcessPatrol",
+    "type": "method",
+    "filePath": "src/ai_system.cpp",
+    "line": 28,
+    "endLine": 31,
+    "signature": "void AIComponent::ProcessPatrol(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  }
+]

@@ -1,0 +1,37 @@
+{
+  "query": "Update",
+  "results": [
+    {
+      "id": "Game::GameObject::Update",
+      "name": "Update",
+      "qualifiedName": "Game::GameObject::Update",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 13,
+      "endLine": 13,
+      "signature": "void Update(float deltaTime)"
+    },
+    {
+      "id": "Game::AIComponent::UpdateAI",
+      "name": "UpdateAI",
+      "qualifiedName": "Game::AIComponent::UpdateAI",
+      "type": "method",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 9,
+      "endLine": 16,
+      "signature": "void AIComponent::UpdateAI(float deltaTime)"
+    },
+    {
+      "id": "Game::GameWorld::UpdateAll",
+      "name": "UpdateAll",
+      "qualifiedName": "Game::GameWorld::UpdateAll",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 29,
+      "endLine": 29,
+      "signature": "void UpdateAll(float deltaTime)"
+    }
+  ],
+  "totalCount": 3,
+  "truncated": false
+}

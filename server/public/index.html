@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeAtlas Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
+a { color: #58a6ff; text-decoration: none; cursor: pointer; }
+a:hover { text-decoration: underline; }
+
+.header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 18px; color: #f0f6fc; }
+.header .search-box { flex: 1; max-width: 600px; }
+.header input { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 14px; }
+.header input:focus { outline: none; border-color: #58a6ff; }
+
+.layout { display: flex; height: calc(100vh - 49px); }
+.sidebar { width: 320px; border-right: 1px solid #30363d; overflow-y: auto; padding: 12px; }
+.main { flex: 1; overflow-y: auto; padding: 24px; }
+
+.result-item { padding: 8px 12px; border-radius: 4px; cursor: pointer; margin-bottom: 2px; }
+.result-item:hover { background: #161b22; }
+.result-item .name { font-weight: 600; color: #f0f6fc; }
+.result-item .meta { font-size: 12px; color: #8b949e; margin-top: 2px; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 500; margin-right: 4px; }
+.badge-function { background: #1f6feb33; color: #58a6ff; }
+.badge-method { background: #8b5cf633; color: #a78bfa; }
+.badge-class { background: #f0883e33; color: #f0883e; }
+.badge-struct { background: #f0883e33; color: #f0883e; }
+.badge-enum { background: #3fb95033; color: #3fb950; }
+
+.detail-section { margin-bottom: 24px; }
+.detail-section h2 { font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #21262d; }
+.detail-section h3 { font-size: 20px; color: #f0f6fc; margin-bottom: 4px; }
+.detail-section .signature { font-family: 'Fira Code', monospace; font-size: 13px; color: #79c0ff; background: #161b22; padding: 8px 12px; border-radius: 4px; margin-top: 8px; }
+.detail-section .location { font-size: 13px; color: #8b949e; }
+
+.member-list, .ref-list { list-style: none; }
+.member-list li, .ref-list li { padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+.member-list li:last-child, .ref-list li:last-child { border-bottom: none; }
+
+.callgraph { margin-top: 12px; }
+.callgraph ul { list-style: none; padding-left: 20px; }
+.callgraph li { padding: 4px 0; font-size: 13px; }
+.callgraph .arrow { color: #484f58; margin: 0 4px; }
+
+.empty { color: #484f58; font-style: italic; padding: 20px 0; text-align: center; }
+.stats { font-size: 12px; color: #484f58; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>CodeAtlas</h1>
+  <div class="search-box">
+    <input type="text" id="searchInput" placeholder="Search symbols... (min 2 chars)" autofocus>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="sidebar" id="sidebar">
+    <div class="empty">Type to search symbols</div>
+  </div>
+  <div class="main" id="main">
+    <div class="empty">Select a symbol from search results</div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+const sidebar = document.getElementById('sidebar');
+const main = document.getElementById('main');
+const searchInput = document.getElementById('searchInput');
+
+let debounceTimer;
+searchInput.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => doSearch(searchInput.value), 200);
+});
+
+async function doSearch(query) {
+  if (query.length < 3) {
+    sidebar.innerHTML = '<div class="empty">Type at least 3 characters</div>';
+    return;
+  }
+  try {
+    const res = await fetch(API + '/search?q=' + encodeURIComponent(query) + '&limit=100');
+    const data = await res.json();
+    renderSearchResults(data);
+  } catch (e) {
+    sidebar.innerHTML = '<div class="empty">Search failed</div>';
+  }
+}
+
+function renderSearchResults(data) {
+  if (!data.results || data.results.length === 0) {
+    sidebar.innerHTML = '<div class="empty">No results</div>';
+    return;
+  }
+  let html = '';
+  for (const sym of data.results) {
+    html += '<div class="result-item" onclick="loadSymbol(\'' + escHtml(sym.name) + '\', \'' + escHtml(sym.type) + '\')">';
+    html += '<div class="name"><span class="badge badge-' + sym.type + '">' + sym.type + '</span>' + escHtml(sym.name) + '</div>';
+    html += '<div class="meta">' + escHtml(sym.qualifiedName) + ' &mdash; ' + escHtml(sym.filePath) + ':' + sym.line + '</div>';
+    html += '</div>';
+  }
+  html += '<div class="stats">' + data.totalCount + ' result(s)' + (data.truncated ? ' (truncated)' : '') + '</div>';
+  sidebar.innerHTML = html;
+}
+
+async function loadSymbol(name, type) {
+  if (type === 'class' || type === 'struct') {
+    await loadClass(name);
+  } else {
+    await loadFunction(name);
+  }
+}
+
+async function loadFunction(name) {
+  try {
+    const res = await fetch(API + '/function/' + encodeURIComponent(name));
+    if (!res.ok) { main.innerHTML = '<div class="empty">Symbol not found</div>'; return; }
+    const data = await res.json();
+    renderFunction(data);
+  } catch (e) {
+    main.innerHTML = '<div class="empty">Failed to load</div>';
+  }
+}
+
+async function loadClass(name) {
+  try {
+    const res = await fetch(API + '/class/' + encodeURIComponent(name));
+    if (!res.ok) { main.innerHTML = '<div class="empty">Symbol not found</div>'; return; }
+    const data = await res.json();
+    renderClass(data);
+  } catch (e) {
+    main.innerHTML = '<div class="empty">Failed to load</div>';
+  }
+}
+
+function renderFunction(data) {
+  const s = data.symbol;
+  let html = '<div class="detail-section">';
+  html += '<h2><span class="badge badge-' + s.type + '">' + s.type + '</span> Symbol</h2>';
+  html += '<h3>' + escHtml(s.qualifiedName) + '</h3>';
+  html += '<div class="location">' + escHtml(s.filePath) + ':' + s.line + '-' + s.endLine + '</div>';
+  if (s.signature) html += '<div class="signature">' + escHtml(s.signature) + '</div>';
+  html += '</div>';
+
+  if (data.callers && data.callers.length > 0) {
+    html += '<div class="detail-section"><h2>Callers (' + data.callers.length + ')</h2><ul class="ref-list">';
+    for (const c of data.callers) {
+      html += '<li><a onclick="loadFunction(\'' + escHtml(c.symbolName) + '\')">' + escHtml(c.qualifiedName) + '</a>';
+      html += ' <span style="color:#484f58">' + escHtml(c.filePath) + ':' + c.line + '</span></li>';
+    }
+    html += '</ul></div>';
+  }
+
+  if (data.callees && data.callees.length > 0) {
+    html += '<div class="detail-section"><h2>Callees (' + data.callees.length + ')</h2><ul class="ref-list">';
+    for (const c of data.callees) {
+      html += '<li><a onclick="loadFunction(\'' + escHtml(c.symbolName) + '\')">' + escHtml(c.qualifiedName) + '</a>';
+      html += ' <span style="color:#484f58">' + escHtml(c.filePath) + ':' + c.line + '</span></li>';
+    }
+    html += '</ul></div>';
+  }
+
+  html += '<div class="detail-section"><h2>Call Graph</h2><div class="callgraph" id="callgraph"></div></div>';
+  main.innerHTML = html;
+  loadCallGraph(s.name);
+}
+
+function renderClass(data) {
+  const s = data.symbol;
+  let html = '<div class="detail-section">';
+  html += '<h2><span class="badge badge-' + s.type + '">' + s.type + '</span> Symbol</h2>';
+  html += '<h3>' + escHtml(s.qualifiedName) + '</h3>';
+  html += '<div class="location">' + escHtml(s.filePath) + ':' + s.line + '-' + s.endLine + '</div>';
+  html += '</div>';
+
+  if (data.members && data.members.length > 0) {
+    html += '<div class="detail-section"><h2>Members (' + data.members.length + ')</h2><ul class="member-list">';
+    for (const m of data.members) {
+      html += '<li><span class="badge badge-' + m.type + '">' + m.type + '</span>';
+      html += '<a onclick="loadFunction(\'' + escHtml(m.name) + '\')">' + escHtml(m.name) + '</a>';
+      if (m.signature) html += ' <span style="color:#484f58;font-size:12px">' + escHtml(m.signature) + '</span>';
+      html += '</li>';
+    }
+    html += '</ul></div>';
+  }
+
+  main.innerHTML = html;
+}
+
+async function loadCallGraph(name) {
+  const cg = document.getElementById('callgraph');
+  if (!cg) return;
+  try {
+    const res = await fetch(API + '/callgraph/' + encodeURIComponent(name) + '?depth=3');
+    if (!res.ok) { cg.innerHTML = '<div class="empty">No call graph</div>'; return; }
+    const data = await res.json();
+    cg.innerHTML = renderCallGraphNode(data.root, 0);
+  } catch (e) {
+    cg.innerHTML = '<div class="empty">Failed to load call graph</div>';
+  }
+}
+
+function renderCallGraphNode(node, depth) {
+  if (!node) return '';
+  let html = '<div style="padding-left:' + (depth * 20) + 'px">';
+  if (depth === 0) {
+    html += '<strong>' + escHtml(node.symbol.name) + '</strong>';
+  }
+  if (node.callees && node.callees.length > 0) {
+    html += '<ul>';
+    for (const c of node.callees) {
+      html += '<li><span class="arrow">&rarr;</span><a onclick="loadFunction(\'' + escHtml(c.targetName) + '\')">' + escHtml(c.targetQualifiedName) + '</a>';
+      html += ' <span style="color:#484f58;font-size:11px">' + escHtml(c.filePath) + ':' + c.line + '</span></li>';
+    }
+    html += '</ul>';
+  } else if (depth === 0) {
+    html += '<div class="empty">No callees</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "root": {
+    "symbol": {
+      "id": "Game::AIComponent::UpdateAI",
+      "name": "UpdateAI",
+      "qualifiedName": "Game::AIComponent::UpdateAI",
+      "type": "method",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 9
+    },
+    "callees": [
+      {
+        "targetId": "Game::AIComponent::ProcessIdle",
+        "targetName": "ProcessIdle",
+        "targetQualifiedName": "Game::AIComponent::ProcessIdle",
+        "filePath": "samples/src/ai_system.cpp",
+        "line": 10
+      },
+      {
+        "targetId": "Game::AIComponent::ProcessPatrol",
+        "targetName": "ProcessPatrol",
+        "targetQualifiedName": "Game::AIComponent::ProcessPatrol",
+        "filePath": "samples/src/ai_system.cpp",
+        "line": 11
+      },
+      {
+        "targetId": "Game::AIComponent::ProcessChase",
+        "targetName": "ProcessChase",
+        "targetQualifiedName": "Game::AIComponent::ProcessChase",
+        "filePath": "samples/src/ai_system.cpp",
+        "line": 12
+      },
+      {
+        "targetId": "Game::AIComponent::ProcessAttack",
+        "targetName": "ProcessAttack",
+        "targetQualifiedName": "Game::AIComponent::ProcessAttack",
+        "filePath": "samples/src/ai_system.cpp",
+        "line": 13
+      }
+    ]
+  },
+  "depth": 1,
+  "maxDepth": 3,
+  "truncated": false
+}

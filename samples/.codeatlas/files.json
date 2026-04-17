@@ -1,0 +1,32 @@
+[
+  {
+    "path": "src/ai_system.cpp",
+    "contentHash": "25640b9ae120e75db6fdf2eb1bbc5175fb0017168a6f7fd73ba37ec77dd7c53c",
+    "lastIndexed": "2026-04-17T10:43:03.779525600+00:00",
+    "symbolCount": 9
+  },
+  {
+    "path": "src/ai_system.h",
+    "contentHash": "6e4744ba87a54c18443526cc3096c3bbd7190f84a1daedc925e2b31206db6f4c",
+    "lastIndexed": "2026-04-17T10:43:03.779563800+00:00",
+    "symbolCount": 11
+  },
+  {
+    "path": "src/game_object.cpp",
+    "contentHash": "7a60f0a511aef4ccce1e0f235aafcd92a5c539cf06e5000f531a7064b17edc58",
+    "lastIndexed": "2026-04-17T10:43:03.779569300+00:00",
+    "symbolCount": 11
+  },
+  {
+    "path": "src/game_object.h",
+    "contentHash": "854ec9ceedea4e3c06f50807eb5edfc36a5c6bfa270dd0d397eb8ea9a7ef7707",
+    "lastIndexed": "2026-04-17T10:43:03.779575200+00:00",
+    "symbolCount": 11
+  },
+  {
+    "path": "src/main.cpp",
+    "contentHash": "34ed09e11dd8f4a5e6bef20dbf9c140f84f2276353820a1af7f710460283c16a",
+    "lastIndexed": "2026-04-17T10:43:03.779590100+00:00",
+    "symbolCount": 2
+  }
+]

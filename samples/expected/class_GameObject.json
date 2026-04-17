@@ -1,0 +1,73 @@
+{
+  "symbol": {
+    "id": "Game::GameObject",
+    "name": "GameObject",
+    "qualifiedName": "Game::GameObject",
+    "type": "class",
+    "filePath": "samples/src/game_object.h",
+    "line": 8,
+    "endLine": 22
+  },
+  "members": [
+    {
+      "id": "Game::GameObject::GameObject",
+      "name": "GameObject",
+      "qualifiedName": "Game::GameObject::GameObject",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 10,
+      "endLine": 10,
+      "signature": "GameObject(const std::string& name)"
+    },
+    {
+      "id": "Game::GameObject::~GameObject",
+      "name": "~GameObject",
+      "qualifiedName": "Game::GameObject::~GameObject",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 11,
+      "endLine": 11,
+      "signature": "~GameObject()"
+    },
+    {
+      "id": "Game::GameObject::Update",
+      "name": "Update",
+      "qualifiedName": "Game::GameObject::Update",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 13,
+      "endLine": 13,
+      "signature": "void Update(float deltaTime)"
+    },
+    {
+      "id": "Game::GameObject::Render",
+      "name": "Render",
+      "qualifiedName": "Game::GameObject::Render",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 14,
+      "endLine": 14,
+      "signature": "void Render()"
+    },
+    {
+      "id": "Game::GameObject::GetName",
+      "name": "GetName",
+      "qualifiedName": "Game::GameObject::GetName",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 16,
+      "endLine": 16,
+      "signature": "const std::string& GetName() const"
+    },
+    {
+      "id": "Game::GameObject::SetPosition",
+      "name": "SetPosition",
+      "qualifiedName": "Game::GameObject::SetPosition",
+      "type": "method",
+      "filePath": "samples/src/game_object.h",
+      "line": 17,
+      "endLine": 17,
+      "signature": "void SetPosition(float x, float y, float z)"
+    }
+  ]
+}

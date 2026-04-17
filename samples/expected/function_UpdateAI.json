@@ -1,0 +1,52 @@
+{
+  "symbol": {
+    "id": "Game::AIComponent::UpdateAI",
+    "name": "UpdateAI",
+    "qualifiedName": "Game::AIComponent::UpdateAI",
+    "type": "method",
+    "filePath": "samples/src/ai_system.cpp",
+    "line": 9,
+    "endLine": 16,
+    "signature": "void AIComponent::UpdateAI(float deltaTime)",
+    "parentId": "Game::AIComponent"
+  },
+  "callers": [
+    {
+      "symbolId": "::main",
+      "symbolName": "main",
+      "qualifiedName": "::main",
+      "filePath": "samples/src/main.cpp",
+      "line": 24
+    }
+  ],
+  "callees": [
+    {
+      "symbolId": "Game::AIComponent::ProcessIdle",
+      "symbolName": "ProcessIdle",
+      "qualifiedName": "Game::AIComponent::ProcessIdle",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 10
+    },
+    {
+      "symbolId": "Game::AIComponent::ProcessPatrol",
+      "symbolName": "ProcessPatrol",
+      "qualifiedName": "Game::AIComponent::ProcessPatrol",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 11
+    },
+    {
+      "symbolId": "Game::AIComponent::ProcessChase",
+      "symbolName": "ProcessChase",
+      "qualifiedName": "Game::AIComponent::ProcessChase",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 12
+    },
+    {
+      "symbolId": "Game::AIComponent::ProcessAttack",
+      "symbolName": "ProcessAttack",
+      "qualifiedName": "Game::AIComponent::ProcessAttack",
+      "filePath": "samples/src/ai_system.cpp",
+      "line": 13
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "codeatlas-indexer"
+version = "0.1.0"
+edition = "2021"
+description = "CodeAtlas Rust indexer - Tree-sitter based C++ code structure extraction"
+
+[dependencies]
+tree-sitter = "0.24"
+tree-sitter-cpp = "0.23"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+notify = "7"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

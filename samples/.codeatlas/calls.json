@@ -1,0 +1,140 @@
+[
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessIdle",
+    "filePath": "src/ai_system.cpp",
+    "line": 9
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessPatrol",
+    "filePath": "src/ai_system.cpp",
+    "line": 10
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessChase",
+    "filePath": "src/ai_system.cpp",
+    "line": 11
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessAttack",
+    "filePath": "src/ai_system.cpp",
+    "line": 12
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessIdle",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "src/ai_system.cpp",
+    "line": 25
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessPatrol",
+    "calleeId": "Game::GameObject::SetPosition",
+    "filePath": "src/ai_system.cpp",
+    "line": 29
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessPatrol",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "src/ai_system.cpp",
+    "line": 30
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessChase",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "src/ai_system.cpp",
+    "line": 34
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessAttack",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "src/ai_system.cpp",
+    "line": 38
+  },
+  {
+    "callerId": "Game::InitializeAISystem",
+    "calleeId": "Game::GameWorld::FindObject",
+    "filePath": "src/ai_system.cpp",
+    "line": 42
+  },
+  {
+    "callerId": "Game::InitializeAISystem",
+    "calleeId": "Game::GameObject::SetPosition",
+    "filePath": "src/ai_system.cpp",
+    "line": 44
+  },
+  {
+    "callerId": "Game::GameWorld::RemoveObject",
+    "calleeId": "Game::GameObject::GetName",
+    "filePath": "src/game_object.cpp",
+    "line": 35
+  },
+  {
+    "callerId": "Game::GameWorld::UpdateAll",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "src/game_object.cpp",
+    "line": 41
+  },
+  {
+    "callerId": "Game::GameWorld::RenderAll",
+    "calleeId": "Game::GameObject::Render",
+    "filePath": "src/game_object.cpp",
+    "line": 47
+  },
+  {
+    "callerId": "Game::GameWorld::FindObject",
+    "calleeId": "Game::GameObject::GetName",
+    "filePath": "src/game_object.cpp",
+    "line": 53
+  },
+  {
+    "callerId": "RunGameLoop",
+    "calleeId": "Game::GameWorld::UpdateAll",
+    "filePath": "src/main.cpp",
+    "line": 7
+  },
+  {
+    "callerId": "RunGameLoop",
+    "calleeId": "Game::GameWorld::RenderAll",
+    "filePath": "src/main.cpp",
+    "line": 8
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::GameWorld::AddObject",
+    "filePath": "src/main.cpp",
+    "line": 17
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::GameWorld::AddObject",
+    "filePath": "src/main.cpp",
+    "line": 18
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::InitializeAISystem",
+    "filePath": "src/main.cpp",
+    "line": 20
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::AIComponent::SetState",
+    "filePath": "src/main.cpp",
+    "line": 23
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::AIComponent::UpdateAI",
+    "filePath": "src/main.cpp",
+    "line": 26
+  },
+  {
+    "callerId": "main",
+    "calleeId": "RunGameLoop",
+    "filePath": "src/main.cpp",
+    "line": 27
+  }
+]
