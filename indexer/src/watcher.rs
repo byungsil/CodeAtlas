@@ -133,7 +133,7 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
 
 fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
     let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
-    let files = discovery::find_cpp_files(workspace_root);
+    let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
     let all_relative: Vec<String> = files
         .iter()
         .map(|p| make_relative(workspace_root, p))
@@ -159,7 +159,7 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
 
 fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
     let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
-    let files = discovery::find_cpp_files(workspace_root);
+    let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
     let all_relative: Vec<String> = files
         .iter()
         .map(|p| make_relative(workspace_root, p))

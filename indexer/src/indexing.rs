@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::Utc;
 use rayon::prelude::*;
@@ -13,6 +14,9 @@ pub fn parse_files(
     relative_paths: &[String],
     verbose: bool,
 ) -> (Vec<Symbol>, Vec<RawCallSite>, Vec<FileRecord>) {
+    let total = relative_paths.len();
+    let progress = AtomicUsize::new(0);
+
     let results: Vec<(String, Result<ParseResult, String>, String, bool)> = relative_paths
         .par_iter()
         .map(|rel_path| {
@@ -22,6 +26,27 @@ pub fn parse_files(
                 Err(e) => return (rel_path.clone(), Err(format!("Read error: {}", e)), String::new(), false),
             };
             let result = parser::parse_cpp_file(rel_path, &content);
+            if verbose {
+                let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                match &result {
+                    Ok(pr) => {
+                        if lossy {
+                            println!("  [{}/{}] LOSSY: {}: non-UTF8 bytes replaced during parsing", current, total, rel_path);
+                        }
+                        println!(
+                            "  [{}/{}] INDEX: {}: {} symbols, {} raw calls",
+                            current,
+                            total,
+                            rel_path,
+                            pr.symbols.len(),
+                            pr.raw_calls.len()
+                        );
+                    }
+                    Err(e) => {
+                        println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
+                    }
+                }
+            }
             (rel_path.clone(), result, hash, lossy)
         })
         .collect();
@@ -30,15 +55,9 @@ pub fn parse_files(
     let mut raw_calls = Vec::new();
     let mut file_records = Vec::new();
 
-    for (rel_path, result, hash, lossy) in results {
+    for (rel_path, result, hash, _lossy) in results {
         match result {
             Ok(pr) => {
-                if verbose {
-                    if lossy {
-                        println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", rel_path);
-                    }
-                    println!("  INDEX: {}: {} symbols, {} raw calls", rel_path, pr.symbols.len(), pr.raw_calls.len());
-                }
                 file_records.push(FileRecord {
                     path: rel_path,
                     content_hash: hash,
@@ -49,7 +68,9 @@ pub fn parse_files(
                 raw_calls.extend(pr.raw_calls);
             }
             Err(e) => {
-                eprintln!("  FAILED: {}: {}", rel_path, e);
+                if !verbose {
+                    eprintln!("  FAILED: {}: {}", rel_path, e);
+                }
             }
         }
     }
@@ -74,15 +95,23 @@ pub fn parse_files_strict(
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut file_records = Vec::new();
+    let total = relative_paths.len();
 
-    for rel_path in relative_paths {
+    for (index, rel_path) in relative_paths.iter().enumerate() {
         let (result, hash, lossy) = parse_file_strict(workspace_root, rel_path)?;
         if verbose {
             if lossy {
-                println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", rel_path);
+                println!(
+                    "  [{}/{}] LOSSY: {}: non-UTF8 bytes replaced during parsing",
+                    index + 1,
+                    total,
+                    rel_path
+                );
             }
             println!(
-                "  INDEX: {}: {} symbols, {} raw calls",
+                "  [{}/{}] INDEX: {}: {} symbols, {} raw calls",
+                index + 1,
+                total,
                 rel_path,
                 result.symbols.len(),
                 result.raw_calls.len()

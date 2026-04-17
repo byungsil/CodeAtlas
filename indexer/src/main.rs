@@ -61,7 +61,7 @@ fn main() {
     println!("Indexing: {}", workspace_root.display());
     let start = Instant::now();
 
-    let all_files = discovery::find_cpp_files(&workspace_root);
+    let all_files = discovery::find_cpp_files_with_feedback(&workspace_root, verbose_mode);
     let all_relative: Vec<String> = all_files
         .iter()
         .map(|p| make_relative(&workspace_root, p))
@@ -114,7 +114,7 @@ fn print_help() {
     println!("  watch        Monitor the workspace and re-index on file changes");
     println!();
     println!("Options:");
-    println!("  --verbose    Print per-file indexing logs and lossy-read warnings");
+    println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");
     println!("  --json       Write JSON snapshots alongside the SQLite database");
     println!("  -h, --help   Show this help message");
     println!();

@@ -1,10 +1,43 @@
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread;
+use std::time::Duration;
 use walkdir::WalkDir;
 use crate::constants::{EXTENSIONS, DATA_DIR_NAME};
 use crate::ignore::IgnoreRules;
 
 pub fn find_cpp_files(root: &Path) -> Vec<PathBuf> {
     find_cpp_files_with_ignore(root, &IgnoreRules::load(root))
+}
+
+pub fn find_cpp_files_with_feedback(root: &Path, verbose: bool) -> Vec<PathBuf> {
+    if !verbose {
+        return find_cpp_files(root);
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let spinner_running = Arc::clone(&running);
+    let spinner = thread::spawn(move || {
+        let frames = ["|", "/", "-", "\\"];
+        let mut index = 0usize;
+        while spinner_running.load(Ordering::Relaxed) {
+            print!("\rSearching files... {}", frames[index % frames.len()]);
+            let _ = io::stdout().flush();
+            index += 1;
+            thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let files = find_cpp_files(root);
+
+    running.store(false, Ordering::Relaxed);
+    let _ = spinner.join();
+    println!("\rSearching files... done");
+    files
 }
 
 pub fn find_cpp_files_with_ignore(root: &Path, ignore: &IgnoreRules) -> Vec<PathBuf> {
