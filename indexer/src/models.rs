@@ -93,6 +93,17 @@ pub enum RawRelationKind {
     Inheritance,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReferenceCategory {
+    FunctionCall,
+    MethodCall,
+    ClassInstantiation,
+    TypeUsage,
+    InheritanceMention,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RawEventSource {
@@ -186,9 +197,22 @@ impl RawRelationEvent {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedReference {
+    pub source_symbol_id: String,
+    pub target_symbol_id: String,
+    pub category: ReferenceCategory,
+    pub file_path: String,
+    pub line: usize,
+    pub confidence: RawExtractionConfidence,
+}
+
 #[derive(Debug)]
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub relation_events: Vec<RawRelationEvent>,
+    pub normalized_references: Vec<NormalizedReference>,
     pub raw_calls: Vec<RawCallSite>,
 }

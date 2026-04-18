@@ -2,7 +2,7 @@
 
 Status:
 
-- Next planned milestone
+- Completed
 
 ## 1. Objective
 
@@ -39,6 +39,10 @@ Success outcome:
 
 ### M3-E1. Direct Caller Queries
 
+Status:
+
+- Completed
+
 Goal:
 
 - answer the question "who calls this?" directly
@@ -68,6 +72,10 @@ Exit criteria:
 ---
 
 ### M3-E2. Milestone 2 Graph Handoff and Remaining Extraction Coverage
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -100,9 +108,19 @@ Exit criteria:
 
 - Milestone 2 deferred graph-coverage work has an explicit continuation path inside Milestone 3
 
+Completion notes:
+
+- graph-backed call extraction now covers member calls whose receiver is a direct call expression such as `MakeWorker().Update()`
+- ambiguity fixture coverage now includes a dedicated `complex_receivers` fixture
+- parity tests continue to guard that newly supported shapes match legacy extraction before graph-backed preference is retained
+
 ---
 
 ### M3-E3. Reference Model Definition
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -139,9 +157,25 @@ Exit criteria:
 
 - there is a stable first-release reference model
 
+Design decisions:
+
+- first-release reference categories are:
+  - `functionCall`
+  - `methodCall`
+  - `classInstantiation`
+  - `typeUsage`
+  - `inheritanceMention`
+- generalized references will live in their own storage surface rather than being forced into the existing `calls` table
+- existing `calls` storage remains the canonical direct-call source during the transition
+- only resolved source and target symbol identities qualify for persisted first-release references
+
 ---
 
 ### M3-E4. Reference Extraction
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -167,9 +201,23 @@ Exit criteria:
 
 - indexer can emit reference events for the first supported categories
 
+Implementation notes:
+
+- `ParseResult` now emits normalized references alongside raw relation events
+- the first promoted categories are:
+  - `typeUsage`
+  - `inheritanceMention`
+- promotion currently requires both source and target symbol IDs to be resolved structurally from parser output
+- direct call references continue to rely on the existing resolved call path for now
+- `classInstantiation` remains part of the contract vocabulary but is still deferred from extraction in this pass
+
 ---
 
 ### M3-E5. Reference Storage and Retrieval
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -198,9 +246,25 @@ Exit criteria:
 
 - references are queryable in the same way calls are queryable
 
+Implementation notes:
+
+- normalized references are now persisted in `symbol_references`
+- current persisted categories come from the first extraction pass:
+  - `typeUsage`
+  - `inheritanceMention`
+- the server now exposes exact-target reference lookup through `find_references`
+- optional filters currently include:
+  - `category`
+  - `filePath`
+- direct call edges remain available through existing call storage while generalized reference retrieval grows alongside them
+
 ---
 
 ### M3-E6. Impact-Analysis Summarization
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -233,9 +297,27 @@ Exit criteria:
 
 - agents can ask change-risk questions and receive structured summaries
 
+Implementation notes:
+
+- `impact_analysis` now provides summary-first output for one exact target symbol
+- the current summary combines:
+  - direct callers
+  - direct callees
+  - direct generalized references
+  - bounded caller/callee traversal up to the requested depth
+- output emphasizes:
+  - `topAffectedSymbols`
+  - `topAffectedFiles`
+  - `suggestedFollowUpQueries`
+- raw graph dumping is still avoided by default
+
 ---
 
 ### M3-E7. Symbol Overview Queries
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -264,9 +346,22 @@ Exit criteria:
 
 - structure browsing is possible without raw file inspection
 
+Implementation notes:
+
+- overview queries are now available for:
+  - exact file path browsing through `list_file_symbols` and `GET /file-symbols`
+  - exact namespace browsing through `list_namespace_symbols` and `GET /namespace-symbols`
+  - exact class or struct member browsing through `list_class_members` and `GET /class-members`
+- all overview responses provide a compact `summary` section before the full symbol list
+- ordering is stable by line number, end line, and qualified name
+
 ---
 
 ### M3-E8. Token-Efficient Response Shaping
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -293,6 +388,16 @@ Exit criteria:
 
 - milestone queries are practical for AI agent usage at scale
 
+Implementation notes:
+
+- query responses that return bounded arrays now expose a shared `window` object with:
+  - `returnedCount`
+  - `totalCount`
+  - `truncated`
+  - `limitApplied`
+- legacy top-level `totalCount` and `truncated` fields remain for compatibility on existing query surfaces
+- structure overview queries now accept an optional `limit` so file, namespace, and class browsing can stay compact on large workspaces
+
 ---
 
 ## 4. Final Exit Criteria
@@ -301,4 +406,13 @@ Exit criteria:
 - references are modeled, stored, and queryable
 - impact analysis produces useful summary-first responses
 - symbol overview queries reduce the need for raw source access
+
+Completion summary:
+
+- `M3-E1` through `M3-E8` are complete
+- direct caller, generalized reference, impact-analysis, and structure overview queries now exist across both MCP and HTTP surfaces
+- response shaping now includes shared `window` metadata plus optional overview limits for compact agent-facing payloads
+- validation status:
+  - `indexer`: `86 passed, 0 failed`
+  - `server`: `98 passed, 0 failed`
 

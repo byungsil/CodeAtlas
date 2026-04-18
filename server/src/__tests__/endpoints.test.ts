@@ -167,10 +167,19 @@ describe("Heuristic ambiguity metadata", () => {
       searchSymbols() {
         return { results: [], totalCount: 0 };
       },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
       getCallers() {
         return [];
       },
       getCallees() {
+        return [];
+      },
+      getReferences() {
         return [];
       },
       getMembers() {
@@ -192,6 +201,8 @@ describe("GET /search", () => {
   it("returns matching symbols", async () => {
     const res = await request(app).get("/search?q=Update").expect(200);
     expect(res.body.query).toBe("Update");
+    expect(res.body.window.totalCount).toBe(res.body.totalCount);
+    expect(res.body.window.returnedCount).toBe(res.body.results.length);
     expect(res.body.results).toBeInstanceOf(Array);
     expect(res.body.results.length).toBe(3);
     expect(res.body.totalCount).toBe(3);
@@ -207,12 +218,14 @@ describe("GET /search", () => {
     const res = await request(app).get("/search?q=a").expect(200);
     expect(res.body.results).toEqual([]);
     expect(res.body.totalCount).toBe(0);
+    expect(res.body.window.returnedCount).toBe(0);
   });
 
   it("returns empty for two-char query", async () => {
     const res = await request(app).get("/search?q=Ga").expect(200);
     expect(res.body.results).toEqual([]);
     expect(res.body.totalCount).toBe(0);
+    expect(res.body.window.returnedCount).toBe(0);
   });
 
   it("respects limit parameter", async () => {
@@ -223,6 +236,7 @@ describe("GET /search", () => {
   it("marks truncated when more results exist", async () => {
     const res = await request(app).get("/search?q=Game&limit=1").expect(200);
     expect(res.body.truncated).toBe(true);
+    expect(res.body.window.truncated).toBe(true);
   });
 });
 
@@ -242,6 +256,57 @@ describe("GET /callgraph/:name", () => {
     expect(res.body.code).toBe("NOT_FOUND");
     expect(res.body.error).toBe("Symbol not found");
     expect(res.body.root).toBeUndefined();
+  });
+});
+
+describe("GET /callers/:name", () => {
+  it("returns deduplicated direct callers", async () => {
+    const res = await request(app).get("/callers/UpdateAI").expect(200);
+    expect(res.body.symbol).toBeDefined();
+    expect(res.body.symbol.name).toBe("UpdateAI");
+    expect(res.body.callers).toBeInstanceOf(Array);
+    expect(res.body.totalCount).toBe(res.body.callers.length);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.window.totalCount).toBe(res.body.totalCount);
+    expect(res.body.window.returnedCount).toBe(res.body.callers.length);
+
+    const qualifiedNames = res.body.callers.map((ref: any) => ref.qualifiedName);
+    expect(qualifiedNames).toEqual([...qualifiedNames].sort((a, b) => a.localeCompare(b)));
+    expect(new Set(res.body.callers.map((ref: any) => ref.symbolId)).size).toBe(res.body.callers.length);
+  });
+
+  it("returns 404 for unknown symbol", async () => {
+    const res = await request(app).get("/callers/FakeFunc").expect(404);
+    expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+    expect(res.body.symbol).toBeUndefined();
+  });
+});
+
+describe("Overview queries", () => {
+  it("returns file overview in stable order", async () => {
+    const res = await request(app)
+      .get("/file-symbols")
+      .query({ filePath: "src/game_object.h" })
+      .expect(200);
+    expect(res.body.filePath).toBe("src/game_object.h");
+    expect(res.body.summary.totalCount).toBe(res.body.symbols.length);
+    expect(res.body.window.totalCount).toBe(res.body.summary.totalCount);
+    expect(res.body.window.returnedCount).toBe(res.body.symbols.length);
+    expect(res.body.symbols.length).toBeGreaterThan(0);
+  });
+
+  it("returns class member overview for exact class", async () => {
+    const res = await request(app)
+      .get("/class-members")
+      .query({ qualifiedName: "Game::GameObject" })
+      .expect(200);
+    expect(res.body.lookupMode).toBe("exact");
+    expect(res.body.symbol.qualifiedName).toBe("Game::GameObject");
+    expect(res.body.summary.totalCount).toBe(res.body.members.length);
+    expect(res.body.window.totalCount).toBe(res.body.summary.totalCount);
+    expect(res.body.window.returnedCount).toBe(res.body.members.length);
+    expect(res.body.members.length).toBeGreaterThan(0);
   });
 });
 

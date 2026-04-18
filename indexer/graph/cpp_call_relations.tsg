@@ -5,6 +5,7 @@
 ; - obj.foo()
 ; - ptr->foo()
 ; - this->foo()
+; - MakeWorker().Update()
 ;
 ; The output graph is intentionally event-shaped. Each matched call creates
 ; one graph node with normalized attributes that the Rust parser can later
@@ -82,6 +83,25 @@ global filepath
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) receiver = (source-text @receiver)
   attr (@call.event) receiver_kind = "identifier"
+  attr (@call.event) file_path = filepath
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+(call_expression
+  function: (field_expression
+    argument: (call_expression) @receiver
+    operator: "."
+    field: (field_identifier) @callee)
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) extraction_source = "tree_sitter_graph"
+  attr (@call.event) confidence = "partial"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
   attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }

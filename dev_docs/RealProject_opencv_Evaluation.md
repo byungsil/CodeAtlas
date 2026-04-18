@@ -10,6 +10,7 @@ Goal:
 - confirm that indexing still completes end to end on a large mixed repository
 - sample a few real symbols and relationships after indexing
 - record any storage or query-surface issues exposed by this run
+- extend the validation to the Milestone 3 query surfaces after the newer indexer/schema changes
 
 ## Workspace
 
@@ -25,9 +26,33 @@ Full indexing completed successfully.
 - files: `3695`
 - symbols: `50526`
 - call edges: `84298`
-- elapsed time: about `92s` in verbose full-rebuild mode
+- elapsed time: about `95s` in non-verbose full-rebuild mode with the current debug build
 
 This is materially larger and structurally noisier than the previous `benchmark` and `nlohmann/json` validation targets, so it is a useful scale check for the Milestone 2 extraction changes.
+
+## Milestone 3 Query-Surface Validation
+
+After rebuilding the indexer from the current workspace and regenerating `E:\Dev\opencv\.codeatlas`, the OpenCV database now includes the Milestone 3 `symbol_references` table as expected.
+
+Validated live query surfaces:
+
+- exact symbol lookup
+  - `cv::imread` resolved successfully
+- direct caller query
+  - `/callers/imread` returned `2` direct callers with the shared `window` metadata
+- impact analysis
+  - `/impact?qualifiedName=cv::imread&depth=2&limit=5` returned summary-first output with affected symbols, affected files, and follow-up queries
+- file overview query
+  - `/file-symbols?filePath=modules/imgcodecs/include/opencv2/imgcodecs.hpp&limit=5`
+  - returned `43` total symbols with summary-first payload and bounded `window`
+- class member overview query
+  - `/class-members?qualifiedName=cv::VideoCapture_DShow&limit=5`
+  - returned `10` total members with deterministic ordering and bounded `window`
+- generalized reference query
+  - `/references?qualifiedName=cv::v_float32x4&limit=5`
+  - returned `254` total references, truncated to `5`, with `typeUsage` records and shared `window` metadata
+
+These checks show that the Milestone 3 caller, reference, impact, and overview surfaces are all live against the real OpenCV workspace, not only against fixture data.
 
 ## Sample Query Findings
 
@@ -70,6 +95,11 @@ This suggests that the Milestone 2 extraction pipeline is operational, but repre
 - Milestone 2 indexing still completes on a very large real project after `tree-sitter-graph` integration
 - ambiguity and fallback behavior remain operational instead of crashing on large code volume
 - sampled function and method lookups can still produce usable caller/callee data
+- Milestone 3 query surfaces are operational on the real OpenCV workspace:
+  - caller queries
+  - reference queries
+  - impact summaries
+  - file and class overview queries
 
 ## What This Exposed
 
@@ -96,10 +126,11 @@ Recommended operating posture:
 
 ## Bottom Line
 
-Milestone 2 passed the large-project extraction check, but it also exposed an important storage handoff problem.
+Milestone 2 passed the large-project extraction check, and the current Milestone 3 query surface is also usable on the same real workspace.
 
 In practical terms:
 
 - parsing and relationship extraction scale to OpenCV
 - sampled symbol queries are already useful
+- caller/reference/impact/overview queries all respond on real OpenCV data after rebuilding with the current schema
 - the database finalization path still needs follow-up before this can be treated as production-ready end-to-end behavior

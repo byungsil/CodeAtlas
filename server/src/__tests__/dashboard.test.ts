@@ -33,6 +33,7 @@ describe("Dashboard consumes same API contracts as agents", () => {
   it("search endpoint returns same shape for dashboard and MCP", async () => {
     const res = await request(app).get("/search?q=Update").expect(200);
     expect(res.body).toHaveProperty("query");
+    expect(res.body).toHaveProperty("window");
     expect(res.body).toHaveProperty("results");
     expect(res.body).toHaveProperty("totalCount");
     expect(res.body).toHaveProperty("truncated");
@@ -56,6 +57,24 @@ describe("Dashboard consumes same API contracts as agents", () => {
     expect(res.body).toHaveProperty("root");
     expect(res.body).toHaveProperty("depth");
     expect(res.body).toHaveProperty("truncated");
+  });
+
+  it("overview endpoints expose compact summary-first payloads", async () => {
+    const fileSymbols = await request(app)
+      .get("/file-symbols")
+      .query({ filePath: "src/game_object.h", limit: 3 })
+      .expect(200);
+    expect(fileSymbols.body).toHaveProperty("summary");
+    expect(fileSymbols.body).toHaveProperty("window");
+    expect(fileSymbols.body.window.limitApplied).toBe(3);
+
+    const classMembers = await request(app)
+      .get("/class-members")
+      .query({ qualifiedName: "Game::GameObject", limit: 3 })
+      .expect(200);
+    expect(classMembers.body).toHaveProperty("summary");
+    expect(classMembers.body).toHaveProperty("window");
+    expect(classMembers.body.window.limitApplied).toBe(3);
   });
 });
 

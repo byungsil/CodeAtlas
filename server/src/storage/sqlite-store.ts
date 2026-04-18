@@ -4,7 +4,7 @@ import * as path from "path";
 import Database from "better-sqlite3";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
-import { FileRecord } from "../models/file-record";
+import { ReferenceCategory, ReferenceRecord } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
 
 export class SqliteStore {
@@ -47,6 +47,30 @@ export class SqliteStore {
       return this.searchWithFts(query, type, limit);
     }
     return this.searchWithLike(query, type, limit);
+  }
+
+  getFileSymbols(filePath: string): Symbol[] {
+    const rows = this.db
+      .prepare(`
+        SELECT *
+        FROM symbols
+        WHERE file_path = ?
+        ORDER BY line, end_line, qualified_name
+      `)
+      .all(filePath) as RawRow[];
+    return rows.map(toSymbol);
+  }
+
+  getNamespaceSymbols(namespaceQualifiedName: string): Symbol[] {
+    const rows = this.db
+      .prepare(`
+        SELECT *
+        FROM symbols
+        WHERE scope_kind = 'namespace' AND scope_qualified_name = ?
+        ORDER BY line, end_line, qualified_name
+      `)
+      .all(namespaceQualifiedName) as RawRow[];
+    return rows.map(toSymbol);
   }
 
   private hasFts(): boolean {
@@ -127,6 +151,43 @@ export class SqliteStore {
       .prepare("SELECT * FROM symbols WHERE parent_id = ?")
       .all(parentId) as RawRow[];
     return rows.map(toSymbol);
+  }
+
+  getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[] {
+    if (!this.hasReferencesTable()) {
+      return [];
+    }
+
+    const filters = ["target_symbol_id = ?"];
+    const values: Array<string> = [targetSymbolId];
+    if (category) {
+      filters.push("category = ?");
+      values.push(category);
+    }
+    if (filePath) {
+      filters.push("file_path = ?");
+      values.push(filePath);
+    }
+
+    const sql = `
+      SELECT source_symbol_id, target_symbol_id, category, file_path, line, confidence
+      FROM symbol_references
+      WHERE ${filters.join(" AND ")}
+      ORDER BY category, file_path, line, source_symbol_id
+    `;
+    const rows = this.db.prepare(sql).all(...values) as RawReferenceRow[];
+    return rows.map(toReference);
+  }
+
+  private hasReferencesTable(): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='symbol_references'")
+        .get() as { cnt: number };
+      return row.cnt > 0;
+    } catch {
+      return false;
+    }
   }
 
   close(): void {
@@ -220,6 +281,15 @@ interface RawCallRow {
   line: number;
 }
 
+interface RawReferenceRow {
+  source_symbol_id: string;
+  target_symbol_id: string;
+  category: ReferenceCategory;
+  file_path: string;
+  line: number;
+  confidence: "high" | "partial";
+}
+
 function toSymbol(row: RawRow): Symbol {
   return {
     id: row.id,
@@ -250,5 +320,16 @@ function toCall(row: RawCallRow): Call {
     calleeId: row.callee_id,
     filePath: row.file_path,
     line: row.line,
+  };
+}
+
+function toReference(row: RawReferenceRow): ReferenceRecord {
+  return {
+    sourceSymbolId: row.source_symbol_id,
+    targetSymbolId: row.target_symbol_id,
+    category: row.category,
+    filePath: row.file_path,
+    line: row.line,
+    confidence: row.confidence,
   };
 }

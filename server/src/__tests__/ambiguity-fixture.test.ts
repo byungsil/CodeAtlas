@@ -10,6 +10,7 @@ import { mcpCall } from "./mcp-test-helpers";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
+import { ReferenceRecord } from "../models/responses";
 
 function fixtureSymbols(): Symbol[] {
   return [
@@ -21,6 +22,8 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/namespace_dupes.h",
       line: 4,
       endLine: 4,
+      scopeQualifiedName: "Gameplay",
+      scopeKind: "namespace",
     },
     {
       id: "UI::Update",
@@ -30,6 +33,26 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/namespace_dupes.h",
       line: 8,
       endLine: 8,
+      scopeQualifiedName: "UI",
+      scopeKind: "namespace",
+    },
+    {
+      id: "Gameplay",
+      name: "Gameplay",
+      qualifiedName: "Gameplay",
+      type: "namespace",
+      filePath: "samples/ambiguity/src/namespace_dupes.h",
+      line: 1,
+      endLine: 5,
+    },
+    {
+      id: "UI",
+      name: "UI",
+      qualifiedName: "UI",
+      type: "namespace",
+      filePath: "samples/ambiguity/src/namespace_dupes.h",
+      line: 6,
+      endLine: 9,
     },
     {
       id: "AI::Controller",
@@ -140,12 +163,42 @@ function fixtureFiles(): FileRecord[] {
   ];
 }
 
+function fixtureReferences(): ReferenceRecord[] {
+  return [
+    {
+      sourceSymbolId: "AI::Controller::Update",
+      targetSymbolId: "Gameplay::Update",
+      category: "functionCall",
+      filePath: "samples/ambiguity/src/namespace_dupes.cpp",
+      line: 12,
+      confidence: "high",
+    },
+    {
+      sourceSymbolId: "Game::Worker::Tick",
+      targetSymbolId: "Game::Worker::Update",
+      category: "methodCall",
+      filePath: "samples/ambiguity/src/split_update.cpp",
+      line: 8,
+      confidence: "high",
+    },
+    {
+      sourceSymbolId: "Game::Worker::Tick",
+      targetSymbolId: "Game::Worker::Update",
+      category: "methodCall",
+      filePath: "samples/ambiguity/src/split_update.cpp",
+      line: 9,
+      confidence: "high",
+    },
+  ];
+}
+
 function writeFixtureJsonStore(): { dir: string; store: JsonStore } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codeatlas-ambiguity-json-"));
   const store = new JsonStore(dir);
   store.save({
     symbols: fixtureSymbols(),
     calls: fixtureCalls(),
+    references: fixtureReferences(),
     files: fixtureFiles(),
   });
   return { dir, store };
@@ -184,6 +237,14 @@ function writeFixtureSqliteDb(): string {
       file_path TEXT NOT NULL,
       line INTEGER NOT NULL
     );
+    CREATE TABLE symbol_references (
+      source_symbol_id TEXT NOT NULL,
+      target_symbol_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      confidence TEXT NOT NULL
+    );
   `);
 
   const insertSymbol = db.prepare(`
@@ -202,6 +263,10 @@ function writeFixtureSqliteDb(): string {
   const insertCall = db.prepare(`
     INSERT INTO calls (caller_id, callee_id, file_path, line)
     VALUES (@caller_id, @callee_id, @file_path, @line)
+  `);
+  const insertReference = db.prepare(`
+    INSERT INTO symbol_references (source_symbol_id, target_symbol_id, category, file_path, line, confidence)
+    VALUES (@source_symbol_id, @target_symbol_id, @category, @file_path, @line, @confidence)
   `);
 
   for (const symbol of fixtureSymbols()) {
@@ -234,6 +299,16 @@ function writeFixtureSqliteDb(): string {
       callee_id: call.calleeId,
       file_path: call.filePath,
       line: call.line,
+    });
+  }
+  for (const reference of fixtureReferences()) {
+    insertReference.run({
+      source_symbol_id: reference.sourceSymbolId,
+      target_symbol_id: reference.targetSymbolId,
+      category: reference.category,
+      file_path: reference.filePath,
+      line: reference.line,
+      confidence: reference.confidence,
     });
   }
 
@@ -295,6 +370,70 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.body.confidence).toBe("ambiguous");
       expect(heuristic.body.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.body.ambiguity).toEqual({ candidateCount: 4 });
+
+      const callers = await request(app).get("/callers/Update").expect(200);
+      expect(callers.body.lookupMode).toBe("heuristic");
+      expect(callers.body.confidence).toBe("ambiguous");
+      expect(callers.body.matchReasons).toEqual(["ambiguous_top_score"]);
+      expect(callers.body.ambiguity).toEqual({ candidateCount: 4 });
+      expect(callers.body.totalCount).toBe(1);
+      expect(callers.body.truncated).toBe(false);
+      expect(callers.body.window.totalCount).toBe(1);
+      expect(callers.body.window.returnedCount).toBe(1);
+      expect(callers.body.callers).toHaveLength(1);
+      expect(callers.body.callers[0].qualifiedName).toBe("AI::Controller::Update");
+
+      const references = await request(app)
+        .get("/references")
+        .query({ qualifiedName: "Game::Worker::Update", category: "methodCall" })
+        .expect(200);
+      expect(references.body.lookupMode).toBe("exact");
+      expect(references.body.references).toHaveLength(2);
+      expect(references.body.totalCount).toBe(2);
+      expect(references.body.window.totalCount).toBe(2);
+      expect(references.body.window.returnedCount).toBe(2);
+      expect(references.body.references[0].sourceQualifiedName).toBe("Game::Worker::Tick");
+      expect(references.body.references[0].category).toBe("methodCall");
+
+      const impact = await request(app)
+        .get("/impact")
+        .query({ qualifiedName: "Game::Worker::Update", depth: 2, limit: 10 })
+        .expect(200);
+      expect(impact.body.lookupMode).toBe("exact");
+      expect(impact.body.directCallers).toHaveLength(1);
+      expect(impact.body.directReferences).toHaveLength(2);
+      expect(impact.body.totalAffectedSymbols).toBeGreaterThanOrEqual(1);
+      expect(impact.body.topAffectedSymbols[0].qualifiedName).toBe("Game::Worker::Tick");
+      expect(impact.body.suggestedFollowUpQueries).toContain("find_references qualifiedName=Game::Worker::Update");
+
+      const fileSymbols = await request(app)
+        .get("/file-symbols")
+        .query({ filePath: "samples/ambiguity/src/namespace_dupes.h" })
+        .expect(200);
+      expect(fileSymbols.body.summary.totalCount).toBe(fileSymbols.body.symbols.length);
+      expect(fileSymbols.body.window.totalCount).toBe(fileSymbols.body.summary.totalCount);
+      expect(fileSymbols.body.symbols[0].qualifiedName).toBe("Gameplay");
+
+      const namespaceSymbols = await request(app)
+        .get("/namespace-symbols")
+        .query({ qualifiedName: "Gameplay" })
+        .expect(200);
+      expect(namespaceSymbols.body.lookupMode).toBe("exact");
+      expect(namespaceSymbols.body.summary.totalCount).toBe(1);
+      expect(namespaceSymbols.body.window.totalCount).toBe(1);
+      expect(namespaceSymbols.body.symbols[0].qualifiedName).toBe("Gameplay::Update");
+
+      const classMembers = await request(app)
+        .get("/class-members")
+        .query({ qualifiedName: "Game::Worker" })
+        .expect(200);
+      expect(classMembers.body.lookupMode).toBe("exact");
+      expect(classMembers.body.summary.totalCount).toBe(2);
+      expect(classMembers.body.window.totalCount).toBe(2);
+      expect(classMembers.body.members.map((member: any) => member.qualifiedName)).toEqual([
+        "Game::Worker::Update",
+        "Game::Worker::Tick",
+      ]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -334,6 +473,121 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.confidence).toBe("ambiguous");
       expect(heuristic.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.ambiguity).toEqual({ candidateCount: 4 });
+
+      const callerResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: { name: "find_callers", arguments: { name: "Update", limit: 10 } },
+        },
+      ], dir);
+      const callers = JSON.parse(callerResponses.find((r) => r.id === 4).result.content[0].text);
+      expect(callers.lookupMode).toBe("heuristic");
+      expect(callers.confidence).toBe("ambiguous");
+      expect(callers.matchReasons).toEqual(["ambiguous_top_score"]);
+      expect(callers.ambiguity).toEqual({ candidateCount: 4 });
+      expect(callers.totalCount).toBe(1);
+      expect(callers.truncated).toBe(false);
+      expect(callers.window.totalCount).toBe(1);
+      expect(callers.window.returnedCount).toBe(1);
+      expect(callers.callers).toHaveLength(1);
+      expect(callers.callers[0].qualifiedName).toBe("AI::Controller::Update");
+
+      const referenceResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: {
+            name: "find_references",
+            arguments: { qualifiedName: "Gameplay::Update", category: "functionCall", limit: 10 },
+          },
+        },
+      ], dir);
+      const references = JSON.parse(referenceResponses.find((r) => r.id === 5).result.content[0].text);
+      expect(references.lookupMode).toBe("exact");
+      expect(references.references).toHaveLength(1);
+      expect(references.totalCount).toBe(1);
+      expect(references.window.totalCount).toBe(1);
+      expect(references.window.returnedCount).toBe(1);
+      expect(references.references[0].sourceQualifiedName).toBe("AI::Controller::Update");
+      expect(references.references[0].category).toBe("functionCall");
+
+      const impactResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 6,
+          method: "tools/call",
+          params: {
+            name: "impact_analysis",
+            arguments: { qualifiedName: "Gameplay::Update", depth: 2, limit: 10 },
+          },
+        },
+      ], dir);
+      const impact = JSON.parse(impactResponses.find((r) => r.id === 6).result.content[0].text);
+      expect(impact.lookupMode).toBe("exact");
+      expect(impact.directCallers).toHaveLength(1);
+      expect(impact.directReferences).toHaveLength(1);
+      expect(impact.totalAffectedSymbols).toBeGreaterThanOrEqual(1);
+      expect(impact.topAffectedSymbols[0].qualifiedName).toBe("AI::Controller::Update");
+      expect(impact.suggestedFollowUpQueries).toContain("find_callers qualifiedName=Gameplay::Update");
+
+      const fileResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/call",
+          params: { name: "list_file_symbols", arguments: { filePath: "samples/ambiguity/src/namespace_dupes.h" } },
+        },
+      ], dir);
+      const fileSymbols = JSON.parse(fileResponses.find((r) => r.id === 7).result.content[0].text);
+      expect(fileSymbols.summary.totalCount).toBe(fileSymbols.symbols.length);
+      expect(fileSymbols.window.totalCount).toBe(fileSymbols.summary.totalCount);
+      expect(fileSymbols.symbols[0].qualifiedName).toBe("Gameplay");
+
+      const namespaceResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 8,
+          method: "tools/call",
+          params: { name: "list_namespace_symbols", arguments: { qualifiedName: "Gameplay" } },
+        },
+      ], dir);
+      const namespaceSymbols = JSON.parse(namespaceResponses.find((r) => r.id === 8).result.content[0].text);
+      expect(namespaceSymbols.lookupMode).toBe("exact");
+      expect(namespaceSymbols.summary.totalCount).toBe(1);
+      expect(namespaceSymbols.window.totalCount).toBe(1);
+      expect(namespaceSymbols.symbols[0].qualifiedName).toBe("Gameplay::Update");
+
+      const classResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "list_class_members", arguments: { qualifiedName: "Game::Worker" } },
+        },
+      ], dir);
+      const classMembers = JSON.parse(classResponses.find((r) => r.id === 9).result.content[0].text);
+      expect(classMembers.lookupMode).toBe("exact");
+      expect(classMembers.summary.totalCount).toBe(2);
+      expect(classMembers.window.totalCount).toBe(2);
+      expect(classMembers.members.map((member: any) => member.qualifiedName)).toEqual([
+        "Game::Worker::Update",
+        "Game::Worker::Tick",
+      ]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -6,14 +6,14 @@ use chrono::Utc;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use crate::models::{FileRecord, ParseResult, RawCallSite, Symbol};
+use crate::models::{FileRecord, NormalizedReference, ParseResult, RawCallSite, Symbol};
 use crate::parser;
 
 pub fn parse_files(
     workspace_root: &Path,
     relative_paths: &[String],
     verbose: bool,
-) -> (Vec<Symbol>, Vec<RawCallSite>, Vec<FileRecord>) {
+) -> (Vec<Symbol>, Vec<RawCallSite>, Vec<NormalizedReference>, Vec<FileRecord>) {
     let total = relative_paths.len();
     let progress = AtomicUsize::new(0);
 
@@ -53,6 +53,7 @@ pub fn parse_files(
 
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
+    let mut normalized_references = Vec::new();
     let mut file_records = Vec::new();
 
     for (rel_path, result, hash, _lossy) in results {
@@ -64,6 +65,7 @@ pub fn parse_files(
                     last_indexed: Utc::now().to_rfc3339(),
                     symbol_count: pr.symbols.len(),
                 });
+                normalized_references.extend(pr.normalized_references);
                 symbols.extend(pr.symbols);
                 raw_calls.extend(pr.raw_calls);
             }
@@ -75,7 +77,7 @@ pub fn parse_files(
         }
     }
 
-    (symbols, raw_calls, file_records)
+    (symbols, raw_calls, normalized_references, file_records)
 }
 
 pub fn parse_file_strict(workspace_root: &Path, rel_path: &str) -> Result<(ParseResult, String, bool), String> {
@@ -91,9 +93,10 @@ pub fn parse_files_strict(
     workspace_root: &Path,
     relative_paths: &[String],
     verbose: bool,
-) -> Result<(Vec<Symbol>, Vec<RawCallSite>, Vec<FileRecord>), String> {
+) -> Result<(Vec<Symbol>, Vec<RawCallSite>, Vec<NormalizedReference>, Vec<FileRecord>), String> {
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
+    let mut normalized_references = Vec::new();
     let mut file_records = Vec::new();
     let total = relative_paths.len();
 
@@ -123,11 +126,12 @@ pub fn parse_files_strict(
             last_indexed: Utc::now().to_rfc3339(),
             symbol_count: result.symbols.len(),
         });
+        normalized_references.extend(result.normalized_references);
         symbols.extend(result.symbols);
         raw_calls.extend(result.raw_calls);
     }
 
-    Ok((symbols, raw_calls, file_records))
+    Ok((symbols, raw_calls, normalized_references, file_records))
 }
 
 fn read_source_file(path: &Path) -> Result<(String, String, bool), std::io::Error> {

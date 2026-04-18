@@ -51,6 +51,18 @@ export interface FunctionResponse {
   callees: CallReference[];
 }
 
+export interface CallerQueryResponse {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
+  window: ResultWindow;
+  callers: CallReference[];
+  totalCount: number;
+  truncated: boolean;
+}
+
 export interface ClassResponse {
   lookupMode: LookupMode;
   symbol: Symbol;
@@ -62,6 +74,7 @@ export interface ClassResponse {
 
 export interface SearchResponse {
   query: string;
+  window: ResultWindow;
   results: Symbol[];
   totalCount: number;
   truncated: boolean;
@@ -97,6 +110,102 @@ export interface CallReference {
   confidence: ConfidenceLevel;
   matchReasons: MatchReason[];
   ambiguity?: AmbiguityInfo;
+}
+
+export type ReferenceCategory =
+  | "functionCall"
+  | "methodCall"
+  | "classInstantiation"
+  | "typeUsage"
+  | "inheritanceMention";
+
+export interface ReferenceRecord {
+  sourceSymbolId: string;
+  targetSymbolId: string;
+  category: ReferenceCategory;
+  filePath: string;
+  line: number;
+  confidence: "high" | "partial";
+}
+
+export interface ResolvedReference extends ReferenceRecord {
+  sourceSymbolName: string;
+  sourceQualifiedName: string;
+}
+
+export interface ReferenceQueryResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  references: ResolvedReference[];
+  totalCount: number;
+  truncated: boolean;
+  category?: ReferenceCategory;
+  filePath?: string;
+}
+
+export interface ImpactedSymbolSummary {
+  symbolId: string;
+  symbolName: string;
+  qualifiedName: string;
+  type: Symbol["type"];
+  filePath: string;
+  count: number;
+}
+
+export interface ImpactedFileSummary {
+  filePath: string;
+  count: number;
+}
+
+export interface ImpactAnalysisResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  maxDepth: number;
+  directCallers: CallReference[];
+  directCallees: CallReference[];
+  directReferences: ResolvedReference[];
+  totalAffectedSymbols: number;
+  totalAffectedFiles: number;
+  topAffectedSymbols: ImpactedSymbolSummary[];
+  topAffectedFiles: ImpactedFileSummary[];
+  suggestedFollowUpQueries: string[];
+  truncated: boolean;
+}
+
+export interface StructureOverviewSummary {
+  totalCount: number;
+  typeCounts: Record<string, number>;
+}
+
+export interface ResultWindow {
+  returnedCount: number;
+  totalCount: number;
+  truncated: boolean;
+  limitApplied?: number;
+}
+
+export interface FileSymbolsResponse {
+  filePath: string;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  symbols: Symbol[];
+}
+
+export interface NamespaceSymbolsResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  symbols: Symbol[];
+}
+
+export interface ClassMembersOverviewResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  members: Symbol[];
 }
 
 export interface ErrorResponse {

@@ -13,6 +13,7 @@ This fixture set includes:
 - same method names in sibling classes
 - declaration/definition split across header and source
 - `this->` and pointer-member (`ptr->`) calls
+- member calls whose receiver is a more complex expression such as `MakeWorker().Update()`
 
 ## Files
 
@@ -24,6 +25,8 @@ This fixture set includes:
 - `src/sibling_methods.cpp`
 - `src/split_update.h`
 - `src/split_update.cpp`
+- `src/complex_receivers.h`
+- `src/complex_receivers.cpp`
 
 ## Intended Use
 

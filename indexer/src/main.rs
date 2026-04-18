@@ -89,7 +89,10 @@ fn main() {
             );
 
             if plan.to_index.is_empty() && plan.to_delete.is_empty() {
+                let elapsed = start.elapsed();
                 println!("\nNothing to do.");
+                println!("Done in {}", format_elapsed(elapsed.as_millis()));
+                println!("  Output: {}", data_dir.display());
                 return;
             }
 
@@ -102,12 +105,20 @@ fn main() {
         db.checkpoint().expect("Failed to checkpoint SQLite database");
 
         let elapsed = start.elapsed();
-        println!("\nDone in {}ms", elapsed.as_millis());
+        println!("\nDone in {}", format_elapsed(elapsed.as_millis()));
         println!("  Output: {}", data_dir.display());
     }
     publish_staging_db(&staging_db_path, &db_path).expect("Failed to publish SQLite database");
     mark_codeatlas_artifacts(&data_dir, Some(&db_path));
 
+}
+
+fn format_elapsed(elapsed_ms: u128) -> String {
+    if elapsed_ms >= 1_000 {
+        format!("{}ms ({:.2}s)", elapsed_ms, elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{}ms", elapsed_ms)
+    }
 }
 
 fn print_help() {
@@ -204,17 +215,18 @@ fn run_full(
     verbose: bool,
     data_dir: &Path,
 ) {
-    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, all_relative, verbose);
+    let (raw_symbols, raw_calls, normalized_references, file_records) = parse_files(workspace_root, all_relative, verbose);
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
 
     let raw_count: usize = all_relative.len();
-    db.write_all(&raw_symbols, &symbols, &calls, &file_records)
+    db.write_all(&raw_symbols, &symbols, &calls, &normalized_references, &file_records)
         .expect("Failed to write to SQLite");
 
     if json_mode {
         write_json(&data_dir.join("symbols.json"), &symbols);
         write_json(&data_dir.join("calls.json"), &calls);
+        write_json(&data_dir.join("references.json"), &normalized_references);
         write_json(&data_dir.join("files.json"), &file_records);
     }
 
@@ -227,10 +239,10 @@ fn run_incremental(
     plan: &incremental::IncrementalPlan,
     verbose: bool,
 ) -> Result<(), String> {
-    let (parsed_symbols, new_raw_calls, new_files) = if !plan.to_index.is_empty() {
+    let (parsed_symbols, new_raw_calls, new_references, new_files) = if !plan.to_index.is_empty() {
         parse_files_strict(workspace_root, &plan.to_index, verbose)?
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
 
     let mut replaced_paths = plan.to_delete.clone();
@@ -255,6 +267,8 @@ fn run_incremental(
             println!("  DELETE: {}", path);
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
             db.delete_file_record(path)
@@ -263,6 +277,8 @@ fn run_incremental(
         for path in &plan.to_index {
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
             db.delete_file_record(path)
@@ -280,13 +296,24 @@ fn run_incremental(
             .find_symbols_by_ids(&affected_symbol_ids)
             .map_err(|e| format!("Failed to read refreshed symbols: {}", e))?;
 
-        let affected = db
+        let affected_calls = db
             .cleanup_dangling_calls()
             .map_err(|e| format!("Failed to cleanup dangling calls: {}", e))?;
+        let affected_references = db
+            .cleanup_dangling_references()
+            .map_err(|e| format!("Failed to cleanup dangling references: {}", e))?;
 
         let mut all_calls = new_raw_calls;
+        let mut all_references = new_references;
         let plan_to_index_set: HashSet<&str> = plan.to_index.iter().map(|p| p.as_str()).collect();
         let mut files_to_reresolve: Vec<String> = plan.to_index.clone();
+
+        let mut affected = affected_calls;
+        for path in affected_references {
+            if !affected.contains(&path) {
+                affected.push(path);
+            }
+        }
 
         for path in &affected {
             if !files_to_reresolve.contains(path) {
@@ -302,13 +329,20 @@ fn run_incremental(
             }
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
             all_calls.extend(result.raw_calls);
+            all_references.extend(result.normalized_references);
         }
 
         let resolved = resolver::resolve_calls_with_db(&all_calls, &refreshed_symbols, db);
         if !resolved.is_empty() {
             db.write_calls(&resolved)
                 .map_err(|e| format!("Failed to write calls: {}", e))?;
+        }
+        if !all_references.is_empty() {
+            db.write_references(&all_references)
+                .map_err(|e| format!("Failed to write references: {}", e))?;
         }
 
         if !new_files.is_empty() {
@@ -321,10 +355,11 @@ fn run_incremental(
 
         let total_syms: i64 = db.count_symbols().unwrap_or(0);
         let total_calls: i64 = db.count_calls().unwrap_or(0);
+        let total_references: i64 = db.count_references().unwrap_or(0);
         let total_files: i64 = db.count_files().unwrap_or(0);
         println!(
-            "  Symbols: {} | Calls: {} | Files: {} | Re-resolved: {} file(s)",
-            total_syms, total_calls, total_files, files_to_reresolve.len(),
+            "  Symbols: {} | Calls: {} | References: {} | Files: {} | Re-resolved: {} file(s)",
+            total_syms, total_calls, total_references, total_files, files_to_reresolve.len(),
         );
         Ok(())
     })();

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_graph::ast::File as GraphDslFile;
@@ -8,8 +8,9 @@ use tree_sitter_graph::{ExecutionConfig as GraphExecutionConfig, Identifier as G
 use tree_sitter_graph::{NoCancellation, Variables as GraphVariables};
 use crate::graph_rules::CPP_CALL_RELATIONS;
 use crate::models::{
-    ParseResult, RawCallKind, RawCallSite, RawEventSource, RawExtractionConfidence,
-    RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind, Symbol,
+    NormalizedReference, ParseResult, RawCallKind, RawCallSite, RawEventSource,
+    RawExtractionConfidence, RawQualifierKind, RawReceiverKind, RawRelationEvent,
+    RawRelationKind, ReferenceCategory, Symbol,
 };
 
 struct Ctx {
@@ -85,10 +86,12 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         );
         (mixed_relation_events, legacy_raw_calls)
     };
+    let normalized_references = extract_normalized_references(&relation_events, &ctx.symbols);
 
     Ok(ParseResult {
         symbols: ctx.symbols,
         relation_events,
+        normalized_references,
         raw_calls,
     })
 }
@@ -166,7 +169,10 @@ fn extract_graph_relation_events(
             call_kind: read_attr_str(attrs, "call_kind").and_then(parse_call_kind),
             argument_count: read_attr_u32(attrs, "argument_count").map(|value| value as usize),
             receiver: read_attr_string(attrs, "receiver"),
-            receiver_kind: read_attr_str(attrs, "receiver_kind").and_then(parse_receiver_kind),
+            receiver_kind: graph_receiver_kind(
+                read_attr_string(attrs, "receiver"),
+                read_attr_str(attrs, "receiver_kind").and_then(parse_receiver_kind),
+            ),
             qualifier,
             qualifier_kind,
             file_path: read_attr_string(attrs, "file_path")
@@ -179,6 +185,39 @@ fn extract_graph_relation_events(
     events
 }
 
+fn graph_receiver_kind(
+    receiver: Option<String>,
+    explicit_kind: Option<RawReceiverKind>,
+) -> Option<RawReceiverKind> {
+    explicit_kind.or_else(|| receiver.as_deref().map(infer_receiver_kind_from_text))
+}
+
+fn infer_receiver_kind_from_text(receiver: &str) -> RawReceiverKind {
+    let trimmed = receiver.trim();
+    if trimmed == "this" {
+        RawReceiverKind::This
+    } else if is_simple_identifier(trimmed) {
+        RawReceiverKind::Identifier
+    } else if trimmed.contains("->") {
+        RawReceiverKind::PointerExpression
+    } else if trimmed.contains('.') {
+        RawReceiverKind::FieldExpression
+    } else if trimmed.contains("::") {
+        RawReceiverKind::QualifiedIdentifier
+    } else {
+        RawReceiverKind::Other
+    }
+}
+
+fn is_simple_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 fn read_enclosing_symbol_id(line: usize, ctx: &Ctx) -> Option<String> {
     if line == 0 {
         return None;
@@ -189,6 +228,124 @@ fn read_enclosing_symbol_id(line: usize, ctx: &Ctx) -> Option<String> {
         .filter(|symbol| symbol.line <= line && line <= symbol.end_line)
         .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.line))
         .map(|symbol| symbol.id.clone())
+}
+
+fn extract_normalized_references(
+    relation_events: &[RawRelationEvent],
+    symbols: &[Symbol],
+) -> Vec<NormalizedReference> {
+    let symbol_index = build_symbol_index(symbols);
+    let mut references = Vec::new();
+    let mut seen = HashSet::new();
+
+    for event in relation_events {
+        let category = match event.relation_kind {
+            RawRelationKind::TypeUsage => ReferenceCategory::TypeUsage,
+            RawRelationKind::Inheritance => ReferenceCategory::InheritanceMention,
+            RawRelationKind::Call => continue,
+        };
+
+        let source_symbol_id = match event.caller_id.as_deref() {
+            Some(id) => id,
+            None => continue,
+        };
+        let target_symbol_id = match resolve_reference_target_id(event, source_symbol_id, &symbol_index) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let normalized = NormalizedReference {
+            source_symbol_id: source_symbol_id.to_string(),
+            target_symbol_id: target_symbol_id.to_string(),
+            category,
+            file_path: event.file_path.clone(),
+            line: event.line,
+            confidence: event.confidence.clone(),
+        };
+        let key = format!(
+            "{}|{}|{:?}|{}|{}",
+            normalized.source_symbol_id,
+            normalized.target_symbol_id,
+            normalized.category,
+            normalized.file_path,
+            normalized.line
+        );
+        if seen.insert(key) {
+            references.push(normalized);
+        }
+    }
+
+    references
+}
+
+fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<Symbol>> {
+    let mut index: HashMap<String, Vec<Symbol>> = HashMap::new();
+    for symbol in symbols {
+        index
+            .entry(symbol.name.clone())
+            .or_default()
+            .push(symbol.clone());
+        index
+            .entry(symbol.id.clone())
+            .or_default()
+            .push(symbol.clone());
+        if symbol.qualified_name != symbol.id {
+            index
+                .entry(symbol.qualified_name.clone())
+                .or_default()
+                .push(symbol.clone());
+        }
+    }
+    index
+}
+
+fn resolve_reference_target_id(
+    event: &RawRelationEvent,
+    source_symbol_id: &str,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> Option<String> {
+    let target_name = event.target_name.as_deref()?;
+    let direct = symbol_index.get(target_name)?;
+    if direct.len() == 1 {
+        return Some(direct[0].id.clone());
+    }
+
+    let source_namespace = namespace_scope(source_symbol_id);
+    let mut scored: Vec<(i32, &Symbol)> = direct
+        .iter()
+        .map(|symbol| {
+            let mut score = 0;
+            if symbol.id == target_name || symbol.qualified_name == target_name {
+                score += 100;
+            }
+            if let Some(namespace) = source_namespace {
+                if symbol_namespace(symbol) == Some(namespace) {
+                    score += 50;
+                }
+            }
+            (score, symbol)
+        })
+        .collect();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.id.cmp(&right.1.id)));
+
+    let best = scored.first()?;
+    let best_score = best.0;
+    if best_score == 0 {
+        return None;
+    }
+    if scored.iter().take_while(|candidate| candidate.0 == best_score).count() > 1 {
+        return None;
+    }
+
+    Some(best.1.id.clone())
+}
+
+fn symbol_namespace<'a>(symbol: &'a Symbol) -> Option<&'a str> {
+    namespace_scope(symbol.id.as_str())
+}
+
+fn namespace_scope(qualified_id: &str) -> Option<&str> {
+    qualified_id.rsplit_once("::").map(|(namespace, _)| namespace)
 }
 
 fn read_attr_string(
@@ -1279,6 +1436,12 @@ T Max(T a, T b) { return a > b ? a : b; }
     }
 
     #[test]
+    fn graph_matches_legacy_on_complex_receivers_fixture() {
+        let source = include_str!("../../samples/ambiguity/src/complex_receivers.cpp");
+        assert_graph_parity("samples/ambiguity/src/complex_receivers.cpp", source);
+    }
+
+    #[test]
     fn emits_type_usage_relation_events_from_graph() {
         let src = r#"
 namespace Game {
@@ -1308,6 +1471,15 @@ public:
             event.caller_id.as_deref() == Some("Game::Controller")
                 || event.caller_id.as_deref() == Some("Game::Controller::Tick")
         }));
+        let normalized_refs: Vec<_> = result
+            .normalized_references
+            .iter()
+            .filter(|reference| reference.category == ReferenceCategory::TypeUsage)
+            .collect();
+        assert!(!normalized_refs.is_empty());
+        assert!(normalized_refs
+            .iter()
+            .all(|reference| reference.target_symbol_id == "Game::Actor"));
     }
 
     #[test]
@@ -1328,6 +1500,18 @@ class Player : public Actor {};
         assert_eq!(inheritance_events[0].source, RawEventSource::TreeSitterGraph);
         assert_eq!(inheritance_events[0].target_name.as_deref(), Some("Actor"));
         assert_eq!(inheritance_events[0].caller_id.as_deref(), Some("Game::Player"));
+        assert_eq!(result.normalized_references.len(), 1);
+        assert_eq!(
+            result.normalized_references[0],
+            NormalizedReference {
+                source_symbol_id: "Game::Player".into(),
+                target_symbol_id: "Game::Actor".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "inheritance.cpp".into(),
+                line: 4,
+                confidence: RawExtractionConfidence::Partial,
+            }
+        );
     }
 
     #[test]
@@ -1374,7 +1558,7 @@ class Player : public Actor {};
     }
 
     #[test]
-    fn unsupported_member_receiver_shape_falls_back_to_legacy_calls() {
+    fn complex_member_receiver_shape_is_supported_by_graph_calls() {
         let src = r#"
 namespace Game {
 class Worker {
@@ -1400,11 +1584,13 @@ void Tick() {
             .find(|call| call.called_name == "Update")
             .unwrap();
         assert!(matches!(update_call.call_kind, RawCallKind::MemberAccess));
+        assert_eq!(update_call.receiver.as_deref(), Some("MakeWorker()"));
+        assert_eq!(update_call.receiver_kind, Some(RawReceiverKind::Other));
         assert!(result
             .relation_events
             .iter()
             .filter(|event| event.relation_kind == RawRelationKind::Call)
-            .all(|event| event.source == RawEventSource::LegacyAst));
+            .all(|event| event.source == RawEventSource::TreeSitterGraph));
         assert!(result
             .relation_events
             .iter()

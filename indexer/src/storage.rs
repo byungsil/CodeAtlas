@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
-use crate::models::{Call, FileRecord, Symbol};
+use crate::models::{Call, FileRecord, NormalizedReference, RawExtractionConfidence, ReferenceCategory, Symbol};
 use crate::resolver;
 
 const SCHEMA: &str = r#"
@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS calls (
     line        INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS symbol_references (
+    source_symbol_id TEXT NOT NULL,
+    target_symbol_id TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    line        INTEGER NOT NULL,
+    confidence  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS files (
     path            TEXT PRIMARY KEY,
     content_hash    TEXT NOT NULL,
@@ -72,6 +81,10 @@ CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_id);
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_id);
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_path);
+CREATE INDEX IF NOT EXISTS idx_references_source ON symbol_references(source_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_references_category ON symbol_references(category);
+CREATE INDEX IF NOT EXISTS idx_references_file ON symbol_references(file_path);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(id, name, qualified_name, tokenize='trigram');
@@ -172,7 +185,7 @@ impl Database {
 
     pub fn clear(&self) -> SqlResult<()> {
         self.conn.execute_batch(
-            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM files; DELETE FROM symbols_fts;",
+            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM symbol_references; DELETE FROM files; DELETE FROM symbols_fts;",
         )
     }
 
@@ -256,6 +269,23 @@ impl Database {
         Ok(())
     }
 
+    pub fn write_references(&self, references: &[NormalizedReference]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO symbol_references (source_symbol_id, target_symbol_id, category, file_path, line, confidence) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for reference in references {
+            stmt.execute(params![
+                reference.source_symbol_id,
+                reference.target_symbol_id,
+                reference_category_key(&reference.category),
+                reference.file_path,
+                reference.line,
+                extraction_confidence_key(&reference.confidence),
+            ])?;
+        }
+        Ok(())
+    }
+
     pub fn write_files(&self, files: &[FileRecord]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count) VALUES (?1, ?2, ?3, ?4)",
@@ -271,6 +301,7 @@ impl Database {
         raw_symbols: &[Symbol],
         representative_symbols: &[Symbol],
         calls: &[Call],
+        references: &[NormalizedReference],
         files: &[FileRecord],
     ) -> SqlResult<()> {
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
@@ -278,6 +309,7 @@ impl Database {
         self.write_raw_symbols(raw_symbols)?;
         self.write_symbols(representative_symbols)?;
         self.write_calls(calls)?;
+        self.write_references(references)?;
         self.write_files(files)?;
         self.rebuild_fts()?;
         self.conn.execute_batch("COMMIT;")?;
@@ -329,8 +361,33 @@ impl Database {
         Ok(affected)
     }
 
+    pub fn cleanup_dangling_references(&self) -> SqlResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT file_path FROM symbol_references
+             WHERE source_symbol_id NOT IN (SELECT id FROM symbols)
+                OR target_symbol_id NOT IN (SELECT id FROM symbols)",
+        )?;
+        let affected: Vec<String> = stmt.query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        self.conn.execute(
+            "DELETE FROM symbol_references
+             WHERE source_symbol_id NOT IN (SELECT id FROM symbols)
+                OR target_symbol_id NOT IN (SELECT id FROM symbols)",
+            [],
+        )?;
+
+        Ok(affected)
+    }
+
     pub fn delete_calls_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM calls WHERE file_path = ?1", params![file_path])?;
+        Ok(())
+    }
+
+    pub fn delete_references_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM symbol_references WHERE file_path = ?1", params![file_path])?;
         Ok(())
     }
 
@@ -347,36 +404,6 @@ impl Database {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(file_paths.iter()), |row| {
-            Ok(Symbol {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualified_name: row.get(2)?,
-                symbol_type: row.get(3)?,
-                file_path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                signature: row.get(7)?,
-                parameter_count: row.get(8)?,
-                scope_qualified_name: row.get(9)?,
-                scope_kind: row.get(10)?,
-                symbol_role: row.get(11)?,
-                declaration_file_path: row.get(12)?,
-                declaration_line: row.get(13)?,
-                declaration_end_line: row.get(14)?,
-                definition_file_path: row.get(15)?,
-                definition_line: row.get(16)?,
-                definition_end_line: row.get(17)?,
-                parent_id: row.get(18)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    fn read_all_raw_symbols(&self) -> SqlResult<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id FROM symbols_raw",
-        )?;
-        let rows = stmt.query_map([], |row| {
             Ok(Symbol {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -575,6 +602,10 @@ impl Database {
         self.conn.query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0))
     }
 
+    pub fn count_references(&self) -> SqlResult<i64> {
+        self.conn.query_row("SELECT COUNT(*) FROM symbol_references", [], |r| r.get(0))
+    }
+
     pub fn count_files(&self) -> SqlResult<i64> {
         self.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
     }
@@ -593,6 +624,23 @@ impl Database {
 
     pub fn rollback(&self) -> SqlResult<()> {
         self.conn.execute_batch("ROLLBACK;")
+    }
+}
+
+fn reference_category_key(category: &ReferenceCategory) -> &'static str {
+    match category {
+        ReferenceCategory::FunctionCall => "functionCall",
+        ReferenceCategory::MethodCall => "methodCall",
+        ReferenceCategory::ClassInstantiation => "classInstantiation",
+        ReferenceCategory::TypeUsage => "typeUsage",
+        ReferenceCategory::InheritanceMention => "inheritanceMention",
+    }
+}
+
+fn extraction_confidence_key(confidence: &RawExtractionConfidence) -> &'static str {
+    match confidence {
+        RawExtractionConfidence::High => "high",
+        RawExtractionConfidence::Partial => "partial",
     }
 }
 
@@ -657,12 +705,14 @@ mod tests {
             last_indexed: "2026-01-01T00:00:00Z".into(), symbol_count: 2,
         }];
 
-        db.write_all(&symbols, &symbols, &calls, &files).unwrap();
+        db.write_all(&symbols, &symbols, &calls, &[], &files).unwrap();
 
         let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 2);
         let call_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0)).unwrap();
         assert_eq!(call_count, 1);
+        let reference_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM symbol_references", [], |r| r.get(0)).unwrap();
+        assert_eq!(reference_count, 0);
         let file_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
         assert_eq!(file_count, 1);
     }
@@ -686,7 +736,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 10);
+        assert_eq!(idx_count, 14);
     }
 
     #[test]
@@ -883,5 +933,25 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(call_count, 1);
+    }
+
+    #[test]
+    fn writes_references() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let references = vec![NormalizedReference {
+            source_symbol_id: "Game::Controller".into(),
+            target_symbol_id: "Game::Actor".into(),
+            category: ReferenceCategory::TypeUsage,
+            file_path: "controller.cpp".into(),
+            line: 7,
+            confidence: RawExtractionConfidence::Partial,
+        }];
+
+        db.write_references(&references).unwrap();
+
+        let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM symbol_references", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+        let category: String = db.conn.query_row("SELECT category FROM symbol_references LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(category, "typeUsage");
     }
 }

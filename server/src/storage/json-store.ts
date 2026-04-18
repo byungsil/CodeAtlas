@@ -3,11 +3,13 @@ import * as path from "path";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
+import { ReferenceCategory, ReferenceRecord } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
 
 export interface IndexData {
   symbols: Symbol[];
   calls: Call[];
+  references: ReferenceRecord[];
   files: FileRecord[];
 }
 
@@ -24,6 +26,7 @@ export class JsonStore {
   save(data: IndexData): void {
     fs.writeFileSync(this.symbolsPath(), JSON.stringify(data.symbols, null, 2));
     fs.writeFileSync(this.callsPath(), JSON.stringify(data.calls, null, 2));
+    fs.writeFileSync(this.referencesPath(), JSON.stringify(data.references, null, 2));
     fs.writeFileSync(this.filesPath(), JSON.stringify(data.files, null, 2));
   }
 
@@ -31,6 +34,7 @@ export class JsonStore {
     return {
       symbols: this.readJson(this.symbolsPath(), []),
       calls: this.readJson(this.callsPath(), []),
+      references: this.readJson(this.referencesPath(), []),
       files: this.readJson(this.filesPath(), []),
     };
   }
@@ -72,6 +76,20 @@ export class JsonStore {
     return { results: matches.slice(0, limit), totalCount };
   }
 
+  getFileSymbols(filePath: string): Symbol[] {
+    const data = this.load();
+    return data.symbols
+      .filter((symbol) => symbol.filePath === filePath)
+      .sort(compareSymbolsForOverview);
+  }
+
+  getNamespaceSymbols(namespaceQualifiedName: string): Symbol[] {
+    const data = this.load();
+    return data.symbols
+      .filter((symbol) => symbol.scopeKind === "namespace" && symbol.scopeQualifiedName === namespaceQualifiedName)
+      .sort(compareSymbolsForOverview);
+  }
+
   getCallers(symbolId: string): Call[] {
     const data = this.load();
     return data.calls.filter((c) => c.calleeId === symbolId);
@@ -87,6 +105,14 @@ export class JsonStore {
     return data.symbols.filter((s) => s.parentId === parentId);
   }
 
+  getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[] {
+    const data = this.load();
+    return data.references.filter((reference) =>
+      reference.targetSymbolId === targetSymbolId
+      && (!category || reference.category === category)
+      && (!filePath || reference.filePath === filePath));
+  }
+
   private symbolsPath(): string {
     return path.join(this.dataDir, "symbols.json");
   }
@@ -99,9 +125,19 @@ export class JsonStore {
     return path.join(this.dataDir, "files.json");
   }
 
+  private referencesPath(): string {
+    return path.join(this.dataDir, "references.json");
+  }
+
   private readJson<T>(filePath: string, fallback: T): T {
     if (!fs.existsSync(filePath)) return fallback;
     const raw = fs.readFileSync(filePath, "utf-8");
     return JSON.parse(raw) as T;
   }
+}
+
+function compareSymbolsForOverview(a: Symbol, b: Symbol): number {
+  return a.line - b.line
+    || a.endLine - b.endLine
+    || a.qualifiedName.localeCompare(b.qualifiedName);
 }

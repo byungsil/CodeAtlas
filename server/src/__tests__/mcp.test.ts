@@ -7,13 +7,25 @@ const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVe
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 describe("MCP payload contracts", () => {
-  it("tools/list returns 5 tools", async () => {
+  it("tools/list returns 11 tools", async () => {
     const responses = await mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }], DATA_DIR);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(5);
+    expect(toolList.result.tools).toHaveLength(11);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
-    expect(names).toEqual(["get_callgraph", "lookup_class", "lookup_function", "lookup_symbol", "search_symbols"]);
+    expect(names).toEqual([
+      "find_callers",
+      "find_references",
+      "get_callgraph",
+      "impact_analysis",
+      "list_class_members",
+      "list_file_symbols",
+      "list_namespace_symbols",
+      "lookup_class",
+      "lookup_function",
+      "lookup_symbol",
+      "search_symbols",
+    ]);
   });
 
   it("lookup_symbol returns exact response by id", async () => {
@@ -162,6 +174,8 @@ describe("MCP payload contracts", () => {
     const res = responses.find((r) => r.id === 3);
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.query).toBe("Update");
+    expect(payload.window.totalCount).toBe(payload.totalCount);
+    expect(payload.window.returnedCount).toBe(payload.results.length);
     expect(payload.results).toBeInstanceOf(Array);
     expect(payload).toHaveProperty("totalCount");
     expect(payload).toHaveProperty("truncated");
@@ -180,6 +194,57 @@ describe("MCP payload contracts", () => {
     expect(payload).toHaveProperty("depth");
     expect(payload).toHaveProperty("maxDepth");
     expect(payload).toHaveProperty("truncated");
+  });
+
+  it("find_callers returns deduplicated callers in deterministic order", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "find_callers", arguments: { name: "Update", limit: 10 } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.symbol.name).toBe("Update");
+    expect(payload.callers).toBeInstanceOf(Array);
+    expect(payload.callers.length).toBeGreaterThan(0);
+    expect(payload.totalCount).toBe(payload.callers.length);
+    expect(payload.truncated).toBe(false);
+    expect(payload.window.totalCount).toBe(payload.totalCount);
+    expect(payload.window.returnedCount).toBe(payload.callers.length);
+
+    const qualifiedNames = payload.callers.map((ref: any) => ref.qualifiedName);
+    expect(qualifiedNames).toEqual([...qualifiedNames].sort((a, b) => a.localeCompare(b)));
+    expect(new Set(payload.callers.map((ref: any) => ref.symbolId)).size).toBe(payload.callers.length);
+  });
+
+  it("list_file_symbols returns stable overview for one file", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "src/game_object.h" } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.filePath).toBe("src/game_object.h");
+    expect(payload.summary.totalCount).toBe(payload.symbols.length);
+    expect(payload.window.totalCount).toBe(payload.summary.totalCount);
+    expect(payload.window.returnedCount).toBe(payload.symbols.length);
+    expect(payload.symbols).toBeInstanceOf(Array);
+    expect(payload.symbols.length).toBeGreaterThan(0);
+  });
+
+  it("list_class_members returns exact member overview", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_class_members", arguments: { qualifiedName: "Game::GameObject" } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.lookupMode).toBe("exact");
+    expect(payload.symbol.qualifiedName).toBe("Game::GameObject");
+    expect(payload.summary.totalCount).toBe(payload.members.length);
+    expect(payload.window.totalCount).toBe(payload.summary.totalCount);
+    expect(payload.window.returnedCount).toBe(payload.members.length);
+    expect(payload.members).toBeInstanceOf(Array);
+    expect(payload.members.length).toBeGreaterThan(0);
   });
 
   it("NOT_FOUND returns isError", async () => {

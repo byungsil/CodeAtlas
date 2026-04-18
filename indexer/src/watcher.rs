@@ -142,10 +142,10 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
     println!("Initial index: {} files", all_relative.len());
     let start = Instant::now();
 
-    let (raw_symbols, raw_calls, file_records) = parse_files(workspace_root, &all_relative, verbose);
+    let (raw_symbols, raw_calls, normalized_references, file_records) = parse_files(workspace_root, &all_relative, verbose);
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
-    db.write_all(&raw_symbols, &symbols, &calls, &file_records)
+    db.write_all(&raw_symbols, &symbols, &calls, &normalized_references, &file_records)
         .map_err(|e| format!("DB write: {}", e))?;
 
     println!(
@@ -175,10 +175,10 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
 
     let start = Instant::now();
 
-    let (parsed_symbols, new_raw_calls, new_files) = if !plan.to_index.is_empty() {
+    let (parsed_symbols, new_raw_calls, new_references, new_files) = if !plan.to_index.is_empty() {
         parse_files_strict(workspace_root, &plan.to_index, verbose)?
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
 
     let mut replaced_paths = plan.to_delete.clone();
@@ -202,6 +202,8 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         for path in &plan.to_delete {
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("DB delete calls: {}", e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("DB delete references: {}", e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("DB delete raw symbols: {}", e))?;
             db.delete_file_record(path)
@@ -210,6 +212,8 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         for path in &plan.to_index {
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("DB delete calls: {}", e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("DB delete references: {}", e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("DB delete raw symbols: {}", e))?;
             db.delete_file_record(path)
@@ -227,12 +231,22 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
             .find_symbols_by_ids(&affected_symbol_ids)
             .map_err(|e| format!("DB read refreshed symbols: {}", e))?;
 
-        let affected = db.cleanup_dangling_calls()
+        let affected_calls = db.cleanup_dangling_calls()
             .map_err(|e| format!("DB cleanup: {}", e))?;
+        let affected_references = db.cleanup_dangling_references()
+            .map_err(|e| format!("DB cleanup references: {}", e))?;
 
         let mut all_raw_calls = new_raw_calls;
+        let mut all_references = new_references;
         let plan_to_index_set: HashSet<&str> = plan.to_index.iter().map(|p| p.as_str()).collect();
         let mut files_to_reresolve: Vec<String> = plan.to_index.clone();
+
+        let mut affected = affected_calls;
+        for path in affected_references {
+            if !affected.contains(&path) {
+                affected.push(path);
+            }
+        }
 
         for path in &affected {
             if !files_to_reresolve.contains(path) {
@@ -248,13 +262,20 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
             }
             db.delete_calls_for_file(path)
                 .map_err(|e| format!("DB delete calls: {}", e))?;
+            db.delete_references_for_file(path)
+                .map_err(|e| format!("DB delete references: {}", e))?;
             all_raw_calls.extend(result.raw_calls);
+            all_references.extend(result.normalized_references);
         }
 
         let resolved = resolver::resolve_calls_with_db(&all_raw_calls, &refreshed_symbols, &db);
         if !resolved.is_empty() {
             db.write_calls(&resolved)
                 .map_err(|e| format!("DB write calls: {}", e))?;
+        }
+        if !all_references.is_empty() {
+            db.write_references(&all_references)
+                .map_err(|e| format!("DB write references: {}", e))?;
         }
         if !new_files.is_empty() {
             db.write_files(&new_files)
@@ -265,12 +286,14 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
 
         let total_syms = db.count_symbols().unwrap_or(0);
         let total_calls = db.count_calls().unwrap_or(0);
+        let total_references = db.count_references().unwrap_or(0);
         let total_files = db.count_files().unwrap_or(0);
         println!(
-            "  Done in {}ms: {} symbols, {} calls, {} files, {} file(s) re-resolved",
+            "  Done in {}ms: {} symbols, {} calls, {} references, {} files, {} file(s) re-resolved",
             start.elapsed().as_millis(),
             total_syms,
             total_calls,
+            total_references,
             total_files,
             files_to_reresolve.len()
         );

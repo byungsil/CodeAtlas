@@ -75,6 +75,49 @@ Milestone 2 intent:
 - During the transition, only `relationKind = call` is projected into the existing `RawCallSite` resolver input.
 - `source` and `confidence` are tracked so graph-derived extraction can be compared against legacy AST extraction without changing public API behavior yet.
 
+### First-Release Reference Model
+
+This is the Milestone 3 normalized contract that future extraction, storage, and query work will target. It is partly represented in code already, but it is not yet exposed as a full HTTP or MCP query surface.
+
+Supported first-release reference categories:
+
+- `functionCall`
+  - a direct call whose resolved target is a free function or namespace function
+- `methodCall`
+  - a direct call whose resolved target is a class or struct member function
+- `classInstantiation`
+  - reserved for constructor-like or object-creation references once extraction is added
+- `typeUsage`
+  - a structural mention of a type in declarations, fields, parameters, or local declarations
+- `inheritanceMention`
+  - a structural base-class mention in an inheritance clause
+
+Intentional first-release limits:
+
+- macro-sensitive semantic interpretation is out of scope
+- template-dependent compiler-grade meaning is out of scope
+- unresolved name mentions are not promoted to first-release references
+- only resolved source and target symbol identities qualify for persisted references
+
+Normalized reference payload:
+
+| Field          | Type   | Description |
+|----------------|--------|-------------|
+| sourceSymbolId | string | Canonical symbol ID that owns or originates the reference |
+| targetSymbolId | string | Canonical symbol ID being referenced |
+| category       | string | One of: `functionCall`, `methodCall`, `classInstantiation`, `typeUsage`, `inheritanceMention` |
+| filePath       | string | Relative file path |
+| line           | number | 1-based source line |
+| confidence     | string | Extraction confidence: `high` or `partial` |
+
+Modeling decisions for Milestone 3:
+
+- `Call` storage remains the canonical source for direct call edges that have already been resolved
+- generalized references will live in their own storage surface rather than overloading the `calls` table
+- `functionCall` and `methodCall` may be derived from existing resolved call edges when reference queries are introduced
+- `typeUsage` and `inheritanceMention` will be promoted from normalized extraction events into persisted references in later Milestone 3 steps
+- `classInstantiation` is part of the first-release vocabulary now so extraction and query code can grow into it without renaming the contract later
+
 ---
 
 ## Endpoints
@@ -237,6 +280,12 @@ Search symbols by name substring.
 ```json
 {
   "query": "Update",
+  "window": {
+    "returnedCount": 3,
+    "totalCount": 3,
+    "truncated": false,
+    "limitApplied": 50
+  },
   "results": [ Symbol ],
   "totalCount": 3,
   "truncated": false
@@ -280,6 +329,45 @@ Retrieve the call graph rooted at a symbol.
 }
 ```
 
+### GET /references
+
+Retrieve generalized references for one exact target symbol identity.
+
+**Parameters:**
+- `id` (query, optional)
+- `qualifiedName` (query, optional)
+- `category` (query, optional)
+- `filePath` (query, optional)
+- `limit` (query, optional)
+
+**Response 200:**
+
+```json
+{
+  "lookupMode": "exact",
+  "symbol": { "id": "Game::Worker::Update", "qualifiedName": "Game::Worker::Update" },
+  "window": {
+    "returnedCount": 1,
+    "totalCount": 1,
+    "truncated": false,
+    "limitApplied": 50
+  },
+  "references": [
+    {
+      "sourceSymbolId": "Game::Worker::Tick",
+      "sourceQualifiedName": "Game::Worker::Tick",
+      "targetSymbolId": "Game::Worker::Update",
+      "category": "methodCall",
+      "filePath": "src/worker.cpp",
+      "line": 8,
+      "confidence": "high"
+    }
+  ],
+  "totalCount": 1,
+  "truncated": false
+}
+```
+
 **Notes:**
 - `truncated: true` when the graph was cut short at `maxDepth` and unexplored edges remain.
 - Depth 1 returns only direct callees. Depth 2 includes callees-of-callees, etc.
@@ -288,6 +376,89 @@ Retrieve the call graph rooted at a symbol.
 
 ```json
 { "error": "Symbol not found", "code": "NOT_FOUND" }
+```
+
+### GET /file-symbols
+
+Retrieve all symbols declared in one exact workspace-relative file path.
+
+**Parameters:**
+- `filePath` (query, required)
+- `limit` (query, optional)
+
+**Response 200:**
+
+```json
+{
+  "filePath": "src/game.h",
+  "summary": {
+    "totalCount": 3,
+    "typeCounts": { "namespace": 1, "class": 1, "method": 1 }
+  },
+  "window": {
+    "returnedCount": 3,
+    "totalCount": 3,
+    "truncated": false,
+    "limitApplied": 50
+  },
+  "symbols": [ Symbol ]
+}
+```
+
+### GET /namespace-symbols
+
+Retrieve direct symbols enclosed by one exact namespace qualified name.
+
+**Parameters:**
+- `qualifiedName` (query, required)
+- `limit` (query, optional)
+
+**Response 200:**
+
+```json
+{
+  "lookupMode": "exact",
+  "symbol": { "qualifiedName": "Game", "type": "namespace" },
+  "summary": {
+    "totalCount": 2,
+    "typeCounts": { "class": 1, "function": 1 }
+  },
+  "window": {
+    "returnedCount": 2,
+    "totalCount": 2,
+    "truncated": false,
+    "limitApplied": 50
+  },
+  "symbols": [ Symbol ]
+}
+```
+
+### GET /class-members
+
+Retrieve direct members for one exact class or struct qualified name.
+
+**Parameters:**
+- `qualifiedName` (query, required)
+- `limit` (query, optional)
+
+**Response 200:**
+
+```json
+{
+  "lookupMode": "exact",
+  "symbol": { "qualifiedName": "Game::GameObject", "type": "class" },
+  "summary": {
+    "totalCount": 2,
+    "typeCounts": { "method": 2 }
+  },
+  "window": {
+    "returnedCount": 2,
+    "totalCount": 2,
+    "truncated": false,
+    "limitApplied": 50
+  },
+  "members": [ Symbol ]
+}
 ```
 
 ---
@@ -427,6 +598,84 @@ Depending on symbol kind, the payload may also include:
 ```json
 { "error": "Symbol not found", "code": "NOT_FOUND" }
 ```
+
+```json
+{ "error": "Invalid exact lookup request", "code": "BAD_REQUEST" }
+```
+
+### Tool: `find_references`
+
+Retrieve generalized references for one exact target symbol identity.
+
+**Arguments:**
+
+- `id` (optional)
+- `qualifiedName` (optional)
+- `category` (optional)
+- `filePath` (optional)
+- `limit` (optional)
+
+**Current behavior:**
+
+- uses exact symbol targeting, not short-name heuristics
+- returns resolved source-symbol metadata together with category and confidence
+- currently surfaces persisted references stored in `symbol_references`
+- includes a shared `window` metadata block for bounded result sets
+
+### Tool: `impact_analysis`
+
+Summarize likely change impact for one exact target symbol.
+
+**Arguments:**
+
+- `id` (optional)
+- `qualifiedName` (optional)
+- `depth` (optional)
+- `limit` (optional)
+
+**Current behavior:**
+
+- uses exact symbol targeting, not short-name heuristics
+- summarizes direct callers, direct callees, and direct generalized references
+- adds bounded caller/callee traversal to produce:
+  - `topAffectedSymbols`
+  - `topAffectedFiles`
+  - `suggestedFollowUpQueries`
+
+### Tool: `list_file_symbols`
+
+Retrieve all symbols for one exact workspace-relative file path in stable declaration order.
+
+- accepts optional `limit`
+- returns `summary` plus shared `window` metadata before the symbol list
+
+### Tool: `list_namespace_symbols`
+
+Retrieve direct enclosed symbols for one exact namespace qualified name.
+
+- accepts optional `limit`
+- returns `summary` plus shared `window` metadata before the symbol list
+
+### Tool: `list_class_members`
+
+Retrieve direct members for one exact class or struct qualified name.
+
+- accepts optional `limit`
+- returns `summary` plus shared `window` metadata before the member list
+
+---
+
+## Reference Query Direction
+
+Milestone 3 contract direction:
+
+- direct caller queries are now available separately from full function lookup
+- generalized reference queries will use the first-release reference model above
+- future `find_references` responses should return category and confidence explicitly
+- future impact-analysis responses may combine:
+  - callers
+  - callees
+  - generalized references
 
 ```json
 { "error": "Invalid exact lookup request", "code": "BAD_REQUEST" }

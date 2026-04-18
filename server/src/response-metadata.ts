@@ -1,9 +1,11 @@
 import {
   CallReference,
   ConfidenceLevel,
+  CallerQueryResponse,
   FunctionResponse,
   MatchReason,
   ClassResponse,
+  ResultWindow,
   SymbolLookupResponse,
 } from "./models/responses";
 import { Symbol } from "./models/symbol";
@@ -81,6 +83,25 @@ export function buildFunctionResponse(params: {
   };
 }
 
+export function buildCallerQueryResponse(params: {
+  symbol: Symbol;
+  candidateCount: number;
+  callers: CallReference[];
+  totalCount: number;
+  truncated: boolean;
+  limitApplied?: number;
+}): CallerQueryResponse {
+  const metadata = deriveLegacyLookupMetadata(params.candidateCount);
+  return {
+    ...metadata,
+    symbol: params.symbol,
+    window: buildResultWindow(params.callers.length, params.totalCount, params.truncated, params.limitApplied),
+    callers: params.callers,
+    totalCount: params.totalCount,
+    truncated: params.truncated,
+  };
+}
+
 export function buildClassResponse(params: {
   symbol: Symbol;
   candidateCount: number;
@@ -91,5 +112,19 @@ export function buildClassResponse(params: {
     ...metadata,
     symbol: params.symbol,
     members: params.members,
+  };
+}
+
+export function buildResultWindow(
+  returnedCount: number,
+  totalCount: number,
+  truncated: boolean,
+  limitApplied?: number,
+): ResultWindow {
+  return {
+    returnedCount,
+    totalCount,
+    truncated,
+    ...(limitApplied !== undefined ? { limitApplied } : {}),
   };
 }

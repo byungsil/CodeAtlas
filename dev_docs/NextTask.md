@@ -5,7 +5,8 @@ Current status:
 - `CompletedTask.md` is now the completed record for the foundation work that has already shipped.
 - Milestone 1 (`Trustworthy Lookup`) is complete.
 - Milestone 2 (`Tree-Sitter Graph Integration`) is complete.
-- The next planned execution target is Milestone 3 (`Real Impact Navigation`).
+- Milestone 3 (`Real Impact Navigation`) is complete.
+- The next planned execution target is the milestone after Milestone 3.
 
 ## 1. Goal
 
@@ -77,7 +78,7 @@ Execution status:
 
 - Step 1 is complete through Milestone 1.
 - Step 2 is complete through Milestone 2.
-- The project is now moving into Step 3 through Milestone 3.
+- Step 3 is complete through Milestone 3.
 
 ---
 
