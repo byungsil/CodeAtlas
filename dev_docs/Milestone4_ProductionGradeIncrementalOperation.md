@@ -1,4 +1,4 @@
-# Milestone 3. Production-Grade Incremental Operation
+# Milestone 4. Production-Grade Incremental Operation
 
 ## 1. Objective
 
@@ -20,19 +20,19 @@ Success outcome:
 
 ## 2. Recommended Order
 
-1. M3-E1. Incremental correctness matrix
-2. M3-E2. Regression fixture suite
-3. M3-E3. File identity and planning upgrades
-4. M3-E4. Header-change fanout policy
-5. M3-E5. Watcher event hardening
-6. M3-E6. Failure recovery and DB safety
-7. M3-E7. Branch switch and mass-change handling
+1. M4-E1. Incremental correctness matrix
+2. M4-E2. Regression fixture suite
+3. M4-E3. File identity and planning upgrades
+4. M4-E4. Header-change fanout policy
+5. M4-E5. Watcher event hardening
+6. M4-E6. Failure recovery and DB safety
+7. M4-E7. Branch switch and mass-change handling
 
 ---
 
 ## 3. Epics
 
-### M3-E1. Incremental Correctness Matrix
+### M4-E1. Incremental Correctness Matrix
 
 Goal:
 
@@ -57,7 +57,7 @@ Implementation tasks:
 Expected touch points:
 
 - `dev_docs/`
-- `dev_docs/NestTask.md` or a dedicated incremental design doc
+- `dev_docs/NextTask.md` or a dedicated incremental design doc
 
 Validation checklist:
 
@@ -69,7 +69,7 @@ Exit criteria:
 
 ---
 
-### M3-E2. Regression Fixture Suite
+### M4-E2. Regression Fixture Suite
 
 Goal:
 
@@ -97,7 +97,7 @@ Exit criteria:
 
 ---
 
-### M3-E3. File Identity and Planning Upgrades
+### M4-E3. File Identity and Planning Upgrades
 
 Goal:
 
@@ -126,7 +126,7 @@ Exit criteria:
 
 ---
 
-### M3-E4. Header-Change Fanout Policy
+### M4-E4. Header-Change Fanout Policy
 
 Goal:
 
@@ -155,7 +155,7 @@ Exit criteria:
 
 ---
 
-### M3-E5. Watcher Event Hardening
+### M4-E5. Watcher Event Hardening
 
 Goal:
 
@@ -183,7 +183,7 @@ Exit criteria:
 
 ---
 
-### M3-E6. Failure Recovery and DB Safety
+### M4-E6. Failure Recovery and DB Safety
 
 Goal:
 
@@ -212,7 +212,7 @@ Exit criteria:
 
 ---
 
-### M3-E7. Branch Switch and Mass-Change Handling
+### M4-E7. Branch Switch and Mass-Change Handling
 
 Goal:
 
@@ -250,3 +250,4 @@ Exit criteria:
 - watcher mode is stable under noisy local workflows
 - DB state remains safe and recoverable after partial failures
 - large repository transitions fail safe instead of silently drifting stale
+

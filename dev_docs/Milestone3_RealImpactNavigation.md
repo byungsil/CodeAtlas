@@ -1,4 +1,8 @@
-# Milestone 2. Real Impact Navigation
+# Milestone 3. Real Impact Navigation
+
+Status:
+
+- Next planned milestone
 
 ## 1. Objective
 
@@ -20,19 +24,20 @@ Success outcome:
 
 ## 2. Recommended Order
 
-1. M2-E1. Direct caller queries
-2. M2-E2. Reference model definition
-3. M2-E3. Reference extraction
-4. M2-E4. Reference storage and retrieval
-5. M2-E5. Impact-analysis summarization
-6. M2-E6. Symbol overview queries
-7. M2-E7. Token-efficient response shaping
+1. M3-E1. Direct caller queries
+2. M3-E2. Milestone 2 graph handoff and remaining extraction coverage
+3. M3-E3. Reference model definition
+4. M3-E4. Reference extraction
+5. M3-E5. Reference storage and retrieval
+6. M3-E6. Impact-analysis summarization
+7. M3-E7. Symbol overview queries
+8. M3-E8. Token-efficient response shaping
 
 ---
 
 ## 3. Epics
 
-### M2-E1. Direct Caller Queries
+### M3-E1. Direct Caller Queries
 
 Goal:
 
@@ -62,7 +67,42 @@ Exit criteria:
 
 ---
 
-### M2-E2. Reference Model Definition
+### M3-E2. Milestone 2 Graph Handoff and Remaining Extraction Coverage
+
+Goal:
+
+- carry forward the remaining post-integration work from Milestone 2 so reference features build on a broader and more stable graph-backed extraction layer
+
+Implementation tasks:
+
+- reduce legacy fallback dependence for graph-backed call extraction where coverage gaps are already understood
+- extend graph rules for additional safe call shapes, especially:
+  - member calls whose receiver is a more complex expression such as `MakeWorker().Update()`
+  - other structurally recoverable member-call forms that do not require compiler-grade semantics
+- keep parity tests alongside each newly supported call shape before enabling graph preference for that shape
+- document which call shapes still require legacy fallback after this pass
+- keep template-heavy and macro-bearing tolerance behavior explicit while coverage expands
+
+Expected touch points:
+
+- `indexer/graph/`
+- `indexer/src/parser.rs`
+- `indexer/src/resolver.rs`
+- `samples/ambiguity`
+
+Validation checklist:
+
+- newly supported call shapes have explicit fixture coverage
+- graph-backed call extraction still matches or improves legacy behavior on ambiguity fixtures
+- unsupported shapes remain safe through explicit fallback rather than silent degradation
+
+Exit criteria:
+
+- Milestone 2 deferred graph-coverage work has an explicit continuation path inside Milestone 3
+
+---
+
+### M3-E3. Reference Model Definition
 
 Goal:
 
@@ -101,7 +141,7 @@ Exit criteria:
 
 ---
 
-### M2-E3. Reference Extraction
+### M3-E4. Reference Extraction
 
 Goal:
 
@@ -129,7 +169,7 @@ Exit criteria:
 
 ---
 
-### M2-E4. Reference Storage and Retrieval
+### M3-E5. Reference Storage and Retrieval
 
 Goal:
 
@@ -160,7 +200,7 @@ Exit criteria:
 
 ---
 
-### M2-E5. Impact-Analysis Summarization
+### M3-E6. Impact-Analysis Summarization
 
 Goal:
 
@@ -195,7 +235,7 @@ Exit criteria:
 
 ---
 
-### M2-E6. Symbol Overview Queries
+### M3-E7. Symbol Overview Queries
 
 Goal:
 
@@ -226,7 +266,7 @@ Exit criteria:
 
 ---
 
-### M2-E7. Token-Efficient Response Shaping
+### M3-E8. Token-Efficient Response Shaping
 
 Goal:
 
@@ -261,3 +301,4 @@ Exit criteria:
 - references are modeled, stored, and queryable
 - impact analysis produces useful summary-first responses
 - symbol overview queries reduce the need for raw source access
+

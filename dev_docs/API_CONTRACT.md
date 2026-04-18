@@ -49,6 +49,32 @@ Base URL: `http://localhost:3000`
 | lastIndexed  | string | ISO 8601 timestamp             |
 | symbolCount  | number | Number of symbols in this file |
 
+### Internal Normalized Relation Event
+
+This is an internal indexer contract for Milestone 2. It is not yet part of the public HTTP or MCP response surface.
+
+| Field      | Type   | Description |
+|------------|--------|-------------|
+| relationKind | string | One of: `call`, `typeUsage`, `inheritance` |
+| source     | string | Extraction origin: `legacyAst` or `treeSitterGraph` |
+| confidence | string | Extraction confidence: `high` or `partial` |
+| callerId   | string? | Source symbol ID for relation events that originate from a symbol body |
+| targetName | string? | Unresolved target token for call-like events |
+| callKind   | string? | One of: `unqualified`, `memberAccess`, `pointerMemberAccess`, `thisPointerAccess`, `qualified` |
+| argumentCount | number? | Argument count hint for call-like events |
+| receiver   | string? | Receiver token or normalized receiver text |
+| receiverKind | string? | Receiver classification hint |
+| qualifier  | string? | Namespace or type qualifier text |
+| qualifierKind | string? | Qualifier classification hint |
+| filePath   | string | Relative file path |
+| line       | number | 1-based source line |
+
+Milestone 2 intent:
+
+- `RawRelationEvent` is the normalized extraction contract between parser-like extraction and later resolver/storage stages.
+- During the transition, only `relationKind = call` is projected into the existing `RawCallSite` resolver input.
+- `source` and `confidence` are tracked so graph-derived extraction can be compared against legacy AST extraction without changing public API behavior yet.
+
 ---
 
 ## Endpoints

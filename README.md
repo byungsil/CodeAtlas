@@ -64,6 +64,8 @@ npm install
 
 The indexer creates a `.codeatlas/index.db` SQLite database inside the workspace root. The database uses a dual-table architecture (`symbols_raw` for per-file parsed symbols, `symbols` for merged representatives) to support correct incremental updates when header/source pairs change independently.
 
+On Windows, large freshly written SQLite files can be touched briefly by file indexers or antivirus scanners. CodeAtlas now retries direct opens and falls back to a read-only snapshot when needed, but for the most stable operation you should exclude the workspace-local `.codeatlas/` directory from tools such as Everything, Windows Search, and Defender.
+
 For large real-world C++ repositories, indexing scope matters a lot. If the workspace contains heavy `tests/`, `docs/`, `dev_docs/`, generated code, or vendored mirrors, add a `.codeatlasignore` before relying on heuristic lookup. This keeps the symbol set focused on the code agents actually need to reason about.
 
 ### 4. Start the HTTP server (standalone)
@@ -150,6 +152,13 @@ Recommended onboarding flow for large C++ repositories:
 2. Inspect which top-level directories dominate the symbol count.
 3. Add `.codeatlasignore` entries for irrelevant trees such as tests, docs, generated code, vendored mirrors, and build output.
 4. Reindex before evaluating heuristic lookup quality.
+
+Windows stability guidance for `.codeatlas/`:
+
+1. Exclude `<workspace-root>/.codeatlas/` from Everything indexing.
+2. Exclude `<workspace-root>/.codeatlas/` from Windows Search indexing when possible.
+3. Exclude `<workspace-root>/.codeatlas/` from Defender real-time scanning if policy allows.
+4. Keep `.codeatlas/` as generated runtime data only; do not edit or browse it aggressively during active indexing.
 
 Practical starter preset:
 

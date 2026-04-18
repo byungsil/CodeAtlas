@@ -1,4 +1,4 @@
-# Milestone 4. Large-Project Intelligence
+# Milestone 5. Large-Project Intelligence
 
 ## 1. Objective
 
@@ -19,18 +19,18 @@ Success outcome:
 
 ## 2. Recommended Order
 
-1. M4-E1. Inheritance relation model
-2. M4-E2. Override candidate logic
-3. M4-E3. Type hierarchy queries
-4. M4-E4. Call-path tracing
-5. M4-E5. Project metadata model
-6. M4-E6. Metadata-aware filtering and grouping
+1. M5-E1. Inheritance relation model
+2. M5-E2. Override candidate logic
+3. M5-E3. Type hierarchy queries
+4. M5-E4. Call-path tracing
+5. M5-E5. Project metadata model
+6. M5-E6. Metadata-aware filtering and grouping
 
 ---
 
 ## 3. Epics
 
-### M4-E1. Inheritance Relation Model
+### M5-E1. Inheritance Relation Model
 
 Goal:
 
@@ -58,7 +58,7 @@ Exit criteria:
 
 ---
 
-### M4-E2. Override Candidate Logic
+### M5-E2. Override Candidate Logic
 
 Goal:
 
@@ -89,7 +89,7 @@ Exit criteria:
 
 ---
 
-### M4-E3. Type Hierarchy Queries
+### M5-E3. Type Hierarchy Queries
 
 Goal:
 
@@ -120,7 +120,7 @@ Exit criteria:
 
 ---
 
-### M4-E4. Call-Path Tracing
+### M5-E4. Call-Path Tracing
 
 Goal:
 
@@ -147,7 +147,7 @@ Exit criteria:
 
 ---
 
-### M4-E5. Project Metadata Model
+### M5-E5. Project Metadata Model
 
 Goal:
 
@@ -179,7 +179,7 @@ Exit criteria:
 
 ---
 
-### M4-E6. Metadata-Aware Filtering and Grouping
+### M5-E6. Metadata-Aware Filtering and Grouping
 
 Goal:
 
@@ -216,3 +216,4 @@ Exit criteria:
 - call-path tracing is available and bounded
 - repository metadata can be derived and queried
 - higher-level grouping improves impact and navigation workflows
+

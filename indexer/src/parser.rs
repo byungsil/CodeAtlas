@@ -1,8 +1,15 @@
 use std::collections::HashSet;
 
 use tree_sitter::{Node, Parser, Tree};
+use tree_sitter_graph::ast::File as GraphDslFile;
+use tree_sitter_graph::functions::Functions as GraphFunctions;
+use tree_sitter_graph::graph::Value as GraphValue;
+use tree_sitter_graph::{ExecutionConfig as GraphExecutionConfig, Identifier as GraphIdentifier};
+use tree_sitter_graph::{NoCancellation, Variables as GraphVariables};
+use crate::graph_rules::CPP_CALL_RELATIONS;
 use crate::models::{
-    ParseResult, RawCallKind, RawCallSite, RawQualifierKind, RawReceiverKind, Symbol,
+    ParseResult, RawCallKind, RawCallSite, RawEventSource, RawExtractionConfidence,
+    RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind, Symbol,
 };
 
 struct Ctx {
@@ -55,10 +62,259 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
 
     visit_tree(tree.root_node(), &mut ctx);
 
+    let graph_relation_events = extract_graph_relation_events(file_path, source, &tree, &ctx);
+    let legacy_raw_calls = ctx.raw_calls;
+    let legacy_relation_events: Vec<RawRelationEvent> = legacy_raw_calls
+        .iter()
+        .map(|raw_call| RawRelationEvent::from_raw_call_site(raw_call, RawEventSource::LegacyAst))
+        .collect();
+    let graph_raw_calls: Vec<RawCallSite> = graph_relation_events
+        .iter()
+        .filter_map(RawRelationEvent::to_raw_call_site)
+        .collect();
+
+    let (relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
+    {
+        (graph_relation_events, graph_raw_calls)
+    } else {
+        let mut mixed_relation_events = legacy_relation_events;
+        mixed_relation_events.extend(
+            graph_relation_events
+                .into_iter()
+                .filter(|event| event.relation_kind != RawRelationKind::Call),
+        );
+        (mixed_relation_events, legacy_raw_calls)
+    };
+
     Ok(ParseResult {
         symbols: ctx.symbols,
-        raw_calls: ctx.raw_calls,
+        relation_events,
+        raw_calls,
     })
+}
+
+pub fn cpp_call_graph_rule_source() -> &'static str {
+    CPP_CALL_RELATIONS
+}
+
+fn extract_graph_relation_events(
+    file_path: &str,
+    source: &str,
+    tree: &Tree,
+    ctx: &Ctx,
+) -> Vec<RawRelationEvent> {
+    let graph_file = match GraphDslFile::from_str(tree_sitter_cpp::LANGUAGE.into(), CPP_CALL_RELATIONS) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+
+    let functions = GraphFunctions::stdlib();
+    let mut globals = GraphVariables::new();
+    if globals
+        .add(GraphIdentifier::from("filepath"), file_path.into())
+        .is_err()
+    {
+        return Vec::new();
+    }
+
+    let config = GraphExecutionConfig::new(&functions, &globals).lazy(true);
+    let graph = match graph_file.execute(tree, source, &config, &NoCancellation) {
+        Ok(graph) => graph,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut events = Vec::new();
+    for node_ref in graph.iter_nodes() {
+        let attrs = &graph[node_ref].attributes;
+        if !matches!(read_attr_str(attrs, "relation_kind"), Some("call" | "type_usage" | "inheritance")) {
+            continue;
+        }
+
+        let relation_kind = match read_attr_str(attrs, "relation_kind") {
+            Some("call") => RawRelationKind::Call,
+            Some("type_usage") => RawRelationKind::TypeUsage,
+            Some("inheritance") => RawRelationKind::Inheritance,
+            _ => continue,
+        };
+
+        let target_name = read_attr_string(attrs, "target_name");
+        let line = read_attr_u32(attrs, "line").map(|value| value as usize).unwrap_or(0);
+        if relation_kind == RawRelationKind::Call && (target_name.is_none() || line == 0) {
+            continue;
+        }
+
+        let qualifier = read_attr_string(attrs, "qualifier");
+        let qualifier_kind = qualifier
+            .as_deref()
+            .and_then(|value| classify_qualifier_kind(value, ctx));
+        let event = RawRelationEvent {
+            relation_kind: relation_kind.clone(),
+            source: match read_attr_str(attrs, "extraction_source") {
+                Some("tree_sitter_graph") => RawEventSource::TreeSitterGraph,
+                _ => RawEventSource::LegacyAst,
+            },
+            confidence: match read_attr_str(attrs, "confidence") {
+                Some("partial") => RawExtractionConfidence::Partial,
+                _ => RawExtractionConfidence::High,
+            },
+            caller_id: if relation_kind == RawRelationKind::Call {
+                read_enclosing_caller_id(tree.root_node(), line, ctx)
+            } else {
+                read_enclosing_symbol_id(line, ctx)
+            },
+            target_name,
+            call_kind: read_attr_str(attrs, "call_kind").and_then(parse_call_kind),
+            argument_count: read_attr_u32(attrs, "argument_count").map(|value| value as usize),
+            receiver: read_attr_string(attrs, "receiver"),
+            receiver_kind: read_attr_str(attrs, "receiver_kind").and_then(parse_receiver_kind),
+            qualifier,
+            qualifier_kind,
+            file_path: read_attr_string(attrs, "file_path")
+                .unwrap_or_else(|| file_path.to_string()),
+            line,
+        };
+        events.push(event);
+    }
+
+    events
+}
+
+fn read_enclosing_symbol_id(line: usize, ctx: &Ctx) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+
+    ctx.symbols
+        .iter()
+        .filter(|symbol| symbol.line <= line && line <= symbol.end_line)
+        .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.line))
+        .map(|symbol| symbol.id.clone())
+}
+
+fn read_attr_string(
+    attrs: &tree_sitter_graph::graph::Attributes,
+    name: &str,
+) -> Option<String> {
+    attrs.get(name).and_then(|value| match value {
+        GraphValue::String(value) => Some(value.clone()),
+        _ => None,
+    })
+}
+
+fn read_attr_str<'a>(
+    attrs: &'a tree_sitter_graph::graph::Attributes,
+    name: &str,
+) -> Option<&'a str> {
+    attrs.get(name).and_then(|value| match value {
+        GraphValue::String(value) => Some(value.as_str()),
+        _ => None,
+    })
+}
+
+fn read_attr_u32(attrs: &tree_sitter_graph::graph::Attributes, name: &str) -> Option<u32> {
+    attrs.get(name).and_then(|value| match value {
+        GraphValue::Integer(value) => Some(*value),
+        _ => None,
+    })
+}
+
+fn parse_call_kind(value: &str) -> Option<RawCallKind> {
+    match value {
+        "unqualified" => Some(RawCallKind::Unqualified),
+        "member_access" => Some(RawCallKind::MemberAccess),
+        "pointer_member_access" => Some(RawCallKind::PointerMemberAccess),
+        "this_pointer_access" => Some(RawCallKind::ThisPointerAccess),
+        "qualified" => Some(RawCallKind::Qualified),
+        _ => None,
+    }
+}
+
+fn parse_receiver_kind(value: &str) -> Option<RawReceiverKind> {
+    match value {
+        "identifier" => Some(RawReceiverKind::Identifier),
+        "this" => Some(RawReceiverKind::This),
+        "pointer_expression" => Some(RawReceiverKind::PointerExpression),
+        "field_expression" => Some(RawReceiverKind::FieldExpression),
+        "qualified_identifier" => Some(RawReceiverKind::QualifiedIdentifier),
+        "other" => Some(RawReceiverKind::Other),
+        _ => None,
+    }
+}
+
+fn graph_matches_legacy_calls(graph_calls: &[RawCallSite], legacy_calls: &[RawCallSite]) -> bool {
+    if graph_calls.len() != legacy_calls.len() || graph_calls.is_empty() {
+        return false;
+    }
+
+    let mut graph_keys: Vec<String> = graph_calls.iter().map(raw_call_comparison_key).collect();
+    let mut legacy_keys: Vec<String> = legacy_calls.iter().map(raw_call_comparison_key).collect();
+    graph_keys.sort();
+    legacy_keys.sort();
+    graph_keys == legacy_keys
+}
+
+fn raw_call_comparison_key(raw_call: &RawCallSite) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        raw_call.caller_id,
+        raw_call.called_name,
+        raw_call.line,
+        raw_call_kind_key(&raw_call.call_kind),
+        raw_call.argument_count.map(|value| value.to_string()).unwrap_or_default(),
+        raw_call.receiver.as_deref().unwrap_or_default(),
+        raw_call.receiver_kind
+            .as_ref()
+            .map(raw_receiver_kind_key)
+            .unwrap_or_default(),
+        raw_call.qualifier.as_deref().unwrap_or_default(),
+    )
+}
+
+fn raw_call_comparison_keys(raw_calls: &[RawCallSite]) -> Vec<String> {
+    let mut keys: Vec<String> = raw_calls.iter().map(raw_call_comparison_key).collect();
+    keys.sort();
+    keys
+}
+
+fn raw_call_kind_key(kind: &RawCallKind) -> &'static str {
+    match kind {
+        RawCallKind::Unqualified => "unqualified",
+        RawCallKind::MemberAccess => "member_access",
+        RawCallKind::PointerMemberAccess => "pointer_member_access",
+        RawCallKind::ThisPointerAccess => "this_pointer_access",
+        RawCallKind::Qualified => "qualified",
+    }
+}
+
+fn raw_receiver_kind_key(kind: &RawReceiverKind) -> &'static str {
+    match kind {
+        RawReceiverKind::Identifier => "identifier",
+        RawReceiverKind::This => "this",
+        RawReceiverKind::PointerExpression => "pointer_expression",
+        RawReceiverKind::FieldExpression => "field_expression",
+        RawReceiverKind::QualifiedIdentifier => "qualified_identifier",
+        RawReceiverKind::Other => "other",
+    }
+}
+
+fn read_enclosing_caller_id(_root: Node, line: usize, ctx: &Ctx) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+
+    ctx.symbols
+        .iter()
+        .filter(|symbol| {
+            (symbol.symbol_type == "function" || symbol.symbol_type == "method")
+                && matches!(
+                    symbol.symbol_role.as_deref(),
+                    Some("definition") | Some("inline_definition")
+                )
+                && symbol.line <= line
+                && line <= symbol.end_line
+        })
+        .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.line))
+        .map(|symbol| symbol.id.clone())
 }
 
 fn visit_tree(root: Node, ctx: &mut Ctx) {
@@ -811,6 +1067,79 @@ fn find_descendant<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
 mod tests {
     use super::*;
 
+    fn extract_legacy_raw_calls(file_path: &str, source: &str) -> Vec<RawCallSite> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut ctx = Ctx {
+            file_path: file_path.to_string(),
+            source: source.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            raw_calls: Vec::new(),
+            ns_stack: Vec::new(),
+            namespace_ids: HashSet::new(),
+        };
+        visit_tree(tree.root_node(), &mut ctx);
+        ctx.raw_calls
+    }
+
+    fn extract_graph_raw_calls(file_path: &str, source: &str) -> Vec<RawCallSite> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut ctx = Ctx {
+            file_path: file_path.to_string(),
+            source: source.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            raw_calls: Vec::new(),
+            ns_stack: Vec::new(),
+            namespace_ids: HashSet::new(),
+        };
+        visit_tree(tree.root_node(), &mut ctx);
+        extract_graph_relation_events(file_path, source, &tree, &ctx)
+            .into_iter()
+            .filter_map(|event| event.to_raw_call_site())
+            .collect()
+    }
+
+    fn assert_graph_parity(file_path: &str, source: &str) {
+        let legacy = extract_legacy_raw_calls(file_path, source);
+        let graph = extract_graph_raw_calls(file_path, source);
+        assert_eq!(
+            raw_call_comparison_keys(&graph),
+            raw_call_comparison_keys(&legacy),
+            "graph extraction diverged from legacy extraction for {}",
+            file_path
+        );
+    }
+
+    fn relation_event_key(event: &RawRelationEvent) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            match event.relation_kind {
+                RawRelationKind::Call => "call",
+                RawRelationKind::TypeUsage => "type_usage",
+                RawRelationKind::Inheritance => "inheritance",
+            },
+            event.caller_id.as_deref().unwrap_or_default(),
+            event.target_name.as_deref().unwrap_or_default(),
+            event.file_path,
+            event.line,
+            event
+                .qualifier
+                .as_deref()
+                .unwrap_or_default(),
+            match event.source {
+                RawEventSource::LegacyAst => "legacy",
+                RawEventSource::TreeSitterGraph => "graph",
+            }
+        )
+    }
+
     #[test]
     fn parses_simple_function() {
         let src = "void foo(int x) { bar(x); }";
@@ -901,6 +1230,213 @@ T Max(T a, T b) { return a > b ? a : b; }
                 && s.symbol_type == "function"
                 && s.symbol_role.as_deref() == Some("definition")
         }));
+    }
+
+    #[test]
+    fn exposes_cpp_call_graph_rules_for_initial_shapes() {
+        let rules = cpp_call_graph_rule_source();
+        assert!(rules.contains("global filepath"));
+        assert!(rules.contains("call_kind = \"unqualified\""));
+        assert!(rules.contains("call_kind = \"qualified\""));
+        assert!(rules.contains("call_kind = \"member_access\""));
+        assert!(rules.contains("call_kind = \"pointer_member_access\""));
+        assert!(rules.contains("call_kind = \"this_pointer_access\""));
+    }
+
+    #[test]
+    fn prefers_graph_relation_events_when_they_match_legacy_calls() {
+        let src = "void foo() { bar(); }";
+        let result = parse_cpp_file("test.cpp", src).unwrap();
+        assert_eq!(result.raw_calls.len(), 1);
+        assert_eq!(result.relation_events.len(), 1);
+        assert_eq!(result.relation_events[0].source, RawEventSource::TreeSitterGraph);
+        assert_eq!(result.relation_events[0].relation_kind, RawRelationKind::Call);
+        assert_eq!(result.relation_events[0].target_name.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn graph_matches_legacy_on_namespace_dupes_fixture() {
+        let source = include_str!("../../samples/ambiguity/src/namespace_dupes.cpp");
+        assert_graph_parity("samples/ambiguity/src/namespace_dupes.cpp", source);
+    }
+
+    #[test]
+    fn graph_matches_legacy_on_overloads_fixture() {
+        let source = include_str!("../../samples/ambiguity/src/overloads.cpp");
+        assert_graph_parity("samples/ambiguity/src/overloads.cpp", source);
+    }
+
+    #[test]
+    fn graph_matches_legacy_on_sibling_methods_fixture() {
+        let source = include_str!("../../samples/ambiguity/src/sibling_methods.cpp");
+        assert_graph_parity("samples/ambiguity/src/sibling_methods.cpp", source);
+    }
+
+    #[test]
+    fn graph_matches_legacy_on_split_update_fixture() {
+        let source = include_str!("../../samples/ambiguity/src/split_update.cpp");
+        assert_graph_parity("samples/ambiguity/src/split_update.cpp", source);
+    }
+
+    #[test]
+    fn emits_type_usage_relation_events_from_graph() {
+        let src = r#"
+namespace Game {
+class Actor {};
+
+class Controller {
+public:
+    Actor* actor;
+    void Tick(Actor value) {
+        Actor local;
+    }
+};
+}
+"#;
+        let result = parse_cpp_file("type_usage.cpp", src).unwrap();
+        let type_usage_events: Vec<_> = result
+            .relation_events
+            .iter()
+            .filter(|event| event.relation_kind == RawRelationKind::TypeUsage)
+            .collect();
+        assert!(!type_usage_events.is_empty());
+        assert!(type_usage_events.iter().all(|event| event.source == RawEventSource::TreeSitterGraph));
+        assert!(type_usage_events
+            .iter()
+            .any(|event| event.target_name.as_deref() == Some("Actor")));
+        assert!(type_usage_events.iter().any(|event| {
+            event.caller_id.as_deref() == Some("Game::Controller")
+                || event.caller_id.as_deref() == Some("Game::Controller::Tick")
+        }));
+    }
+
+    #[test]
+    fn emits_inheritance_relation_events_from_graph() {
+        let src = r#"
+namespace Game {
+class Actor {};
+class Player : public Actor {};
+}
+"#;
+        let result = parse_cpp_file("inheritance.cpp", src).unwrap();
+        let inheritance_events: Vec<_> = result
+            .relation_events
+            .iter()
+            .filter(|event| event.relation_kind == RawRelationKind::Inheritance)
+            .collect();
+        assert_eq!(inheritance_events.len(), 1);
+        assert_eq!(inheritance_events[0].source, RawEventSource::TreeSitterGraph);
+        assert_eq!(inheritance_events[0].target_name.as_deref(), Some("Actor"));
+        assert_eq!(inheritance_events[0].caller_id.as_deref(), Some("Game::Player"));
+    }
+
+    #[test]
+    fn ambiguity_fixtures_prefer_graph_sourced_call_relation_events() {
+        let fixtures = [
+            (
+                "samples/ambiguity/src/namespace_dupes.cpp",
+                include_str!("../../samples/ambiguity/src/namespace_dupes.cpp"),
+            ),
+            (
+                "samples/ambiguity/src/overloads.cpp",
+                include_str!("../../samples/ambiguity/src/overloads.cpp"),
+            ),
+            (
+                "samples/ambiguity/src/sibling_methods.cpp",
+                include_str!("../../samples/ambiguity/src/sibling_methods.cpp"),
+            ),
+            (
+                "samples/ambiguity/src/split_update.cpp",
+                include_str!("../../samples/ambiguity/src/split_update.cpp"),
+            ),
+        ];
+
+        for (path, source) in fixtures {
+            let result = parse_cpp_file(path, source).unwrap();
+            let call_events: Vec<_> = result
+                .relation_events
+                .iter()
+                .filter(|event| event.relation_kind == RawRelationKind::Call)
+                .collect();
+            assert!(!call_events.is_empty(), "expected call events for {}", path);
+            assert!(
+                call_events
+                    .iter()
+                    .all(|event| event.source == RawEventSource::TreeSitterGraph),
+                "expected graph-sourced call events for {} but got {:?}",
+                path,
+                call_events
+                    .iter()
+                    .map(|event| relation_event_key(event))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_member_receiver_shape_falls_back_to_legacy_calls() {
+        let src = r#"
+namespace Game {
+class Worker {
+public:
+    void Update();
+};
+
+Worker MakeWorker();
+
+void Tick() {
+    MakeWorker().Update();
+}
+}
+"#;
+        let result = parse_cpp_file("unsupported_receiver.cpp", src).unwrap();
+        assert!(result
+            .raw_calls
+            .iter()
+            .any(|call| call.called_name == "MakeWorker" && matches!(call.call_kind, RawCallKind::Unqualified)));
+        let update_call = result
+            .raw_calls
+            .iter()
+            .find(|call| call.called_name == "Update")
+            .unwrap();
+        assert!(matches!(update_call.call_kind, RawCallKind::MemberAccess));
+        assert!(result
+            .relation_events
+            .iter()
+            .filter(|event| event.relation_kind == RawRelationKind::Call)
+            .all(|event| event.source == RawEventSource::LegacyAst));
+        assert!(result
+            .relation_events
+            .iter()
+            .any(|event| event.target_name.as_deref() == Some("Update")));
+    }
+
+    #[test]
+    fn graph_integration_stays_tolerant_for_template_and_macro_bearing_code() {
+        let src = r#"
+#define DECLARE_WORKER(TypeName) class TypeName {};
+DECLARE_WORKER(GeneratedWorker)
+
+template <typename T>
+class Holder {
+public:
+    T value;
+};
+
+class Base {};
+class Derived : public Base {};
+
+void Tick() {
+    Holder<Derived> holder;
+}
+"#;
+        let result = parse_cpp_file("macro_template.cpp", src).unwrap();
+        assert!(result.symbols.iter().any(|symbol| symbol.name == "Holder"));
+        assert!(result.symbols.iter().any(|symbol| symbol.name == "Derived"));
+        assert!(result
+            .relation_events
+            .iter()
+            .any(|event| event.relation_kind == RawRelationKind::Inheritance));
     }
 
     #[test]

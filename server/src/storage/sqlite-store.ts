@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import Database from "better-sqlite3";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
@@ -6,10 +9,12 @@ import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
 
 export class SqliteStore {
   private db: Database.Database;
+  private snapshotPath?: string;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath, { readonly: true });
-    this.db.pragma("journal_mode = WAL");
+    const opened = openReadonlyStore(dbPath);
+    this.db = opened.db;
+    this.snapshotPath = opened.snapshotPath;
   }
 
   getSymbolsByName(name: string): Symbol[] {
@@ -126,7 +131,64 @@ export class SqliteStore {
 
   close(): void {
     this.db.close();
+    if (this.snapshotPath) {
+      try {
+        fs.unlinkSync(this.snapshotPath);
+      } catch {
+        // Best-effort cleanup for read-only snapshot fallback.
+      }
+    }
   }
+}
+
+function openReadonlyStore(dbPath: string): { db: Database.Database; snapshotPath?: string } {
+  const retryDelaysMs = [0, 100, 250, 500];
+
+  for (const delayMs of retryDelaysMs) {
+    if (delayMs > 0) {
+      sleepMs(delayMs);
+    }
+    try {
+      const db = openReadonlyDatabase(dbPath);
+      verifyDatabaseReadable(db);
+      return { db };
+    } catch {
+      // Retry the original file first to absorb short-lived file-indexer locks.
+    }
+  }
+
+  const snapshotPath = createSnapshotPath(dbPath);
+  fs.copyFileSync(dbPath, snapshotPath);
+  const db = openReadonlyDatabase(snapshotPath);
+  verifyDatabaseReadable(db);
+  return { db, snapshotPath };
+}
+
+function openReadonlyDatabase(dbPath: string): Database.Database {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  // Read-only consumers do not need to force WAL mode, and some external
+  // databases reject changing journal mode during open. Keep lookup usable.
+  try {
+    db.pragma("journal_mode = WAL");
+  } catch {
+    // Ignore pragma failures for read-only query workloads.
+  }
+  return db;
+}
+
+function verifyDatabaseReadable(db: Database.Database): void {
+  db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master").get();
+}
+
+function createSnapshotPath(dbPath: string): string {
+  const snapshotDir = path.join(os.tmpdir(), "codeatlas-sqlite-snapshots");
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  const baseName = path.basename(dbPath, path.extname(dbPath));
+  return path.join(snapshotDir, `${baseName}-${process.pid}-${Date.now()}.db`);
+}
+
+function sleepMs(delayMs: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
 }
 
 interface RawRow {

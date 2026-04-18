@@ -1,5 +1,6 @@
 mod constants;
 mod discovery;
+mod graph_rules;
 mod ignore;
 mod incremental;
 mod indexing;
@@ -12,6 +13,7 @@ mod watcher;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME};
@@ -54,48 +56,58 @@ fn main() {
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    mark_codeatlas_artifacts(&data_dir, None);
 
     let db_path = data_dir.join(DB_FILENAME);
-    let db = storage::Database::open(&db_path).expect("Failed to open SQLite database");
+    let staging_db_path = db_path.with_file_name(format!("{}.staging", DB_FILENAME));
+    prepare_staging_db(&db_path, &staging_db_path, full_mode).expect("Failed to prepare staging SQLite database");
+    {
+        let db = storage::Database::open(&staging_db_path).expect("Failed to open SQLite database");
 
-    println!("Indexing: {}", workspace_root.display());
-    let start = Instant::now();
+        println!("Indexing: {}", workspace_root.display());
+        let start = Instant::now();
 
-    let all_files = discovery::find_cpp_files_with_feedback(&workspace_root, verbose_mode);
-    let all_relative: Vec<String> = all_files
-        .iter()
-        .map(|p| make_relative(&workspace_root, p))
-        .collect();
-    println!("Found {} C++ files", all_relative.len());
+        let all_files = discovery::find_cpp_files_with_feedback(&workspace_root, verbose_mode);
+        let all_relative: Vec<String> = all_files
+            .iter()
+            .map(|p| make_relative(&workspace_root, p))
+            .collect();
+        println!("Found {} C++ files", all_relative.len());
 
-    if full_mode {
-        println!("Mode: full rebuild");
-        run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
-    } else {
-        let stored = db.read_file_records().unwrap_or_default();
-        let plan = incremental::plan(&all_relative, &stored, &workspace_root);
+        if full_mode {
+            println!("Mode: full rebuild");
+            run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
+        } else {
+            let stored = db.read_file_records().unwrap_or_default();
+            let plan = incremental::plan(&all_relative, &stored, &workspace_root);
 
-        println!(
-            "Mode: incremental ({} to index, {} unchanged, {} to delete)",
-            plan.to_index.len(),
-            plan.unchanged.len(),
-            plan.to_delete.len()
-        );
+            println!(
+                "Mode: incremental ({} to index, {} unchanged, {} to delete)",
+                plan.to_index.len(),
+                plan.unchanged.len(),
+                plan.to_delete.len()
+            );
 
-        if plan.to_index.is_empty() && plan.to_delete.is_empty() {
-            println!("\nNothing to do.");
-            return;
+            if plan.to_index.is_empty() && plan.to_delete.is_empty() {
+                println!("\nNothing to do.");
+                return;
+            }
+
+            if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
+                eprintln!("Incremental indexing failed: {}", e);
+                std::process::exit(1);
+            }
         }
 
-        if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
-            eprintln!("Incremental indexing failed: {}", e);
-            std::process::exit(1);
-        }
+        db.checkpoint().expect("Failed to checkpoint SQLite database");
+
+        let elapsed = start.elapsed();
+        println!("\nDone in {}ms", elapsed.as_millis());
+        println!("  Output: {}", data_dir.display());
     }
+    publish_staging_db(&staging_db_path, &db_path).expect("Failed to publish SQLite database");
+    mark_codeatlas_artifacts(&data_dir, Some(&db_path));
 
-    let elapsed = start.elapsed();
-    println!("\nDone in {}ms", elapsed.as_millis());
-    println!("  Output: {}", data_dir.display());
 }
 
 fn print_help() {
@@ -122,6 +134,67 @@ fn print_help() {
     println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
     println!("  Supported file extensions: .cpp, .h, .hpp, .cc, .cxx, .inl, .inc");
 }
+
+fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
+    if staging_db_path.exists() {
+        fs::remove_file(staging_db_path)?;
+    }
+
+    if !full_mode && final_db_path.exists() {
+        fs::copy(final_db_path, staging_db_path)?;
+    }
+
+    Ok(())
+}
+
+fn publish_staging_db(staging_db_path: &Path, final_db_path: &Path) -> std::io::Result<()> {
+    let publish_path = final_db_path.with_file_name(format!("{}.next", DB_FILENAME));
+
+    if publish_path.exists() {
+        fs::remove_file(&publish_path)?;
+    }
+
+    fs::copy(staging_db_path, &publish_path)?;
+
+    if final_db_path.exists() {
+        fs::remove_file(final_db_path)?;
+    }
+
+    fs::rename(&publish_path, final_db_path)?;
+    fs::remove_file(staging_db_path)?;
+    Ok(())
+}
+
+fn mark_codeatlas_artifacts(data_dir: &Path, db_path: Option<&Path>) {
+    #[cfg(windows)]
+    {
+        let _ = run_attrib(&["+H", "+I"], data_dir);
+        if let Some(path) = db_path {
+            let _ = run_attrib(&["+I"], path);
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = data_dir;
+        let _ = db_path;
+    }
+}
+
+#[cfg(windows)]
+fn run_attrib(flags: &[&str], path: &Path) -> std::io::Result<()> {
+    let status = Command::new("attrib")
+        .args(flags)
+        .arg(path)
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("attrib command failed"))
+    }
+}
+
 
 fn run_full(
     db: &storage::Database,

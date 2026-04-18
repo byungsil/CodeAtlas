@@ -55,7 +55,8 @@ pub struct FileRecord {
     pub symbol_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RawCallKind {
     Unqualified,
     MemberAccess,
@@ -64,7 +65,8 @@ pub enum RawCallKind {
     Qualified,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RawReceiverKind {
     Identifier,
     This,
@@ -76,10 +78,33 @@ pub enum RawReceiverKind {
 
 // `qualifier_kind` is introduced ahead of parser classification work in M1-T12.
 #[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RawQualifierKind {
     Namespace,
     Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawRelationKind {
+    Call,
+    TypeUsage,
+    Inheritance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawEventSource {
+    LegacyAst,
+    TreeSitterGraph,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RawExtractionConfidence {
+    High,
+    Partial,
 }
 
 #[derive(Debug, Clone)]
@@ -96,8 +121,74 @@ pub struct RawCallSite {
     pub line: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawRelationEvent {
+    pub relation_kind: RawRelationKind,
+    pub source: RawEventSource,
+    pub confidence: RawExtractionConfidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_kind: Option<RawCallKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argument_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiver_kind: Option<RawReceiverKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualifier_kind: Option<RawQualifierKind>,
+    pub file_path: String,
+    pub line: usize,
+}
+
+impl RawRelationEvent {
+    pub fn from_raw_call_site(raw_call: &RawCallSite, source: RawEventSource) -> Self {
+        Self {
+            relation_kind: RawRelationKind::Call,
+            source,
+            confidence: RawExtractionConfidence::High,
+            caller_id: Some(raw_call.caller_id.clone()),
+            target_name: Some(raw_call.called_name.clone()),
+            call_kind: Some(raw_call.call_kind.clone()),
+            argument_count: raw_call.argument_count,
+            receiver: raw_call.receiver.clone(),
+            receiver_kind: raw_call.receiver_kind.clone(),
+            qualifier: raw_call.qualifier.clone(),
+            qualifier_kind: raw_call.qualifier_kind.clone(),
+            file_path: raw_call.file_path.clone(),
+            line: raw_call.line,
+        }
+    }
+
+    pub fn to_raw_call_site(&self) -> Option<RawCallSite> {
+        if self.relation_kind != RawRelationKind::Call {
+            return None;
+        }
+
+        Some(RawCallSite {
+            caller_id: self.caller_id.clone()?,
+            called_name: self.target_name.clone()?,
+            call_kind: self.call_kind.clone()?,
+            argument_count: self.argument_count,
+            receiver: self.receiver.clone(),
+            receiver_kind: self.receiver_kind.clone(),
+            qualifier: self.qualifier.clone(),
+            qualifier_kind: self.qualifier_kind.clone(),
+            file_path: self.file_path.clone(),
+            line: self.line,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
+    pub relation_events: Vec<RawRelationEvent>,
     pub raw_calls: Vec<RawCallSite>,
 }

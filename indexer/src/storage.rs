@@ -84,7 +84,7 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch(SCHEMA)?;
         Self::migrate_symbol_storage(&conn)?;
         Self::migrate_symbol_metadata(&conn)?;
@@ -282,6 +282,10 @@ impl Database {
         self.rebuild_fts()?;
         self.conn.execute_batch("COMMIT;")?;
         Ok(())
+    }
+
+    pub fn checkpoint(&self) -> SqlResult<()> {
+        self.conn.execute_batch("PRAGMA optimize;")
     }
 
     pub fn read_file_records(&self) -> SqlResult<Vec<FileRecord>> {

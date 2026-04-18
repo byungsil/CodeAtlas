@@ -1,8 +1,14 @@
-# CodeAtlas Development Tasks
+# CodeAtlas Completed Development Tasks
+
+Status:
+
+- This document is now a completed-work record.
+- The phases below describe work that has already been delivered.
+- New forward-looking planning should live in `dev_docs/NextTask.md` and the milestone documents.
 
 ## 1. Objective
 
-Build a local AI code intelligence system that indexes large C++ codebases and serves structured query results to AI agents without requiring direct source-file scanning during query time.
+This document records the development plan that was used to build the current CodeAtlas foundation: a local AI code intelligence system that indexes large C++ codebases and serves structured query results to AI agents without requiring direct source-file scanning during query time.
 
 Target architecture from the spec:
 
@@ -43,7 +49,7 @@ The source spec is high-level. The following interpretations will be used during
 
 ## 3. Delivery Strategy
 
-Build in thin vertical slices. Do not start with performance optimization before the end-to-end indexing/query path is working.
+This delivery strategy has been completed and is kept here as an implementation record.
 
 Recommended order:
 
@@ -56,7 +62,7 @@ Recommended order:
 
 ---
 
-## 4. Phase Tasks
+## 4. Completed Phase Record
 
 ### Phase 0. Project Baseline
 

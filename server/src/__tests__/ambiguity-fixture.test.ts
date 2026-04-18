@@ -3,15 +3,13 @@ import * as os from "os";
 import * as path from "path";
 import Database from "better-sqlite3";
 import request from "supertest";
-import { execFileSync } from "child_process";
 import { createApp } from "../app";
 import { JsonStore } from "../storage/json-store";
 import { SqliteStore } from "../storage/sqlite-store";
+import { mcpCall } from "./mcp-test-helpers";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
-
-const MCP_SCRIPT = path.resolve(__dirname, "../mcp.ts");
 
 function fixtureSymbols(): Symbol[] {
   return [
@@ -244,20 +242,6 @@ function writeFixtureSqliteDb(): string {
   return dbPath;
 }
 
-function mcpCallWithDataDir(dataDir: string, messages: object[]): any[] {
-  const input = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-  const output = execFileSync(process.execPath, ["-r", "ts-node/register", MCP_SCRIPT, dataDir], {
-    input,
-    timeout: 15000,
-    cwd: path.resolve(__dirname, "../.."),
-    encoding: "utf-8",
-  });
-  return output
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-}
-
 const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "fixture-test", version: "1.0" } } };
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
@@ -316,10 +300,10 @@ describe("ambiguity fixture storage and API contracts", () => {
     }
   });
 
-  it("MCP exact lookup and heuristic ambiguity follow the fixture contract", () => {
+  it("MCP exact lookup and heuristic ambiguity follow the fixture contract", async () => {
     const { dir } = writeFixtureJsonStore();
     try {
-      const exactResponses = mcpCallWithDataDir(dir, [
+      const exactResponses = await mcpCall([
         INIT,
         INITIALIZED,
         {
@@ -328,14 +312,14 @@ describe("ambiguity fixture storage and API contracts", () => {
           method: "tools/call",
           params: { name: "lookup_symbol", arguments: { qualifiedName: "Gameplay::Update" } },
         },
-      ]);
+      ], dir);
       const exact = JSON.parse(exactResponses.find((r) => r.id === 2).result.content[0].text);
       expect(exact.lookupMode).toBe("exact");
       expect(exact.confidence).toBe("exact");
       expect(exact.matchReasons).toEqual(["exact_qualified_name_match"]);
       expect(exact.symbol.qualifiedName).toBe("Gameplay::Update");
 
-      const heuristicResponses = mcpCallWithDataDir(dir, [
+      const heuristicResponses = await mcpCall([
         INIT,
         INITIALIZED,
         {
@@ -344,7 +328,7 @@ describe("ambiguity fixture storage and API contracts", () => {
           method: "tools/call",
           params: { name: "lookup_function", arguments: { name: "Update" } },
         },
-      ]);
+      ], dir);
       const heuristic = JSON.parse(heuristicResponses.find((r) => r.id === 3).result.content[0].text);
       expect(heuristic.lookupMode).toBe("heuristic");
       expect(heuristic.confidence).toBe("ambiguous");

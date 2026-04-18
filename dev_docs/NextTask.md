@@ -1,5 +1,12 @@
 # CodeAtlas Next Tasks
 
+Current status:
+
+- `CompletedTask.md` is now the completed record for the foundation work that has already shipped.
+- Milestone 1 (`Trustworthy Lookup`) is complete.
+- Milestone 2 (`Tree-Sitter Graph Integration`) is complete.
+- The next planned execution target is Milestone 3 (`Real Impact Navigation`).
+
 ## 1. Goal
 
 This document defines the next development plan for CodeAtlas as a specialized MCP and indexing system for very large C++ projects.
@@ -51,19 +58,26 @@ If not, it is probably out of scope.
 Recommended implementation order:
 
 1. Accuracy foundation
-2. Reverse-reference and impact queries
-3. Incremental indexing reliability
-4. Query-layer expansion for real agent workflows
-5. Large-project metadata and subsystem intelligence
-6. Benchmarking and performance proof
-7. Selective semantic enrichment from build metadata
+2. Graph extraction foundation
+3. Reverse-reference and impact queries
+4. Incremental indexing reliability
+5. Query-layer expansion for real agent workflows
+6. Large-project metadata and subsystem intelligence
+7. Benchmarking and performance proof
+8. Selective semantic enrichment from build metadata
 
 Reasoning:
 
-- Steps 1 to 3 improve trust.
-- Steps 4 to 5 improve practical usefulness.
-- Step 6 proves the project's strategic advantage.
-- Step 7 raises the semantic ceiling without changing the product identity.
+- Steps 1 to 4 improve trust.
+- Steps 5 to 6 improve practical usefulness.
+- Step 7 proves the project's strategic advantage.
+- Step 8 raises the semantic ceiling without changing the product identity.
+
+Execution status:
+
+- Step 1 is complete through Milestone 1.
+- Step 2 is complete through Milestone 2.
+- The project is now moving into Step 3 through Milestone 3.
 
 ---
 
@@ -950,11 +964,39 @@ Success outcome:
 - Call resolution is materially more reliable.
 - Ambiguity is surfaced clearly.
 
-### Milestone 2. Real Impact Navigation
+Status:
+
+- Completed.
+
+### Milestone 2. Tree-Sitter Graph Integration
 
 Detailed plan:
 
-- [Milestone2_RealImpactNavigation.md](Milestone2_RealImpactNavigation.md)
+- [Milestone2_TreeSitterGraphIntegration.md](Milestone2_TreeSitterGraphIntegration.md)
+
+Includes:
+
+- graph integration design
+- graph event model
+- initial call-edge graph rules
+- parser pipeline integration
+- resolver compatibility and parity validation
+- additional structural relation rules
+- fixture and regression hardening
+
+Success outcome:
+
+- CodeAtlas can derive stable relationship events from `tree-sitter-graph` without regressing current call-resolution quality.
+
+Status:
+
+- Next planned milestone.
+
+### Milestone 3. Real Impact Navigation
+
+Detailed plan:
+
+- [Milestone3_RealImpactNavigation.md](Milestone3_RealImpactNavigation.md)
 
 Includes:
 
@@ -967,11 +1009,15 @@ Success outcome:
 
 - Agents can answer caller, reference, and impact questions without raw file reading.
 
-### Milestone 3. Production-Grade Incremental Operation
+Status:
+
+- Planned after Milestone 2.
+
+### Milestone 4. Production-Grade Incremental Operation
 
 Detailed plan:
 
-- [Milestone3_ProductionGradeIncrementalOperation.md](Milestone3_ProductionGradeIncrementalOperation.md)
+- [Milestone4_ProductionGradeIncrementalOperation.md](Milestone4_ProductionGradeIncrementalOperation.md)
 
 Includes:
 
@@ -984,11 +1030,11 @@ Success outcome:
 
 - CodeAtlas stays correct and current during real development workflows.
 
-### Milestone 4. Large-Project Intelligence
+### Milestone 5. Large-Project Intelligence
 
 Detailed plan:
 
-- [Milestone4_LargeProjectIntelligence.md](Milestone4_LargeProjectIntelligence.md)
+- [Milestone5_LargeProjectIntelligence.md](Milestone5_LargeProjectIntelligence.md)
 
 Includes:
 
@@ -1001,11 +1047,11 @@ Success outcome:
 
 - Agents can reason in terms of hierarchy, path flow, and subsystem-level impact.
 
-### Milestone 5. Performance Proof
+### Milestone 6. Performance Proof
 
 Detailed plan:
 
-- [Milestone5_PerformanceProof.md](Milestone5_PerformanceProof.md)
+- [Milestone6_PerformanceProof.md](Milestone6_PerformanceProof.md)
 
 Includes:
 
@@ -1026,10 +1072,11 @@ Success outcome:
 Primary execution documents:
 
 - [Milestone1_TrustworthyLookup.md](Milestone1_TrustworthyLookup.md)
-- [Milestone2_RealImpactNavigation.md](Milestone2_RealImpactNavigation.md)
-- [Milestone3_ProductionGradeIncrementalOperation.md](Milestone3_ProductionGradeIncrementalOperation.md)
-- [Milestone4_LargeProjectIntelligence.md](Milestone4_LargeProjectIntelligence.md)
-- [Milestone5_PerformanceProof.md](Milestone5_PerformanceProof.md)
+- [Milestone2_TreeSitterGraphIntegration.md](Milestone2_TreeSitterGraphIntegration.md)
+- [Milestone3_RealImpactNavigation.md](Milestone3_RealImpactNavigation.md)
+- [Milestone4_ProductionGradeIncrementalOperation.md](Milestone4_ProductionGradeIncrementalOperation.md)
+- [Milestone5_LargeProjectIntelligence.md](Milestone5_LargeProjectIntelligence.md)
+- [Milestone6_PerformanceProof.md](Milestone6_PerformanceProof.md)
 
 Use the milestone files as the primary implementation plans. This section remains as an embedded reference copy.
 
@@ -1265,7 +1312,182 @@ Exit criteria:
 
 ---
 
-### Milestone 2. Real Impact Navigation
+### Milestone 2. Tree-Sitter Graph Integration
+
+Objective:
+
+- Introduce `tree-sitter-graph` into the Rust indexing pipeline so structural relations are extracted more explicitly and can support richer graph features later.
+
+Recommended internal order:
+
+1. M2-E1. Graph integration design
+2. M2-E2. Graph event model
+3. M2-E3. Initial call-edge graph rules
+4. M2-E4. Parser pipeline integration
+5. M2-E5. Resolver compatibility and parity validation
+6. M2-E6. Additional structural relation rules
+7. M2-E7. Fixture and regression hardening
+
+#### M2-E1. Graph Integration Design
+
+Tasks:
+
+- Define the target extraction pipeline:
+  - `tree-sitter` parse
+  - `tree-sitter-graph` execution
+  - normalized relation events
+  - resolver scoring and disambiguation
+- Decide which logic remains handwritten in Rust and which moves into graph rules.
+- Define where graph rule files live and how they are versioned.
+
+Current design baseline:
+
+- keep symbol extraction in handwritten Rust for the first integration pass
+- introduce `tree-sitter-graph` first for structural relation extraction only
+- normalize graph output into resolver-compatible raw events before any scoring
+- keep `resolver.rs` responsible for ambiguity handling and candidate ranking
+- store graph rule files under `indexer/graph/`
+- require per-file fallback to legacy AST call extraction when graph coverage is missing or execution fails
+
+Expected touch points:
+
+- `indexer/Cargo.toml`
+- `indexer/src/parser.rs`
+- `indexer/src/indexing.rs`
+- `dev_docs/NextTask.md`
+
+Validation checklist:
+
+- The parser/resolver boundary is documented before implementation expands.
+
+#### M2-E2. Graph Event Model
+
+Tasks:
+
+- Define first-release graph event kinds:
+  - direct call
+  - qualified call
+  - member access call
+  - pointer member access call
+  - optional type usage
+  - optional inheritance mention
+- Decide how graph events map to current `RawCallSite` fields and future generalized relation models.
+- Preserve caller identity, candidate callee name, qualifier or receiver hints, file path, and line.
+
+Expected touch points:
+
+- `indexer/src/models.rs`
+- `dev_docs/API_CONTRACT.md`
+
+Validation checklist:
+
+- Graph-derived event fields are explicit and deterministic.
+
+#### M2-E3. Initial Call-Edge Graph Rules
+
+Tasks:
+
+- Add graph rules for:
+  - unqualified calls
+  - namespace-qualified calls
+  - `obj.method()`
+  - `ptr->method()`
+  - `this->method()`
+- Keep unsupported patterns clearly out of scope until validated.
+- Make graph output inspectable during fixture tests.
+
+Expected touch points:
+
+- graph rule files under `indexer/`
+- `indexer/src/parser.rs`
+
+Validation checklist:
+
+- Representative C++ call-site shapes emit expected graph events.
+
+#### M2-E4. Parser Pipeline Integration
+
+Tasks:
+
+- Add the `tree-sitter-graph` dependency and loading path.
+- Integrate graph execution into `parse_cpp_file`.
+- Normalize graph output into the parser result structure.
+- Keep parsing tolerant of partial graph coverage.
+
+Expected touch points:
+
+- `indexer/Cargo.toml`
+- `indexer/src/parser.rs`
+- `indexer/src/indexing.rs`
+
+Validation checklist:
+
+- Normal indexing still completes when graph coverage is partial.
+
+#### M2-E5. Resolver Compatibility and Parity Validation
+
+Tasks:
+
+- Adapt resolver inputs if needed so graph events feed current ranking logic.
+- Compare legacy parser-produced call events with graph-produced events on fixtures.
+- Define acceptable parity gaps versus intentional improvements.
+- Keep ambiguity and unresolved behavior explicit.
+
+Expected touch points:
+
+- `indexer/src/resolver.rs`
+- `indexer/src/parser.rs`
+- `samples/ambiguity`
+
+Validation checklist:
+
+- Graph-backed resolution matches or improves current fixture behavior.
+
+#### M2-E6. Additional Structural Relation Rules
+
+Tasks:
+
+- Evaluate graph rules for:
+  - type usage
+  - class instantiation
+  - inheritance
+  - member-access mentions where useful
+- Decide which relations become first-class stored edges now versus later milestones.
+- Avoid adding weak or noisy relation categories too early.
+
+Expected touch points:
+
+- graph rule files under `indexer/`
+- `indexer/src/models.rs`
+- `indexer/src/storage.rs`
+
+Validation checklist:
+
+- Each new relation kind is backed by a deliberate fixture and storage decision.
+
+#### M2-E7. Fixture and Regression Hardening
+
+Tasks:
+
+- Add fixture coverage for namespaces, sibling methods, overloaded names, pointer and `this` receivers, declaration/definition splits, templates, and macro-bearing files.
+- Add regression tests for graph-derived normalized events.
+- Document known unsupported constructs explicitly.
+
+Expected touch points:
+
+- `samples/`
+- `indexer/src/parser.rs`
+- `indexer/src/resolver.rs`
+
+Exit criteria:
+
+- `tree-sitter-graph` is integrated into the Rust indexer.
+- Graph-derived relationship events feed the existing resolver pipeline.
+- Call-site extraction parity is maintained or improved on current fixtures.
+
+---
+
+### Milestone 3. Real Impact Navigation
 
 Objective:
 
@@ -1273,15 +1495,15 @@ Objective:
 
 Recommended internal order:
 
-1. M2-E1. Direct caller queries
-2. M2-E2. Reference model definition
-3. M2-E3. Reference extraction
-4. M2-E4. Reference storage and retrieval
-5. M2-E5. Impact-analysis summarization
-6. M2-E6. Symbol overview queries
-7. M2-E7. Token-efficient response shaping
+1. M3-E1. Direct caller queries
+2. M3-E2. Reference model definition
+3. M3-E3. Reference extraction
+4. M3-E4. Reference storage and retrieval
+5. M3-E5. Impact-analysis summarization
+6. M3-E6. Symbol overview queries
+7. M3-E7. Token-efficient response shaping
 
-#### M2-E1. Direct Caller Queries
+#### M3-E1. Direct Caller Queries
 
 Tasks:
 
@@ -1300,7 +1522,7 @@ Validation checklist:
 
 - High fan-in fixtures return deterministic ordering and truncation markers.
 
-#### M2-E2. Reference Model Definition
+#### M3-E2. Reference Model Definition
 
 Tasks:
 
@@ -1324,7 +1546,7 @@ Validation checklist:
 
 - Reference categories are documented and deliberately scoped.
 
-#### M2-E3. Reference Extraction
+#### M3-E3. Reference Extraction
 
 Tasks:
 
@@ -1345,7 +1567,7 @@ Validation checklist:
 
 - Each supported category has fixture coverage and explicit expectations.
 
-#### M2-E4. Reference Storage and Retrieval
+#### M3-E4. Reference Storage and Retrieval
 
 Tasks:
 
@@ -1366,7 +1588,7 @@ Validation checklist:
 
 - `find_references` returns correct category labels and confidence fields.
 
-#### M2-E5. Impact-Analysis Summarization
+#### M3-E5. Impact-Analysis Summarization
 
 Tasks:
 
@@ -1391,7 +1613,7 @@ Validation checklist:
 - Output is structured for agents, not raw graph dumping.
 - Realistic fixtures produce concise summaries.
 
-#### M2-E6. Symbol Overview Queries
+#### M3-E6. Symbol Overview Queries
 
 Tasks:
 
@@ -1410,7 +1632,7 @@ Validation checklist:
 
 - Agents can browse structure progressively using only structured queries.
 
-#### M2-E7. Token-Efficient Response Shaping
+#### M3-E7. Token-Efficient Response Shaping
 
 Tasks:
 
@@ -1431,7 +1653,7 @@ Exit criteria:
 
 ---
 
-### Milestone 3. Production-Grade Incremental Operation
+### Milestone 4. Production-Grade Incremental Operation
 
 Objective:
 
@@ -1439,15 +1661,15 @@ Objective:
 
 Recommended internal order:
 
-1. M3-E1. Incremental correctness matrix
-2. M3-E2. Regression fixture suite
-3. M3-E3. File identity and planning upgrades
-4. M3-E4. Header-change fanout policy
-5. M3-E5. Watcher event hardening
-6. M3-E6. Failure recovery and DB safety
-7. M3-E7. Branch switch and mass-change handling
+1. M4-E1. Incremental correctness matrix
+2. M4-E2. Regression fixture suite
+3. M4-E3. File identity and planning upgrades
+4. M4-E4. Header-change fanout policy
+5. M4-E5. Watcher event hardening
+6. M4-E6. Failure recovery and DB safety
+7. M4-E7. Branch switch and mass-change handling
 
-#### M3-E1. Incremental Correctness Matrix
+#### M4-E1. Incremental Correctness Matrix
 
 Tasks:
 
@@ -1458,13 +1680,13 @@ Tasks:
 Expected touch points:
 
 - `dev_docs/`
-- `dev_docs/NestTask.md` or a dedicated incremental design doc
+- `dev_docs/NextTask.md` or a dedicated incremental design doc
 
 Validation checklist:
 
 - Every change scenario has expected symbol, reference, and file-record outcomes.
 
-#### M3-E2. Regression Fixture Suite
+#### M4-E2. Regression Fixture Suite
 
 Tasks:
 
@@ -1487,7 +1709,7 @@ Validation checklist:
 
 - Regression tests reproduce each scenario deterministically.
 
-#### M3-E3. File Identity and Planning Upgrades
+#### M4-E3. File Identity and Planning Upgrades
 
 Tasks:
 
@@ -1506,7 +1728,7 @@ Validation checklist:
 
 - Planner output is testable, not implicit.
 
-#### M3-E4. Header-Change Fanout Policy
+#### M4-E4. Header-Change Fanout Policy
 
 Tasks:
 
@@ -1527,7 +1749,7 @@ Validation checklist:
 
 - Header edits never leave stale merged symbols or stale call/reference relationships.
 
-#### M3-E5. Watcher Event Hardening
+#### M4-E5. Watcher Event Hardening
 
 Tasks:
 
@@ -1545,7 +1767,7 @@ Validation checklist:
 
 - Save bursts do not trigger redundant large work.
 
-#### M3-E6. Failure Recovery and DB Safety
+#### M4-E6. Failure Recovery and DB Safety
 
 Tasks:
 
@@ -1564,7 +1786,7 @@ Validation checklist:
 
 - Interrupted or failed runs leave DB readable and recoverable.
 
-#### M3-E7. Branch Switch and Mass-Change Handling
+#### M4-E7. Branch Switch and Mass-Change Handling
 
 Tasks:
 
@@ -1587,7 +1809,7 @@ Exit criteria:
 
 ---
 
-### Milestone 4. Large-Project Intelligence
+### Milestone 5. Large-Project Intelligence
 
 Objective:
 
@@ -1595,14 +1817,14 @@ Objective:
 
 Recommended internal order:
 
-1. M4-E1. Inheritance relation model
-2. M4-E2. Override candidate logic
-3. M4-E3. Type hierarchy queries
-4. M4-E4. Call-path tracing
-5. M4-E5. Project metadata model
-6. M4-E6. Metadata-aware filtering and grouping
+1. M5-E1. Inheritance relation model
+2. M5-E2. Override candidate logic
+3. M5-E3. Type hierarchy queries
+4. M5-E4. Call-path tracing
+5. M5-E5. Project metadata model
+6. M5-E6. Metadata-aware filtering and grouping
 
-#### M4-E1. Inheritance Relation Model
+#### M5-E1. Inheritance Relation Model
 
 Tasks:
 
@@ -1616,7 +1838,7 @@ Expected touch points:
 - `indexer/src/models.rs`
 - `indexer/src/storage.rs`
 
-#### M4-E2. Override Candidate Logic
+#### M5-E2. Override Candidate Logic
 
 Tasks:
 
@@ -1629,7 +1851,7 @@ Expected touch points:
 - `indexer/src/resolver.rs`
 - `server/src/models/responses.ts`
 
-#### M4-E3. Type Hierarchy Queries
+#### M5-E3. Type Hierarchy Queries
 
 Tasks:
 
@@ -1642,7 +1864,7 @@ Expected touch points:
 - `server/src/mcp.ts`
 - `server/src/storage/sqlite-store.ts`
 
-#### M4-E4. Call-Path Tracing
+#### M5-E4. Call-Path Tracing
 
 Tasks:
 
@@ -1655,7 +1877,7 @@ Expected touch points:
 - `server/src/mcp.ts`
 - `server/src/storage/sqlite-store.ts`
 
-#### M4-E5. Project Metadata Model
+#### M5-E5. Project Metadata Model
 
 Tasks:
 
@@ -1669,7 +1891,7 @@ Expected touch points:
 - `indexer/src/storage.rs`
 - config/docs files
 
-#### M4-E6. Metadata-Aware Filtering and Grouping
+#### M5-E6. Metadata-Aware Filtering and Grouping
 
 Tasks:
 
@@ -1688,7 +1910,7 @@ Exit criteria:
 
 ---
 
-### Milestone 5. Performance Proof
+### Milestone 6. Performance Proof
 
 Objective:
 
@@ -1696,14 +1918,14 @@ Objective:
 
 Recommended internal order:
 
-1. M5-E1. Benchmark design
-2. M5-E2. Benchmark harness implementation
-3. M5-E3. Query profiling and hot-path optimization
-4. M5-E4. Incremental and watcher scale benchmarks
-5. M5-E5. Build metadata ingestion
-6. M5-E6. Include and macro risk signals
+1. M6-E1. Benchmark design
+2. M6-E2. Benchmark harness implementation
+3. M6-E3. Query profiling and hot-path optimization
+4. M6-E4. Incremental and watcher scale benchmarks
+5. M6-E5. Build metadata ingestion
+6. M6-E6. Include and macro risk signals
 
-#### M5-E1. Benchmark Design
+#### M6-E1. Benchmark Design
 
 Tasks:
 
@@ -1716,7 +1938,7 @@ Expected touch points:
 - `dev_docs/`
 - benchmark scripts folder if created
 
-#### M5-E2. Benchmark Harness Implementation
+#### M6-E2. Benchmark Harness Implementation
 
 Tasks:
 
@@ -1729,7 +1951,7 @@ Expected touch points:
 - new benchmark tooling files
 - `README.md`
 
-#### M5-E3. Query Profiling and Hot-Path Optimization
+#### M6-E3. Query Profiling and Hot-Path Optimization
 
 Tasks:
 
@@ -1742,7 +1964,7 @@ Expected touch points:
 - `server/src/storage/sqlite-store.ts`
 - `indexer/src/storage.rs`
 
-#### M5-E4. Incremental and Watcher Scale Benchmarks
+#### M6-E4. Incremental and Watcher Scale Benchmarks
 
 Tasks:
 
@@ -1754,7 +1976,7 @@ Expected touch points:
 - benchmark tooling
 - `dev_docs/`
 
-#### M5-E5. Build Metadata Ingestion
+#### M6-E5. Build Metadata Ingestion
 
 Tasks:
 
@@ -1768,7 +1990,7 @@ Expected touch points:
 - `indexer/src/*`
 - docs
 
-#### M5-E6. Include and Macro Risk Signals
+#### M6-E6. Include and Macro Risk Signals
 
 Tasks:
 
@@ -1831,3 +2053,4 @@ If this plan is followed successfully, CodeAtlas should become:
 - stronger than general semantic tools in the specific area of very large C++ project indexing, relationship analysis, and incremental operational performance
 
 That is the intended competitive position.
+

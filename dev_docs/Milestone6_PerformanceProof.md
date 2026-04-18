@@ -1,4 +1,4 @@
-# Milestone 5. Performance Proof
+# Milestone 6. Performance Proof
 
 ## 1. Objective
 
@@ -20,18 +20,18 @@ Success outcome:
 
 ## 2. Recommended Order
 
-1. M5-E1. Benchmark design
-2. M5-E2. Benchmark harness implementation
-3. M5-E3. Query profiling and hot-path optimization
-4. M5-E4. Incremental and watcher scale benchmarks
-5. M5-E5. Build metadata ingestion
-6. M5-E6. Include and macro risk signals
+1. M6-E1. Benchmark design
+2. M6-E2. Benchmark harness implementation
+3. M6-E3. Query profiling and hot-path optimization
+4. M6-E4. Incremental and watcher scale benchmarks
+5. M6-E5. Build metadata ingestion
+6. M6-E6. Include and macro risk signals
 
 ---
 
 ## 3. Epics
 
-### M5-E1. Benchmark Design
+### M6-E1. Benchmark Design
 
 Goal:
 
@@ -67,7 +67,7 @@ Exit criteria:
 
 ---
 
-### M5-E2. Benchmark Harness Implementation
+### M6-E2. Benchmark Harness Implementation
 
 Goal:
 
@@ -96,7 +96,7 @@ Exit criteria:
 
 ---
 
-### M5-E3. Query Profiling and Hot-Path Optimization
+### M6-E3. Query Profiling and Hot-Path Optimization
 
 Goal:
 
@@ -130,7 +130,7 @@ Exit criteria:
 
 ---
 
-### M5-E4. Incremental and Watcher Scale Benchmarks
+### M6-E4. Incremental and Watcher Scale Benchmarks
 
 Goal:
 
@@ -165,7 +165,7 @@ Exit criteria:
 
 ---
 
-### M5-E5. Build Metadata Ingestion
+### M6-E5. Build Metadata Ingestion
 
 Goal:
 
@@ -197,7 +197,7 @@ Exit criteria:
 
 ---
 
-### M5-E6. Include and Macro Risk Signals
+### M6-E6. Include and Macro Risk Signals
 
 Goal:
 
@@ -236,3 +236,4 @@ Exit criteria:
 - hot-path queries are profiled and improved with evidence
 - incremental and watcher performance is measured under realistic scenarios
 - optional build metadata improves accuracy without redefining the product
+
