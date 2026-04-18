@@ -305,19 +305,38 @@ impl Database {
         files: &[FileRecord],
     ) -> SqlResult<()> {
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
-        self.clear()?;
-        self.write_raw_symbols(raw_symbols)?;
-        self.write_symbols(representative_symbols)?;
-        self.write_calls(calls)?;
-        self.write_references(references)?;
-        self.write_files(files)?;
-        self.rebuild_fts()?;
+        let tx_result: SqlResult<()> = (|| {
+            self.clear()?;
+            self.write_raw_symbols(raw_symbols)?;
+            self.write_symbols(representative_symbols)?;
+            self.write_calls(calls)?;
+            self.write_references(references)?;
+            self.write_files(files)?;
+            self.rebuild_fts()?;
+            Ok(())
+        })();
+
+        if let Err(err) = tx_result {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+            return Err(err);
+        }
+
         self.conn.execute_batch("COMMIT;")?;
         Ok(())
     }
 
     pub fn checkpoint(&self) -> SqlResult<()> {
         self.conn.execute_batch("PRAGMA optimize;")
+    }
+
+    pub fn quick_check(&self) -> SqlResult<Vec<String>> {
+        let mut stmt = self.conn.prepare("PRAGMA quick_check(1)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let issues: Vec<String> = rows
+            .filter_map(|row| row.ok())
+            .filter(|value| value != "ok")
+            .collect();
+        Ok(issues)
     }
 
     pub fn read_file_records(&self) -> SqlResult<Vec<FileRecord>> {
@@ -624,6 +643,23 @@ impl Database {
 
     pub fn rollback(&self) -> SqlResult<()> {
         self.conn.execute_batch("ROLLBACK;")
+    }
+}
+
+pub fn validate_existing_database(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let db = Database::open(path).map_err(|e| format!("open failed: {}", e))?;
+    let issues = db
+        .quick_check()
+        .map_err(|e| format!("quick_check failed: {}", e))?;
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("integrity check failed: {}", issues.join("; ")))
     }
 }
 
@@ -953,5 +989,21 @@ mod tests {
         assert_eq!(count, 1);
         let category: String = db.conn.query_row("SELECT category FROM symbol_references LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(category, "typeUsage");
+    }
+
+    #[test]
+    fn quick_check_reports_clean_database() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        assert!(db.quick_check().unwrap().is_empty());
+    }
+
+    #[test]
+    fn validate_existing_database_reports_invalid_sqlite_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("broken.db");
+        std::fs::write(&db_path, b"not a sqlite database").unwrap();
+
+        let err = validate_existing_database(&db_path).unwrap_err();
+        assert!(err.contains("open failed") || err.contains("quick_check failed"));
     }
 }

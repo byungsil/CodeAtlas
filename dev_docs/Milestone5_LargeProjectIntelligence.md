@@ -1,5 +1,9 @@
 # Milestone 5. Large-Project Intelligence
 
+Status:
+
+- Next planned milestone
+
 ## 1. Objective
 
 Add higher-level structure so agents can reason in subsystem, hierarchy, and path terms instead of only symbol terms.

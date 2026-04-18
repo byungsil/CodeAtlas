@@ -1,10 +1,15 @@
 use std::collections::HashSet;
+use std::io;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 use std::fs;
 
+use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use rusqlite::ErrorCode;
 
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS};
 use crate::discovery;
@@ -12,12 +17,19 @@ use crate::indexing::{make_relative, parse_file_strict, parse_files, parse_files
 use crate::ignore::IgnoreRules;
 use crate::incremental;
 use crate::resolver;
-use crate::storage::Database;
+use crate::storage::{self, Database};
 
 use chrono::Utc;
 
 const DEBOUNCE_MS: u64 = 500;
+const WATCHER_EVENT_BURST_REBUILD_THRESHOLD: usize = 64;
+const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedWatchEvent {
+    kind_label: &'static str,
+    paths: Vec<PathBuf>,
+}
 
 fn is_tracked(path: &Path) -> bool {
     path.extension()
@@ -45,6 +57,99 @@ fn is_in_codeatlas_dir(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == DATA_DIR_NAME)
 }
 
+fn is_relevant_event_kind(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(CreateKind::Any | CreateKind::File)
+            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
+            | EventKind::Remove(RemoveKind::Any | RemoveKind::File)
+    )
+}
+
+fn event_kind_label(kind: &EventKind) -> &'static str {
+    match kind {
+        EventKind::Create(_) => "create",
+        EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Both | RenameMode::From | RenameMode::To)) => "rename",
+        EventKind::Modify(_) => "modify",
+        EventKind::Remove(_) => "remove",
+        _ => "other",
+    }
+}
+
+fn normalize_watch_event(
+    event: &Event,
+    workspace_root: &Path,
+    ignore_rules: &IgnoreRules,
+) -> Option<NormalizedWatchEvent> {
+    if !is_relevant_event_kind(&event.kind) {
+        return None;
+    }
+
+    let mut normalized = HashSet::new();
+    for path in &event.paths {
+        if let Some(candidate) = normalize_event_path(path, workspace_root, ignore_rules) {
+            normalized.insert(candidate);
+        }
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let mut paths: Vec<PathBuf> = normalized.into_iter().collect();
+    paths.sort();
+    Some(NormalizedWatchEvent {
+        kind_label: event_kind_label(&event.kind),
+        paths,
+    })
+}
+
+fn normalize_event_path(
+    path: &Path,
+    workspace_root: &Path,
+    ignore_rules: &IgnoreRules,
+) -> Option<PathBuf> {
+    if !is_in_workspace(path, workspace_root) || is_in_codeatlas_dir(path) {
+        return None;
+    }
+
+    let normalized = normalize_editor_temp_path(path);
+    if is_ignored_path(&normalized, workspace_root, ignore_rules) || !is_tracked(&normalized) {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn normalize_editor_temp_path(path: &Path) -> PathBuf {
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    let trimmed_name = strip_editor_temp_suffix(file_name);
+    if trimmed_name == file_name {
+        return path.to_path_buf();
+    }
+
+    path.with_file_name(trimmed_name)
+}
+
+fn strip_editor_temp_suffix(name: &str) -> &str {
+    const TEMP_SUFFIXES: &[&str] = &[".__jb_tmp__", ".tmp", ".TMP", ".temp", ".swp", ".swx", "~"];
+
+    for suffix in TEMP_SUFFIXES {
+        if let Some(base) = name.strip_suffix(suffix) {
+            if Path::new(base)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| EXTENSIONS.contains(&ext))
+                .unwrap_or(false)
+            {
+                return base;
+            }
+        }
+    }
+
+    name
+}
+
 pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     let workspace_root = workspace_root
         .canonicalize()
@@ -59,13 +164,19 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     println!("Watch mode: {}", workspace_root.display());
     println!("Press Ctrl-C to stop.\n");
 
-    {
-        let db = Database::open(&db_path).map_err(|e| format!("DB open: {}", e))?;
-        if db.has_data() {
-            println!("Existing index found, running incremental catch-up...");
-            run_incremental_index(&workspace_root, &db_path, verbose)?;
-        } else {
-            println!("No existing index, running full initial index...");
+    match storage::validate_existing_database(&db_path) {
+        Ok(()) => {
+            let db = open_database_with_retry(&db_path, "watch open sqlite database")?;
+            if db.has_data() {
+                println!("Existing index found, running incremental catch-up...");
+                run_incremental_index(&workspace_root, &db_path, verbose)?;
+            } else {
+                println!("No existing index, running full initial index...");
+                run_full_index(&workspace_root, &db_path, verbose)?;
+            }
+        }
+        Err(issue) => {
+            println!("Existing index is unhealthy ({}). Rebuilding from scratch...", issue);
             run_full_index(&workspace_root, &db_path, verbose)?;
         }
     }
@@ -93,21 +204,25 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => {
-                let dominated = matches!(
-                    event.kind,
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                );
-                if dominated {
-                    for path in &event.paths {
-                        if is_tracked(path)
-                            && is_in_workspace(path, &workspace_root)
-                            && !is_in_codeatlas_dir(path)
-                            && !is_ignored_path(path, &workspace_root, &ignore_rules)
-                        {
-                            pending.insert(path.clone());
-                            last_event = Instant::now();
-                        }
+                if let Some(normalized) = normalize_watch_event(&event, &workspace_root, &ignore_rules) {
+                    if verbose {
+                        let joined = normalized
+                            .paths
+                            .iter()
+                            .map(|path| {
+                                path.strip_prefix(&workspace_root)
+                                    .unwrap_or(path)
+                                    .to_string_lossy()
+                                    .replace('\\', "/")
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("  WATCH: {} [{}]", normalized.kind_label, joined);
                     }
+                    for path in normalized.paths {
+                        pending.insert(path);
+                    }
+                    last_event = Instant::now();
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -122,7 +237,18 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
                 changed.len()
             );
 
-            if let Err(e) = run_incremental_index(&workspace_root, &db_path, verbose) {
+            let result = if changed.len() >= WATCHER_EVENT_BURST_REBUILD_THRESHOLD {
+                println!(
+                    "  Escalation: watcher burst exceeded threshold ({} >= {}), rebuilding from scratch",
+                    changed.len(),
+                    WATCHER_EVENT_BURST_REBUILD_THRESHOLD
+                );
+                run_full_index(&workspace_root, &db_path, verbose)
+            } else {
+                run_incremental_index(&workspace_root, &db_path, verbose)
+            };
+
+            if let Err(e) = result {
                 eprintln!("  Indexing error: {}", e);
             }
         }
@@ -132,7 +258,13 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
 }
 
 fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
-    let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
+    let staging_db_path = make_watch_staging_db_path(db_path, "full");
+    if staging_db_path.exists() {
+        retry_io("watch staging cleanup", || fs::remove_file(&staging_db_path))
+            .map_err(|e| format!("{}", e))?;
+    }
+
+    let db = open_database_with_retry(&staging_db_path, "watch open staging sqlite database")?;
     let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
     let all_relative: Vec<String> = files
         .iter()
@@ -147,6 +279,9 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
     db.write_all(&raw_symbols, &symbols, &calls, &normalized_references, &file_records)
         .map_err(|e| format!("DB write: {}", e))?;
+    db.checkpoint().map_err(|e| format!("DB checkpoint: {}", e))?;
+
+    publish_watch_db(&staging_db_path, db_path)?;
 
     println!(
         "  Done in {}ms: {} symbols, {} calls",
@@ -157,8 +292,105 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
     Ok(())
 }
 
+fn publish_watch_db(staging_db_path: &Path, final_db_path: &Path) -> Result<(), String> {
+    let publish_path = final_db_path.with_file_name(format!("{}.watch-next", DB_FILENAME));
+
+    if publish_path.exists() {
+        retry_io("watch publish cleanup", || fs::remove_file(&publish_path))
+            .map_err(|e| format!("{}", e))?;
+    }
+
+    retry_io("watch staging copy", || fs::copy(staging_db_path, &publish_path).map(|_| ()))
+        .map_err(|e| format!("{}", e))?;
+
+    if final_db_path.exists() {
+        retry_io("watch existing db replace", || fs::remove_file(final_db_path))
+            .map_err(|e| format!("{}", e))?;
+    }
+
+    retry_io("watch publish rename", || fs::rename(&publish_path, final_db_path))
+        .map_err(|e| format!("{}", e))?;
+    retry_io("watch staging remove", || fs::remove_file(staging_db_path))
+        .map_err(|e| format!("{}", e))?;
+    Ok(())
+}
+
+fn make_watch_staging_db_path(final_db_path: &Path, tag: &str) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    final_db_path.hash(&mut hasher);
+    let key = hasher.finish();
+    std::env::temp_dir().join(format!("codeatlas-watch-{}-{}-{}.db", tag, key, DB_FILENAME))
+}
+
+fn retry_io<T, F>(operation: &str, mut action: F) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let mut last_error = None;
+
+    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            thread::sleep(Duration::from_millis(*delay_ms));
+        }
+
+        match action() {
+            Ok(value) => return Ok(value),
+            Err(err) if should_retry_io_error(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
+                last_error = Some(err);
+            }
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("{} failed: {}", operation, err),
+                ));
+            }
+        }
+    }
+
+    let err = last_error.unwrap_or_else(|| io::Error::other("retry failed without an error"));
+    Err(io::Error::new(
+        err.kind(),
+        format!("{} failed after retries: {}", operation, err),
+    ))
+}
+
+fn should_retry_io_error(err: &io::Error) -> bool {
+    matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock)
+}
+
+fn open_database_with_retry(path: &Path, operation: &str) -> Result<Database, String> {
+    let mut last_error = None;
+
+    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            thread::sleep(Duration::from_millis(*delay_ms));
+        }
+
+        match Database::open(path) {
+            Ok(db) => return Ok(db),
+            Err(err) if should_retry_sqlite_open(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
+                last_error = Some(err.to_string());
+            }
+            Err(err) => return Err(format!("{} failed: {}", operation, err)),
+        }
+    }
+
+    Err(format!(
+        "{} failed after retries: {}",
+        operation,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn should_retry_sqlite_open(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::CannotOpen || code.code == ErrorCode::DatabaseBusy
+    )
+}
+
 fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
-    let db = Database::open(db_path).map_err(|e| format!("DB open: {}", e))?;
+    let db = open_database_with_retry(db_path, "watch open incremental sqlite database")?;
     let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
     let all_relative: Vec<String> = files
         .iter()
@@ -167,10 +399,45 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
 
     let stored = db.read_file_records().unwrap_or_default();
     let plan = incremental::plan(&all_relative, &stored, workspace_root);
+    let escalation = incremental::assess_escalation(all_relative.len(), &plan);
+
+    if !plan.rename_hints.is_empty() {
+        println!("  Planner: {} rename/move hint(s)", plan.rename_hints.len());
+        if verbose {
+            for hint in &plan.rename_hints {
+                println!("    MOVE?: {} -> {}", hint.from_path, hint.to_path);
+            }
+        }
+    }
+    if verbose {
+        for entry in &plan.entries {
+            let matched = entry
+                .matched_path
+                .as_deref()
+                .map(|path| format!(" -> {}", path))
+                .unwrap_or_default();
+            println!(
+                "  PLAN: {} {} ({}){}",
+                entry.disposition.as_str(),
+                entry.path,
+                entry.reason.as_str(),
+                matched
+            );
+        }
+    }
+
+    if let Some(reason) = &escalation.reason {
+        println!("  Escalation: {}", reason);
+    }
 
     if plan.to_index.is_empty() && plan.to_delete.is_empty() {
         println!("  No effective changes.");
         return Ok(());
+    }
+
+    if escalation.level == incremental::EscalationLevel::FullRebuild {
+        println!("  Escalation action: running full rebuild");
+        return run_full_index(workspace_root, db_path, verbose);
     }
 
     let start = Instant::now();
@@ -339,5 +606,83 @@ mod tests {
         assert!(is_in_codeatlas_dir(Path::new("/project/.codeatlas/symbols.json")));
         assert!(!is_in_codeatlas_dir(Path::new("/project/src/foo.cpp")));
         assert!(!is_in_codeatlas_dir(Path::new("/project/codeatlas/foo.cpp")));
+    }
+
+    #[test]
+    fn strip_editor_temp_suffix_normalizes_common_save_patterns() {
+        assert_eq!(strip_editor_temp_suffix("foo.cpp.__jb_tmp__"), "foo.cpp");
+        assert_eq!(strip_editor_temp_suffix("foo.cpp.tmp"), "foo.cpp");
+        assert_eq!(strip_editor_temp_suffix("foo.cpp~"), "foo.cpp");
+        assert_eq!(strip_editor_temp_suffix("foo.tmp"), "foo.tmp");
+    }
+
+    #[test]
+    fn normalize_watch_event_maps_temp_replacement_to_real_source_path() {
+        let root = PathBuf::from("/project");
+        let ignore_rules = IgnoreRules::from_patterns(vec![]);
+        let event = Event {
+            kind: EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            paths: vec![
+                root.join("src").join("foo.cpp.__jb_tmp__"),
+                root.join("src").join("foo.cpp"),
+            ],
+            attrs: Default::default(),
+        };
+
+        let normalized = normalize_watch_event(&event, &root, &ignore_rules).unwrap();
+        assert_eq!(normalized.kind_label, "rename");
+        assert_eq!(normalized.paths, vec![root.join("src").join("foo.cpp")]);
+    }
+
+    #[test]
+    fn normalize_watch_event_filters_ignored_and_codeatlas_paths() {
+        let root = PathBuf::from("/project");
+        let ignore_rules = IgnoreRules::from_patterns(vec![regex::Regex::new(r"^generated/").unwrap()]);
+        let event = Event {
+            kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+            paths: vec![
+                root.join(".codeatlas").join("index.db"),
+                root.join("generated").join("skip.cpp"),
+                root.join("src").join("keep.cpp"),
+            ],
+            attrs: Default::default(),
+        };
+
+        let normalized = normalize_watch_event(&event, &root, &ignore_rules).unwrap();
+        assert_eq!(normalized.kind_label, "modify");
+        assert_eq!(normalized.paths, vec![root.join("src").join("keep.cpp")]);
+    }
+
+    #[test]
+    fn retry_io_retries_permission_denied_then_succeeds() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0usize);
+        let result = retry_io("watch retry test", || {
+            let current = attempts.get();
+            attempts.set(current + 1);
+            if current == 0 {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "locked"))
+            } else {
+                Ok("ok")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, "ok");
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn should_retry_sqlite_open_matches_cannot_open() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::CannotOpen,
+                extended_code: ErrorCode::CannotOpen as i32,
+            },
+            None,
+        );
+
+        assert!(should_retry_sqlite_open(&err));
     }
 }

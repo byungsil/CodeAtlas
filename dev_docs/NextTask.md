@@ -6,7 +6,8 @@ Current status:
 - Milestone 1 (`Trustworthy Lookup`) is complete.
 - Milestone 2 (`Tree-Sitter Graph Integration`) is complete.
 - Milestone 3 (`Real Impact Navigation`) is complete.
-- The next planned execution target is the milestone after Milestone 3.
+- Milestone 4 (`Production-Grade Incremental Operation`) is complete.
+- The next planned execution target is Milestone 5 (`Large-Project Intelligence`).
 
 ## 1. Goal
 
@@ -64,21 +65,23 @@ Recommended implementation order:
 4. Incremental indexing reliability
 5. Query-layer expansion for real agent workflows
 6. Large-project metadata and subsystem intelligence
-7. Benchmarking and performance proof
-8. Selective semantic enrichment from build metadata
+7. Variable and data-flow propagation
+8. Benchmarking and performance proof
 
 Reasoning:
 
 - Steps 1 to 4 improve trust.
 - Steps 5 to 6 improve practical usefulness.
-- Step 7 proves the project's strategic advantage.
-- Step 8 raises the semantic ceiling without changing the product identity.
+- Step 7 lets agents answer bounded value-propagation questions instead of only structural relation questions.
+- Step 8 proves the project's strategic advantage and raises the semantic ceiling with evidence-backed performance and selective build-metadata support.
 
 Execution status:
 
 - Step 1 is complete through Milestone 1.
 - Step 2 is complete through Milestone 2.
 - Step 3 is complete through Milestone 3.
+- Step 4 is complete through Milestone 4.
+- Step 5 is the next active milestone track.
 
 ---
 
@@ -1048,11 +1051,29 @@ Success outcome:
 
 - Agents can reason in terms of hierarchy, path flow, and subsystem-level impact.
 
-### Milestone 6. Performance Proof
+### Milestone 6. Variable and Data-Flow Propagation
 
 Detailed plan:
 
-- [Milestone6_PerformanceProof.md](Milestone6_PerformanceProof.md)
+- [Milestone6_VariableAndDataFlow.md](Milestone6_VariableAndDataFlow.md)
+
+Includes:
+
+- variable assignment and initializer flow
+- argument and return propagation
+- member and object-state propagation
+- bounded interprocedural flow tracing
+- confidence and risk signaling for propagation answers
+
+Success outcome:
+
+- Agents can reason about bounded value propagation, not only structure and relationships.
+
+### Milestone 7. Performance Proof
+
+Detailed plan:
+
+- [Milestone7_PerformanceProof.md](Milestone7_PerformanceProof.md)
 
 Includes:
 
@@ -1077,7 +1098,8 @@ Primary execution documents:
 - [Milestone3_RealImpactNavigation.md](Milestone3_RealImpactNavigation.md)
 - [Milestone4_ProductionGradeIncrementalOperation.md](Milestone4_ProductionGradeIncrementalOperation.md)
 - [Milestone5_LargeProjectIntelligence.md](Milestone5_LargeProjectIntelligence.md)
-- [Milestone6_PerformanceProof.md](Milestone6_PerformanceProof.md)
+- [Milestone6_VariableAndDataFlow.md](Milestone6_VariableAndDataFlow.md)
+- [Milestone7_PerformanceProof.md](Milestone7_PerformanceProof.md)
 
 Use the milestone files as the primary implementation plans. This section remains as an embedded reference copy.
 
@@ -1911,7 +1933,148 @@ Exit criteria:
 
 ---
 
-### Milestone 6. Performance Proof
+### Milestone 6. Variable and Data-Flow Propagation
+
+Objective:
+
+- Extend CodeAtlas from structural code intelligence into bounded value-propagation analysis that remains practical for AI agents on large C++ repositories.
+
+Recommended internal order:
+
+1. M6-E1. Propagation model and scope definition
+2. M6-E2. Intra-procedural local flow extraction
+3. M6-E3. Function-boundary flow summaries
+4. M6-E4. Member and state propagation
+5. M6-E5. Bounded interprocedural propagation queries
+6. M6-E6. Confidence and risk signaling for propagation answers
+
+#### M6-E1. Propagation Model and Scope Definition
+
+Tasks:
+
+- Define what a first-release propagation edge means:
+  - assignment
+  - initializer binding
+  - argument-to-parameter flow
+  - return-value flow
+  - field write and field read
+- Define bounded non-goals explicitly:
+  - full alias analysis
+  - compiler-grade template semantics
+  - exact macro-expanded data flow
+- Define a normalized propagation payload:
+  - source symbol or source expression anchor
+  - target symbol or target expression anchor
+  - flow kind
+  - file path
+  - line
+  - confidence
+
+Expected touch points:
+
+- `dev_docs/API_CONTRACT.md`
+- `indexer/src/models.rs`
+- `server/src/models/responses.ts`
+
+#### M6-E2. Intra-Procedural Local Flow Extraction
+
+Tasks:
+
+- Extract reliable local flows within one function or method:
+  - `a = b`
+  - `T x = y`
+  - chained assignment where structurally recoverable
+  - variable use following local assignment
+- Keep extraction source-aware so agents can inspect why a local flow was created.
+- Add fixtures for local variable propagation and shadowing.
+
+Expected touch points:
+
+- `indexer/graph/`
+- `indexer/src/parser.rs`
+- `samples/`
+
+#### M6-E3. Function-Boundary Flow Summaries
+
+Tasks:
+
+- Model argument-to-parameter flow edges.
+- Model return-value flow from callee back to caller assignment sites where bounded and recoverable.
+- Add callable summaries so repeated query-time expansion does not require reparsing.
+- Keep unsupported call forms explicitly marked instead of guessed.
+
+Expected touch points:
+
+- `indexer/src/models.rs`
+- `indexer/src/resolver.rs`
+- `indexer/src/storage.rs`
+
+#### M6-E4. Member and State Propagation
+
+Tasks:
+
+- Track common state transitions such as:
+  - parameter into member assignment
+  - local into member write
+  - member read into return
+  - getter/setter-like patterns where structurally inferable
+- Distinguish object-local state flow from plain local variable flow.
+- Keep `this->member`, `obj.member`, and `ptr->member` cases explicit.
+
+Expected touch points:
+
+- `indexer/src/parser.rs`
+- `indexer/src/models.rs`
+- `indexer/src/storage.rs`
+
+#### M6-E5. Bounded Interprocedural Propagation Queries
+
+Tasks:
+
+- Add agent-facing queries such as:
+  - `trace_variable_flow`
+  - `explain_symbol_propagation`
+- Support bounded traversal by:
+  - max depth
+  - max edges
+  - flow kinds
+  - file or subsystem filters where available
+- Return compact path summaries instead of full raw graphs.
+
+Expected touch points:
+
+- `server/src/mcp.ts`
+- `server/src/storage/sqlite-store.ts`
+- `server/src/models/responses.ts`
+
+#### M6-E6. Confidence and Risk Signaling for Propagation Answers
+
+Tasks:
+
+- Surface why a propagation answer is exact, likely, or weak.
+- Add risk markers for:
+  - alias-heavy code
+  - macro-sensitive regions
+  - pointer-rich flows
+  - unresolved receiver or target identity
+- Guide agents toward drill-down queries when propagation confidence is limited.
+
+Expected touch points:
+
+- `server/src/models/responses.ts`
+- `dev_docs/API_CONTRACT.md`
+- docs and README notes if needed
+
+Exit criteria:
+
+- Agents can ask where a variable, parameter, or field value likely propagates and receive bounded structured answers.
+- Local assignment and function-boundary propagation are queryable on supported patterns.
+- Member/state propagation is partially modeled for common C++ code shapes.
+- Propagation answers include explicit confidence and risk markers instead of overclaiming certainty.
+
+---
+
+### Milestone 7. Performance Proof
 
 Objective:
 
@@ -1919,14 +2082,14 @@ Objective:
 
 Recommended internal order:
 
-1. M6-E1. Benchmark design
-2. M6-E2. Benchmark harness implementation
-3. M6-E3. Query profiling and hot-path optimization
-4. M6-E4. Incremental and watcher scale benchmarks
-5. M6-E5. Build metadata ingestion
-6. M6-E6. Include and macro risk signals
+1. M7-E1. Benchmark design
+2. M7-E2. Benchmark harness implementation
+3. M7-E3. Query profiling and hot-path optimization
+4. M7-E4. Incremental and watcher scale benchmarks
+5. M7-E5. Build metadata ingestion
+6. M7-E6. Include and macro risk signals
 
-#### M6-E1. Benchmark Design
+#### M7-E1. Benchmark Design
 
 Tasks:
 
@@ -1939,7 +2102,7 @@ Expected touch points:
 - `dev_docs/`
 - benchmark scripts folder if created
 
-#### M6-E2. Benchmark Harness Implementation
+#### M7-E2. Benchmark Harness Implementation
 
 Tasks:
 
@@ -1952,7 +2115,7 @@ Expected touch points:
 - new benchmark tooling files
 - `README.md`
 
-#### M6-E3. Query Profiling and Hot-Path Optimization
+#### M7-E3. Query Profiling and Hot-Path Optimization
 
 Tasks:
 
@@ -1965,7 +2128,7 @@ Expected touch points:
 - `server/src/storage/sqlite-store.ts`
 - `indexer/src/storage.rs`
 
-#### M6-E4. Incremental and Watcher Scale Benchmarks
+#### M7-E4. Incremental and Watcher Scale Benchmarks
 
 Tasks:
 
@@ -1977,7 +2140,7 @@ Expected touch points:
 - benchmark tooling
 - `dev_docs/`
 
-#### M6-E5. Build Metadata Ingestion
+#### M7-E5. Build Metadata Ingestion
 
 Tasks:
 
@@ -1991,7 +2154,7 @@ Expected touch points:
 - `indexer/src/*`
 - docs
 
-#### M6-E6. Include and Macro Risk Signals
+#### M7-E6. Include and Macro Risk Signals
 
 Tasks:
 

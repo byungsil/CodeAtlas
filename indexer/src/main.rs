@@ -12,12 +12,19 @@ mod watcher;
 
 use std::collections::HashSet;
 use std::fs;
+use std::io;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME};
 use indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict};
+use rusqlite::ErrorCode;
+
+const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -27,7 +34,7 @@ fn main() {
     }
 
     let watch_mode = args.get(1).map(|s| s.as_str()) == Some("watch");
-    let full_mode = args.iter().any(|a| a == "--full");
+    let requested_full_mode = args.iter().any(|a| a == "--full");
     let json_mode = args.iter().any(|a| a == "--json");
     let verbose_mode = args.iter().any(|a| a == "--verbose");
     let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-') && a.as_str() != "watch").collect();
@@ -59,10 +66,24 @@ fn main() {
     mark_codeatlas_artifacts(&data_dir, None);
 
     let db_path = data_dir.join(DB_FILENAME);
-    let staging_db_path = db_path.with_file_name(format!("{}.staging", DB_FILENAME));
-    prepare_staging_db(&db_path, &staging_db_path, full_mode).expect("Failed to prepare staging SQLite database");
+    let mut effective_full_mode = determine_effective_full_mode(&db_path, requested_full_mode);
+    let staging_db_path = make_staging_db_path(&db_path, "main");
+    if let Err(err) = prepare_staging_db(&db_path, &staging_db_path, effective_full_mode) {
+        if !effective_full_mode {
+            eprintln!(
+                "Failed to prepare incremental staging database ({}). Falling back to full rebuild.",
+                err
+            );
+            effective_full_mode = true;
+            prepare_staging_db(&db_path, &staging_db_path, true)
+                .expect("Failed to prepare staging SQLite database after full-rebuild fallback");
+        } else {
+            panic!("Failed to prepare staging SQLite database: {}", err);
+        }
+    }
     {
-        let db = storage::Database::open(&staging_db_path).expect("Failed to open SQLite database");
+        let db = open_database_with_retry(&staging_db_path, "open staging sqlite database")
+            .expect("Failed to open SQLite database");
 
         println!("Indexing: {}", workspace_root.display());
         let start = Instant::now();
@@ -74,12 +95,13 @@ fn main() {
             .collect();
         println!("Found {} C++ files", all_relative.len());
 
-        if full_mode {
+        if effective_full_mode {
             println!("Mode: full rebuild");
             run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
         } else {
             let stored = db.read_file_records().unwrap_or_default();
             let plan = incremental::plan(&all_relative, &stored, &workspace_root);
+            let escalation = incremental::assess_escalation(all_relative.len(), &plan);
 
             println!(
                 "Mode: incremental ({} to index, {} unchanged, {} to delete)",
@@ -87,18 +109,28 @@ fn main() {
                 plan.unchanged.len(),
                 plan.to_delete.len()
             );
+            log_incremental_plan(&plan, verbose_mode);
 
-            if plan.to_index.is_empty() && plan.to_delete.is_empty() {
-                let elapsed = start.elapsed();
-                println!("\nNothing to do.");
-                println!("Done in {}", format_elapsed(elapsed.as_millis()));
-                println!("  Output: {}", data_dir.display());
-                return;
+            if let Some(reason) = &escalation.reason {
+                println!("  Escalation: {}", reason);
             }
 
-            if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
-                eprintln!("Incremental indexing failed: {}", e);
-                std::process::exit(1);
+            if escalation.level == incremental::EscalationLevel::FullRebuild {
+                println!("Mode override: full rebuild");
+                run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
+            } else {
+                if plan.to_index.is_empty() && plan.to_delete.is_empty() {
+                    let elapsed = start.elapsed();
+                    println!("\nNothing to do.");
+                    println!("Done in {}", format_elapsed(elapsed.as_millis()));
+                    println!("  Output: {}", data_dir.display());
+                    return;
+                }
+
+                if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
+                    eprintln!("Incremental indexing failed: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -148,32 +180,126 @@ fn print_help() {
 
 fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
     if staging_db_path.exists() {
-        fs::remove_file(staging_db_path)?;
+        retry_io("remove stale staging db", || fs::remove_file(staging_db_path))?;
     }
 
     if !full_mode && final_db_path.exists() {
-        fs::copy(final_db_path, staging_db_path)?;
+        retry_io("copy published db to staging", || {
+            fs::copy(final_db_path, staging_db_path).map(|_| ())
+        })?;
     }
 
     Ok(())
+}
+
+fn determine_effective_full_mode(db_path: &Path, requested_full_mode: bool) -> bool {
+    if requested_full_mode {
+        return true;
+    }
+
+    match storage::validate_existing_database(db_path) {
+        Ok(()) => false,
+        Err(issue) => {
+            eprintln!("Existing index is unhealthy ({}). Forcing full rebuild.", issue);
+            true
+        }
+    }
+}
+
+fn make_staging_db_path(final_db_path: &Path, tag: &str) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    final_db_path.hash(&mut hasher);
+    let key = hasher.finish();
+    std::env::temp_dir().join(format!("codeatlas-{}-{}-{}.db", tag, key, DB_FILENAME))
 }
 
 fn publish_staging_db(staging_db_path: &Path, final_db_path: &Path) -> std::io::Result<()> {
     let publish_path = final_db_path.with_file_name(format!("{}.next", DB_FILENAME));
 
     if publish_path.exists() {
-        fs::remove_file(&publish_path)?;
+        retry_io("remove stale publish db", || fs::remove_file(&publish_path))?;
     }
 
-    fs::copy(staging_db_path, &publish_path)?;
+    retry_io("copy staging db to publish db", || {
+        fs::copy(staging_db_path, &publish_path).map(|_| ())
+    })?;
 
     if final_db_path.exists() {
-        fs::remove_file(final_db_path)?;
+        retry_io("replace published db", || fs::remove_file(final_db_path))?;
     }
 
-    fs::rename(&publish_path, final_db_path)?;
-    fs::remove_file(staging_db_path)?;
+    retry_io("rename publish db into place", || fs::rename(&publish_path, final_db_path))?;
+    retry_io("remove staging db after publish", || fs::remove_file(staging_db_path))?;
     Ok(())
+}
+
+fn retry_io<T, F>(operation: &str, mut action: F) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let mut last_error = None;
+
+    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            thread::sleep(Duration::from_millis(*delay_ms));
+        }
+
+        match action() {
+            Ok(value) => return Ok(value),
+            Err(err) if should_retry_io_error(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
+                last_error = Some(err);
+            }
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("{} failed: {}", operation, err),
+                ));
+            }
+        }
+    }
+
+    let err = last_error.unwrap_or_else(|| io::Error::other("retry failed without an error"));
+    Err(io::Error::new(
+        err.kind(),
+        format!("{} failed after retries: {}", operation, err),
+    ))
+}
+
+fn should_retry_io_error(err: &io::Error) -> bool {
+    matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock)
+}
+
+fn open_database_with_retry(path: &Path, operation: &str) -> Result<storage::Database, String> {
+    let mut last_error = None;
+
+    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
+        if *delay_ms > 0 {
+            thread::sleep(Duration::from_millis(*delay_ms));
+        }
+
+        match storage::Database::open(path) {
+            Ok(db) => return Ok(db),
+            Err(err) if should_retry_sqlite_open(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
+                last_error = Some(err.to_string());
+            }
+            Err(err) => {
+                return Err(format!("{} failed: {}", operation, err));
+            }
+        }
+    }
+
+    Err(format!(
+        "{} failed after retries: {}",
+        operation,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn should_retry_sqlite_open(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::CannotOpen || code.code == ErrorCode::DatabaseBusy
+    )
 }
 
 fn mark_codeatlas_artifacts(data_dir: &Path, db_path: Option<&Path>) {
@@ -381,4 +507,383 @@ fn run_incremental(
 fn write_json<T: serde::Serialize>(path: &Path, data: &T) {
     let json = serde_json::to_string_pretty(data).expect("Failed to serialize JSON");
     fs::write(path, json).expect("Failed to write JSON file");
+}
+
+fn log_incremental_plan(plan: &incremental::IncrementalPlan, verbose: bool) {
+    if !plan.rename_hints.is_empty() {
+        println!("  Planner: {} rename/move hint(s)", plan.rename_hints.len());
+        if verbose {
+            for hint in &plan.rename_hints {
+                println!("    MOVE?: {} -> {}", hint.from_path, hint.to_path);
+            }
+        }
+    }
+
+    if verbose {
+        for entry in &plan.entries {
+            let matched = entry
+                .matched_path
+                .as_deref()
+                .map(|path| format!(" -> {}", path))
+                .unwrap_or_default();
+            println!(
+                "  PLAN: {} {} ({}){}",
+                entry.disposition.as_str(),
+                entry.path,
+                entry.reason.as_str(),
+                matched
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+    use tempfile::tempdir;
+
+    fn copy_snapshot(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for entry in fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if src_path.is_dir() {
+                copy_snapshot(&src_path, &dst_path);
+            } else {
+                if let Some(parent) = dst_path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::copy(&src_path, &dst_path).unwrap();
+            }
+        }
+    }
+
+    fn clear_workspace_except_codeatlas(workspace_root: &Path) {
+        if !workspace_root.exists() {
+            return;
+        }
+
+        for entry in fs::read_dir(workspace_root).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(DATA_DIR_NAME) {
+                continue;
+            }
+            if path.is_dir() {
+                fs::remove_dir_all(path).unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    fn apply_fixture_snapshot(workspace_root: &Path, fixture_root: &Path, snapshot: &str) {
+        clear_workspace_except_codeatlas(workspace_root);
+        copy_snapshot(&fixture_root.join(snapshot), workspace_root);
+    }
+
+    fn fixture_root(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../samples/incremental")
+            .join(name)
+    }
+
+    fn discover_relative_paths(workspace_root: &Path) -> Vec<String> {
+        discovery::find_cpp_files_with_feedback(workspace_root, false)
+            .iter()
+            .map(|p| make_relative(workspace_root, p))
+            .collect()
+    }
+
+    fn full_index_fixture(workspace_root: &Path, db_path: &Path) {
+        let data_dir = workspace_root.join(DATA_DIR_NAME);
+        fs::create_dir_all(&data_dir).unwrap();
+        let db = storage::Database::open(db_path).unwrap();
+        let all_relative = discover_relative_paths(workspace_root);
+        run_full(&db, workspace_root, &all_relative, false, false, &data_dir);
+        db.checkpoint().unwrap();
+    }
+
+    fn incremental_reindex_fixture(
+        workspace_root: &Path,
+        db_path: &Path,
+    ) -> incremental::IncrementalPlan {
+        let db = storage::Database::open(db_path).unwrap();
+        let all_relative = discover_relative_paths(workspace_root);
+        let stored = db.read_file_records().unwrap();
+        let plan = incremental::plan(&all_relative, &stored, workspace_root);
+        run_incremental(&db, workspace_root, &plan, false).unwrap();
+        db.checkpoint().unwrap();
+        plan
+    }
+
+    fn symbol_exists(db_path: &Path, qualified_name: &str) -> bool {
+        let conn = Connection::open(db_path).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM symbols WHERE qualified_name = ?1",
+                params![qualified_name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    fn call_count_for_file(db_path: &Path, file_path: &str) -> i64 {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM calls WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn file_record_exists(db_path: &Path, file_path: &str) -> bool {
+        let conn = Connection::open(db_path).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1",
+                params![file_path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    fn file_record_hash(db_path: &Path, file_path: &str) -> String {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT content_hash FROM files WHERE path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn definition_file_path(db_path: &Path, qualified_name: &str) -> Option<String> {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT definition_file_path FROM symbols WHERE qualified_name = ?1 LIMIT 1",
+            params![qualified_name],
+            |row| row.get(0),
+        )
+        .ok()
+    }
+
+    fn count_dangling_calls(db_path: &Path) -> i64 {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM calls WHERE caller_id NOT IN (SELECT id FROM symbols) OR callee_id NOT IN (SELECT id FROM symbols)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_dangling_references(db_path: &Path) -> i64 {
+        let conn = Connection::open(db_path).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM symbol_references WHERE source_symbol_id NOT IN (SELECT id FROM symbols) OR target_symbol_id NOT IN (SELECT id FROM symbols)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn incremental_fixture_add_file_adds_new_symbols_and_records() {
+        let fixture = fixture_root("add_file");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert_eq!(plan.to_delete.len(), 0);
+        assert!(plan.to_index.contains(&"added.cpp".to_string()));
+        assert!(plan.to_index.contains(&"added.h".to_string()));
+        assert!(file_record_exists(&db_path, "added.cpp"));
+        assert!(file_record_exists(&db_path, "added.h"));
+        assert!(symbol_exists(&db_path, "demo::Added"));
+        assert_eq!(count_dangling_calls(&db_path), 0);
+        assert_eq!(count_dangling_references(&db_path), 0);
+    }
+
+    #[test]
+    fn incremental_fixture_delete_file_removes_stale_symbols_and_calls() {
+        let fixture = fixture_root("delete_file");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+        assert!(symbol_exists(&db_path, "demo::Gone"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 1);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert!(plan.to_delete.contains(&"gone.cpp".to_string()));
+        assert!(plan.to_delete.contains(&"gone.h".to_string()));
+        assert!(!file_record_exists(&db_path, "gone.cpp"));
+        assert!(!file_record_exists(&db_path, "gone.h"));
+        assert!(!symbol_exists(&db_path, "demo::Gone"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 0);
+        assert_eq!(count_dangling_calls(&db_path), 0);
+    }
+
+    #[test]
+    fn incremental_fixture_edit_symbol_rename_cleans_up_stale_relations() {
+        let fixture = fixture_root("edit_symbol_rename");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+        assert!(symbol_exists(&db_path, "demo::Update"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 1);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert!(plan.to_index.contains(&"worker.cpp".to_string()));
+        assert!(plan.to_index.contains(&"worker.h".to_string()));
+        assert!(!symbol_exists(&db_path, "demo::Update"));
+        assert!(symbol_exists(&db_path, "demo::Refresh"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 0);
+        assert_eq!(count_dangling_calls(&db_path), 0);
+        assert_eq!(count_dangling_references(&db_path), 0);
+    }
+
+    #[test]
+    fn incremental_fixture_rename_move_rewrites_file_records_without_losing_symbol() {
+        let fixture = fixture_root("rename_move");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert!(plan.to_delete.contains(&"helper.cpp".to_string()));
+        assert!(plan.to_index.contains(&"impl/helper_impl.cpp".to_string()));
+        assert!(!file_record_exists(&db_path, "helper.cpp"));
+        assert!(file_record_exists(&db_path, "impl/helper_impl.cpp"));
+        assert!(symbol_exists(&db_path, "demo::Helper"));
+        assert_eq!(
+            definition_file_path(&db_path, "demo::Helper").as_deref(),
+            Some("impl/helper_impl.cpp")
+        );
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 1);
+    }
+
+    #[test]
+    fn incremental_fixture_header_comment_change_updates_hash_without_changing_relations() {
+        let fixture = fixture_root("header_comment_change");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+        let before_hash = file_record_hash(&db_path, "api.h");
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert_eq!(plan.to_delete.len(), 0);
+        assert!(plan.to_index.contains(&"api.h".to_string()));
+        assert_ne!(before_hash, file_record_hash(&db_path, "api.h"));
+        assert!(symbol_exists(&db_path, "demo::Stable"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 1);
+        assert_eq!(count_dangling_calls(&db_path), 0);
+    }
+
+    #[test]
+    fn incremental_fixture_mass_churn_keeps_database_consistent() {
+        let fixture = fixture_root("mass_churn");
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path();
+        let db_path = workspace_root.join(DATA_DIR_NAME).join(DB_FILENAME);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "before");
+        full_index_fixture(workspace_root, &db_path);
+
+        apply_fixture_snapshot(workspace_root, &fixture, "after");
+        let plan = incremental_reindex_fixture(workspace_root, &db_path);
+
+        assert!(plan.to_delete.contains(&"a.cpp".to_string()));
+        assert!(plan.to_delete.contains(&"a.h".to_string()));
+        assert!(plan.to_index.contains(&"b.cpp".to_string()));
+        assert!(plan.to_index.contains(&"b.h".to_string()));
+        assert!(plan.to_index.contains(&"c.cpp".to_string()));
+        assert!(plan.to_index.contains(&"c.h".to_string()));
+        assert!(!symbol_exists(&db_path, "demo::A"));
+        assert!(!symbol_exists(&db_path, "demo::B"));
+        assert!(symbol_exists(&db_path, "demo::B2"));
+        assert!(symbol_exists(&db_path, "demo::C"));
+        assert_eq!(call_count_for_file(&db_path, "main.cpp"), 0);
+        assert_eq!(count_dangling_calls(&db_path), 0);
+        assert_eq!(count_dangling_references(&db_path), 0);
+    }
+
+    #[test]
+    fn retry_io_retries_permission_denied_then_succeeds() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0usize);
+        let result = retry_io("test op", || {
+            let current = attempts.get();
+            attempts.set(current + 1);
+            if current == 0 {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "locked"))
+            } else {
+                Ok("ok")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, "ok");
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn retry_io_does_not_retry_non_retryable_errors() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0usize);
+        let err = retry_io("test op", || {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(io::Error::new(io::ErrorKind::NotFound, "missing"))
+        })
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 1);
+        assert!(err.to_string().contains("test op failed"));
+    }
+
+    #[test]
+    fn should_retry_sqlite_open_matches_cannot_open() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::CannotOpen,
+                extended_code: ErrorCode::CannotOpen as i32,
+            },
+            None,
+        );
+
+        assert!(should_retry_sqlite_open(&err));
+    }
 }

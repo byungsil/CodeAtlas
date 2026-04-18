@@ -34,6 +34,10 @@ Success outcome:
 
 ### M4-E1. Incremental Correctness Matrix
 
+Status:
+
+- Completed
+
 Goal:
 
 - define the expected behavior for every important change scenario
@@ -53,23 +57,36 @@ Implementation tasks:
   - removed symbols
   - refreshed relations
   - untouched records
+- define global correctness invariants and escalation rules
+- capture current implementation limits that later epics must close
 
 Expected touch points:
 
 - `dev_docs/`
-- `dev_docs/NextTask.md` or a dedicated incremental design doc
+- `dev_docs/IncrementalCorrectnessMatrix.md`
 
 Validation checklist:
 
 - each change scenario has an explicit expected result contract
+- planner-safe escalation behavior is documented for ambiguous high-risk cases
 
 Exit criteria:
 
 - incremental behavior is documented before deeper implementation changes
 
+Completion summary:
+
+- Added [`IncrementalCorrectnessMatrix.md`](IncrementalCorrectnessMatrix.md) as the acceptance contract for incremental behavior.
+- Captured required outcomes for edit, add, delete, rename/move, header-only, parser-failure, watcher-temp-file, branch-switch, and mass-churn scenarios.
+- Defined global invariants and escalation rules so later epics can optimize safely without silently allowing stale state.
+
 ---
 
 ### M4-E2. Regression Fixture Suite
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -95,9 +112,19 @@ Exit criteria:
 
 - the incremental test suite can catch stale or incorrect update behavior
 
+Completion summary:
+
+- Added snapshot-based incremental fixtures under [`samples/incremental/`](../samples/incremental/README.md).
+- Added regression tests that exercise the real `run_incremental` path for add, delete, edit-with-symbol-rename, rename/move, header-only comment change, and mass-churn scenarios.
+- Added before/after DB assertions for file records, symbol presence, relation cleanup, and dangling-edge absence.
+
 ---
 
 ### M4-E3. File Identity and Planning Upgrades
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -124,9 +151,19 @@ Exit criteria:
 
 - incremental planning is understandable, testable, and more robust
 
+Completion summary:
+
+- Extended `IncrementalPlan` with per-path decision entries, explicit planning reasons, and content-assisted rename/move hints.
+- Aligned planner hashing with the indexing pipeline by hashing raw file bytes instead of UTF-8 text reads.
+- Exposed planner decisions in incremental and watch-mode logs, and added direct planner tests for rename hints and non-UTF8 hash stability.
+
 ---
 
 ### M4-E4. Header-Change Fanout Policy
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -153,9 +190,19 @@ Exit criteria:
 
 - declaration-heavy edits are handled safely
 
+Completion summary:
+
+- Added a conservative reverse-include fanout policy for changed or deleted headers.
+- Header changes now promote directly and transitively including files from `unchanged` to `to_index` with explicit `header_fanout` planner reasons.
+- Added planner coverage for transitive header fanout and kept incremental regression fixtures green under the broader refresh policy.
+
 ---
 
 ### M4-E5. Watcher Event Hardening
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -181,9 +228,19 @@ Exit criteria:
 
 - watcher behavior is stable under common save patterns
 
+Completion summary:
+
+- Added watcher-side event normalization before paths enter the pending queue.
+- Normalized common temp-save file names such as `.__jb_tmp__`, `.tmp`, and trailing `~` back to the tracked source path.
+- Added explicit rename-aware event labeling, verbose watcher diagnostics, and tests for temp replacement plus ignore/codeatlas filtering.
+
 ---
 
 ### M4-E6. Failure Recovery and DB Safety
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -210,9 +267,19 @@ Exit criteria:
 
 - failures degrade safely instead of corrupting the index
 
+Completion summary:
+
+- Added startup DB health validation via SQLite `quick_check`, with automatic fallback to full rebuild when the existing index is unhealthy.
+- Hardened `write_all` so failed full writes explicitly roll back instead of leaving an open partial transaction behind.
+- Moved watch-mode full rebuilds onto a staged publish path so the final `index.db` is replaced only after a successful rebuild and checkpoint.
+
 ---
 
 ### M4-E7. Branch Switch and Mass-Change Handling
+
+Status:
+
+- Completed
 
 Goal:
 
@@ -240,6 +307,12 @@ Validation checklist:
 Exit criteria:
 
 - CodeAtlas remains trustworthy after large repository state transitions
+
+Completion summary:
+
+- Added threshold-based escalation for branch-like and mass-change scenarios in the incremental planner.
+- Large change sets now log an explicit escalation reason and conservatively switch to full rebuild instead of attempting unsafe narrow incremental updates.
+- Watch mode also escalates directly to full rebuild when the buffered event burst exceeds a safety threshold.
 
 ---
 
