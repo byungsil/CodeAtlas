@@ -16,10 +16,7 @@ mod tests {
     #[test]
     fn cpp_call_relations_rule_file_keeps_output_event_shaped() {
         assert!(CPP_CALL_RELATIONS.contains("relation_kind = \"call\""));
-        assert!(CPP_CALL_RELATIONS.contains("relation_kind = \"type_usage\""));
-        assert!(CPP_CALL_RELATIONS.contains("relation_kind = \"inheritance\""));
-        assert!(CPP_CALL_RELATIONS.contains("extraction_source = \"tree_sitter_graph\""));
-        assert!(CPP_CALL_RELATIONS.contains("file_path = filepath"));
         assert!(CPP_CALL_RELATIONS.contains("line = (plus (start-row @call) 1)"));
+        assert!(CPP_CALL_RELATIONS.contains("target_name = (source-text @callee)"));
     }
 }

@@ -43,6 +43,19 @@ export class SqliteStore {
     return row ? toSymbol(row) : undefined;
   }
 
+  getSymbolsByIds(ids: string[]): Symbol[] {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const uniqueIds = Array.from(new Set(ids));
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(`SELECT * FROM symbols WHERE id IN (${placeholders})`)
+      .all(...uniqueIds) as RawRow[];
+    return rows.map(toSymbol);
+  }
+
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
     const row = this.db
       .prepare("SELECT * FROM symbols WHERE qualified_name = ?")
@@ -454,6 +467,9 @@ interface RawRow {
   project_area: string | null;
   artifact_kind: "runtime" | "editor" | "tool" | "test" | "generated" | null;
   header_role: "public" | "private" | "internal" | null;
+  parse_fragility: "low" | "elevated" | null;
+  macro_sensitivity: "low" | "high" | null;
+  include_heaviness: "light" | "heavy" | null;
 }
 
 interface RawCallRow {
@@ -515,6 +531,9 @@ function toSymbol(row: RawRow): Symbol {
     ...(row.project_area ? { projectArea: row.project_area } : {}),
     ...(row.artifact_kind ? { artifactKind: row.artifact_kind } : {}),
     ...(row.header_role ? { headerRole: row.header_role } : {}),
+    ...(row.parse_fragility ? { parseFragility: row.parse_fragility } : {}),
+    ...(row.macro_sensitivity ? { macroSensitivity: row.macro_sensitivity } : {}),
+    ...(row.include_heaviness ? { includeHeaviness: row.include_heaviness } : {}),
   };
 }
 

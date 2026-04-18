@@ -132,7 +132,7 @@ fn score_candidates<'a>(
     let mut ranked: Vec<RankedCandidate<'a>> = candidates
         .into_iter()
         .map(|symbol| {
-            let mut reasons = Vec::new();
+            let mut reasons = Vec::with_capacity(4);
 
             if !matches!(raw.call_kind, RawCallKind::Qualified) {
                 if let Some(parent) = context.caller_parent {
@@ -154,13 +154,9 @@ fn score_candidates<'a>(
                 }
             }
 
-            for reason in receiver_aware_reasons(raw, symbol, context) {
-                reasons.push(reason);
-            }
+            push_receiver_aware_reasons(raw, symbol, context, &mut reasons);
 
-            for reason in arity_hint_reasons(raw, symbol) {
-                reasons.push(reason);
-            }
+            push_arity_hint_reasons(raw, symbol, &mut reasons);
 
             let score = reasons.iter().map(|reason| reason.score).sum();
 
@@ -198,13 +194,12 @@ fn tie_break<'a>(ranked: &[RankedCandidate<'a>]) -> (ResolutionStatus, Option<&'
     (ResolutionStatus::Resolved, Some(first.symbol))
 }
 
-fn receiver_aware_reasons(
+fn push_receiver_aware_reasons(
     raw: &RawCallSite,
     symbol: &Symbol,
     context: ResolutionContext<'_>,
-) -> Vec<RankingReason> {
-    let mut reasons = Vec::new();
-
+    reasons: &mut Vec<RankingReason>,
+) {
     match raw.call_kind {
         RawCallKind::ThisPointerAccess => {
             if let Some(parent) = context.caller_parent {
@@ -251,15 +246,16 @@ fn receiver_aware_reasons(
         }
         RawCallKind::Unqualified => {}
     }
-
-    reasons
 }
 
-fn arity_hint_reasons(raw: &RawCallSite, symbol: &Symbol) -> Vec<RankingReason> {
-    let mut reasons = Vec::new();
+fn push_arity_hint_reasons(
+    raw: &RawCallSite,
+    symbol: &Symbol,
+    reasons: &mut Vec<RankingReason>,
+) {
     let argument_count = match raw.argument_count {
         Some(count) => count,
-        None => return reasons,
+        None => return,
     };
 
     if let Some(parameter_count) = symbol.parameter_count {
@@ -269,7 +265,7 @@ fn arity_hint_reasons(raw: &RawCallSite, symbol: &Symbol) -> Vec<RankingReason> 
                 score: 60,
             });
         }
-        return reasons;
+        return;
     }
 
     if let Some(signature_arity) = infer_parameter_count_from_signature(symbol.signature.as_deref()) {
@@ -280,8 +276,6 @@ fn arity_hint_reasons(raw: &RawCallSite, symbol: &Symbol) -> Vec<RankingReason> 
             });
         }
     }
-
-    reasons
 }
 
 pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
@@ -589,6 +583,13 @@ pub fn derive_function_boundary_propagation_events(
     callable_summaries: &[CallableFlowSummary],
     symbols: &[Symbol],
 ) -> Vec<PropagationEvent> {
+    let mut raw_calls_by_site: HashMap<String, Vec<&RawCallSite>> = HashMap::new();
+    for raw in raw_calls {
+        raw_calls_by_site
+            .entry(raw_call_site_key(&raw.caller_id, &raw.file_path, raw.line))
+            .or_default()
+            .push(raw);
+    }
     let summary_by_callable: HashMap<&str, &CallableFlowSummary> = callable_summaries
         .iter()
         .map(|summary| (summary.callable_symbol_id.as_str(), summary))
@@ -601,11 +602,19 @@ pub fn derive_function_boundary_propagation_events(
     let mut events = Vec::new();
 
     for call in calls {
-        let Some(raw_call) = raw_calls.iter().find(|raw| {
-            raw.caller_id == call.caller_id
-                && raw.file_path == call.file_path
-                && raw.line == call.line
-        }) else {
+        let key = raw_call_site_key(&call.caller_id, &call.file_path, call.line);
+        let Some(raw_calls_at_site) = raw_calls_by_site.get(key.as_str()) else {
+            continue;
+        };
+        let callee_name = symbol_by_id
+            .get(call.callee_id.as_str())
+            .map(|symbol| symbol.name.as_str());
+        let Some(raw_call) = raw_calls_at_site
+            .iter()
+            .copied()
+            .find(|raw| callee_name == Some(raw.called_name.as_str()))
+            .or_else(|| raw_calls_at_site.first().copied())
+        else {
             continue;
         };
         let Some(summary) = summary_by_callable.get(call.callee_id.as_str()) else {
@@ -740,6 +749,10 @@ fn dedupe_propagation_events(events: Vec<PropagationEvent>) -> Vec<PropagationEv
     deduped
 }
 
+fn raw_call_site_key(caller_id: &str, file_path: &str, line: usize) -> String {
+    format!("{}|{}|{}", caller_id, file_path, line)
+}
+
 fn build_methods_by_parent<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
     let mut methods_by_parent: HashMap<&str, Vec<&Symbol>> = HashMap::new();
     for symbol in symbols {
@@ -807,6 +820,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         }
     }
 
@@ -967,6 +983,9 @@ mod tests {
                 project_area: None,
                 artifact_kind: None,
                 header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
             },
             Symbol {
                 id: "Foo::Bar".into(),
@@ -993,6 +1012,9 @@ mod tests {
                 project_area: None,
                 artifact_kind: None,
                 header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
             },
         ];
         let merged = merge_symbols(&syms);
@@ -1031,6 +1053,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
         let definition = Symbol {
             id: "Game::Worker::Update".into(),
@@ -1057,6 +1082,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         let merged = merge_symbols(&[declaration, definition]);
@@ -1097,6 +1125,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
         let definition = Symbol {
             id: "Game::Worker::Tick".into(),
@@ -1123,6 +1154,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         let merged = merge_symbols(&[inline, definition]);

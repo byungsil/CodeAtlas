@@ -8,6 +8,7 @@
     "mcp": "ts-node src/mcp.ts",
     "build": "tsc",
     "index": "ts-node src/cli.ts",
+    "profile:queries": "ts-node src/query-profiler.ts",
     "test": "jest"
   },
   "dependencies": {

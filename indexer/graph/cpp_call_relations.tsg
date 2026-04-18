@@ -11,20 +11,15 @@
 ; one graph node with normalized attributes that the Rust parser can later
 ; translate into RawRelationEvent records.
 
-global filepath
-
 (call_expression
   function: (identifier) @callee
   arguments: (argument_list) @args) @call
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "high"
   attr (@call.event) call_kind = "unqualified"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
@@ -36,14 +31,10 @@ global filepath
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "high"
   attr (@call.event) call_kind = "this_pointer_access"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) receiver = (source-text @receiver)
-  attr (@call.event) receiver_kind = "this"
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
@@ -56,14 +47,10 @@ global filepath
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "high"
   attr (@call.event) call_kind = "pointer_member_access"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) receiver = (source-text @receiver)
-  attr (@call.event) receiver_kind = "identifier"
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
@@ -76,14 +63,10 @@ global filepath
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "high"
   attr (@call.event) call_kind = "member_access"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) receiver = (source-text @receiver)
-  attr (@call.event) receiver_kind = "identifier"
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
@@ -96,13 +79,10 @@ global filepath
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "partial"
   attr (@call.event) call_kind = "member_access"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) receiver = (source-text @receiver)
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
@@ -114,116 +94,9 @@ global filepath
 {
   node @call.event
   attr (@call.event) relation_kind = "call"
-  attr (@call.event) extraction_source = "tree_sitter_graph"
-  attr (@call.event) confidence = "partial"
   attr (@call.event) call_kind = "qualified"
   attr (@call.event) target_name = (source-text @callee)
   attr (@call.event) argument_count = (named-child-count @args)
   attr (@call.event) qualifier = (source-text @qualifier)
-  attr (@call.event) file_path = filepath
   attr (@call.event) line = (plus (start-row @call) 1)
-}
-
-(declaration
-  type: (type_identifier) @type) @decl
-{
-  node @decl.event
-  attr (@decl.event) relation_kind = "type_usage"
-  attr (@decl.event) extraction_source = "tree_sitter_graph"
-  attr (@decl.event) confidence = "partial"
-  attr (@decl.event) target_name = (source-text @type)
-  attr (@decl.event) file_path = filepath
-  attr (@decl.event) line = (plus (start-row @type) 1)
-}
-
-(declaration
-  type: (qualified_identifier) @type) @decl
-{
-  node @decl.event
-  attr (@decl.event) relation_kind = "type_usage"
-  attr (@decl.event) extraction_source = "tree_sitter_graph"
-  attr (@decl.event) confidence = "partial"
-  attr (@decl.event) target_name = (source-text @type)
-  attr (@decl.event) qualifier = (source-text @type)
-  attr (@decl.event) file_path = filepath
-  attr (@decl.event) line = (plus (start-row @type) 1)
-}
-
-(field_declaration
-  type: (type_identifier) @type) @decl
-{
-  node @decl.event
-  attr (@decl.event) relation_kind = "type_usage"
-  attr (@decl.event) extraction_source = "tree_sitter_graph"
-  attr (@decl.event) confidence = "partial"
-  attr (@decl.event) target_name = (source-text @type)
-  attr (@decl.event) file_path = filepath
-  attr (@decl.event) line = (plus (start-row @type) 1)
-}
-
-(field_declaration
-  type: (qualified_identifier) @type) @decl
-{
-  node @decl.event
-  attr (@decl.event) relation_kind = "type_usage"
-  attr (@decl.event) extraction_source = "tree_sitter_graph"
-  attr (@decl.event) confidence = "partial"
-  attr (@decl.event) target_name = (source-text @type)
-  attr (@decl.event) qualifier = (source-text @type)
-  attr (@decl.event) file_path = filepath
-  attr (@decl.event) line = (plus (start-row @type) 1)
-}
-
-(parameter_declaration
-  type: (type_identifier) @type) @param
-{
-  node @param.event
-  attr (@param.event) relation_kind = "type_usage"
-  attr (@param.event) extraction_source = "tree_sitter_graph"
-  attr (@param.event) confidence = "partial"
-  attr (@param.event) target_name = (source-text @type)
-  attr (@param.event) file_path = filepath
-  attr (@param.event) line = (plus (start-row @type) 1)
-}
-
-(parameter_declaration
-  type: (qualified_identifier) @type) @param
-{
-  node @param.event
-  attr (@param.event) relation_kind = "type_usage"
-  attr (@param.event) extraction_source = "tree_sitter_graph"
-  attr (@param.event) confidence = "partial"
-  attr (@param.event) target_name = (source-text @type)
-  attr (@param.event) qualifier = (source-text @type)
-  attr (@param.event) file_path = filepath
-  attr (@param.event) line = (plus (start-row @type) 1)
-}
-
-(class_specifier
-  name: (type_identifier) @_derived
-  (base_class_clause
-    (type_identifier) @base)) @class
-{
-  node @class.event
-  attr (@class.event) relation_kind = "inheritance"
-  attr (@class.event) extraction_source = "tree_sitter_graph"
-  attr (@class.event) confidence = "partial"
-  attr (@class.event) target_name = (source-text @base)
-  attr (@class.event) file_path = filepath
-  attr (@class.event) line = (plus (start-row @base) 1)
-}
-
-(class_specifier
-  name: (type_identifier) @_derived
-  (base_class_clause
-    (qualified_identifier) @base)) @class
-{
-  node @class.event
-  attr (@class.event) relation_kind = "inheritance"
-  attr (@class.event) extraction_source = "tree_sitter_graph"
-  attr (@class.event) confidence = "partial"
-  attr (@class.event) target_name = (source-text @base)
-  attr (@class.event) qualifier = (source-text @base)
-  attr (@class.event) file_path = filepath
-  attr (@class.event) line = (plus (start-row @base) 1)
 }

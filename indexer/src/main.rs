@@ -1,3 +1,4 @@
+mod build_metadata;
 mod constants;
 mod discovery;
 mod graph_rules;
@@ -23,9 +24,41 @@ use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME};
 use indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict};
+use models::ParseMetrics;
 use rusqlite::ErrorCode;
 
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
+
+#[derive(Debug, Default, Clone, Copy)]
+struct IndexStageTimings {
+    discovery_ms: u128,
+    parse_ms: u128,
+    resolve_ms: u128,
+    persist_ms: u128,
+    json_ms: u128,
+    checkpoint_ms: u128,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ResolveBreakdownTimings {
+    merge_symbols_ms: u128,
+    resolve_calls_ms: u128,
+    boundary_propagation_ms: u128,
+    propagation_merge_ms: u128,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct IncrementalStageTimings {
+    initial_parse_ms: u128,
+    cleanup_refresh_ms: u128,
+    affected_reparse_ms: u128,
+    resolve_calls_ms: u128,
+    summary_load_ms: u128,
+    boundary_propagation_ms: u128,
+    propagation_merge_ms: u128,
+    persist_ms: u128,
+    commit_ms: u128,
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -67,6 +100,20 @@ fn main() {
     mark_codeatlas_artifacts(&data_dir, None);
 
     let db_path = data_dir.join(DB_FILENAME);
+    let build_metadata = match build_metadata::load_build_metadata(&workspace_root) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("Build metadata disabled: {}", err);
+            None
+        }
+    };
+    if let Some(metadata) = &build_metadata {
+        println!(
+            "Build metadata: {} translation unit(s), {} workspace include dir(s)",
+            metadata.translation_unit_count,
+            metadata.workspace_include_dirs.len()
+        );
+    }
     let mut effective_full_mode = determine_effective_full_mode(&db_path, requested_full_mode);
     let staging_db_path = make_staging_db_path(&db_path, "main");
     if let Err(err) = prepare_staging_db(&db_path, &staging_db_path, effective_full_mode) {
@@ -89,7 +136,9 @@ fn main() {
         println!("Indexing: {}", workspace_root.display());
         let start = Instant::now();
 
+        let discovery_start = Instant::now();
         let all_files = discovery::find_cpp_files_with_feedback(&workspace_root, verbose_mode);
+        let discovery_elapsed = discovery_start.elapsed().as_millis();
         let all_relative: Vec<String> = all_files
             .iter()
             .map(|p| make_relative(&workspace_root, p))
@@ -98,7 +147,21 @@ fn main() {
 
         if effective_full_mode {
             println!("Mode: full rebuild");
-            run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
+            let mut timings =
+                run_full(
+                    &db,
+                    &workspace_root,
+                    &all_relative,
+                    json_mode,
+                    verbose_mode,
+                    &data_dir,
+                    build_metadata.as_ref(),
+                );
+            timings.discovery_ms = discovery_elapsed;
+            let checkpoint_start = Instant::now();
+            db.checkpoint().expect("Failed to checkpoint SQLite database");
+            timings.checkpoint_ms = checkpoint_start.elapsed().as_millis();
+            print_stage_timings(&timings, json_mode);
         } else {
             let stored = db.read_file_records().unwrap_or_default();
             let plan = incremental::plan(&all_relative, &stored, &workspace_root);
@@ -118,7 +181,15 @@ fn main() {
 
             if escalation.level == incremental::EscalationLevel::FullRebuild {
                 println!("Mode override: full rebuild");
-                run_full(&db, &workspace_root, &all_relative, json_mode, verbose_mode, &data_dir);
+                run_full(
+                    &db,
+                    &workspace_root,
+                    &all_relative,
+                    json_mode,
+                    verbose_mode,
+                    &data_dir,
+                    build_metadata.as_ref(),
+                );
             } else {
                 if plan.to_index.is_empty() && plan.to_delete.is_empty() {
                     let elapsed = start.elapsed();
@@ -128,14 +199,21 @@ fn main() {
                     return;
                 }
 
-                if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode) {
+                if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode, build_metadata.as_ref()) {
                     eprintln!("Incremental indexing failed: {}", e);
                     std::process::exit(1);
                 }
             }
-        }
 
-        db.checkpoint().expect("Failed to checkpoint SQLite database");
+            let checkpoint_start = Instant::now();
+            db.checkpoint().expect("Failed to checkpoint SQLite database");
+            let checkpoint_ms = checkpoint_start.elapsed().as_millis();
+            println!(
+                "  Timings: discovery {} | checkpoint {}",
+                format_elapsed(discovery_elapsed),
+                format_elapsed(checkpoint_ms)
+            );
+        }
 
         let elapsed = start.elapsed();
         println!("\nDone in {}", format_elapsed(elapsed.as_millis()));
@@ -152,6 +230,72 @@ fn format_elapsed(elapsed_ms: u128) -> String {
     } else {
         format!("{}ms", elapsed_ms)
     }
+}
+
+fn print_stage_timings(timings: &IndexStageTimings, json_mode: bool) {
+    let mut parts = vec![
+        format!("discovery {}", format_elapsed(timings.discovery_ms)),
+        format!("parse {}", format_elapsed(timings.parse_ms)),
+        format!("resolve {}", format_elapsed(timings.resolve_ms)),
+        format!("persist {}", format_elapsed(timings.persist_ms)),
+    ];
+
+    if json_mode || timings.json_ms > 0 {
+        parts.push(format!("json {}", format_elapsed(timings.json_ms)));
+    }
+
+    parts.push(format!("checkpoint {}", format_elapsed(timings.checkpoint_ms)));
+
+    println!("  Timings: {}", parts.join(" | "));
+}
+
+fn print_resolve_breakdown(label: &str, timings: &ResolveBreakdownTimings) {
+    println!(
+        "  {}: merge-symbols {} | resolve-calls {} | boundary-propagation {} | propagation-merge {}",
+        label,
+        format_elapsed(timings.merge_symbols_ms),
+        format_elapsed(timings.resolve_calls_ms),
+        format_elapsed(timings.boundary_propagation_ms),
+        format_elapsed(timings.propagation_merge_ms)
+    );
+}
+
+fn print_incremental_timings(timings: &IncrementalStageTimings) {
+    println!(
+        "  Incremental timings: initial-parse {} | cleanup-refresh {} | affected-reparse {} | resolve-calls {} | summary-load {} | boundary-propagation {} | propagation-merge {} | persist {} | commit {}",
+        format_elapsed(timings.initial_parse_ms),
+        format_elapsed(timings.cleanup_refresh_ms),
+        format_elapsed(timings.affected_reparse_ms),
+        format_elapsed(timings.resolve_calls_ms),
+        format_elapsed(timings.summary_load_ms),
+        format_elapsed(timings.boundary_propagation_ms),
+        format_elapsed(timings.propagation_merge_ms),
+        format_elapsed(timings.persist_ms),
+        format_elapsed(timings.commit_ms)
+    );
+}
+
+fn print_parse_breakdown(label: &str, metrics: &ParseMetrics) {
+    println!(
+        "  {}: tree-sitter {} | syntax-walk {} | local-propagation {} | local-function-discovery {} | local-owner-lookup {} | local-seed {} | local-event-walk {} | local-declaration {} | local-expression {} | local-return {} | local-nested-block {} | local-return-collection {} | graph-relations {} | graph-compile {} | graph-execute {} | reference-normalization {}",
+        label,
+        format_elapsed(metrics.tree_sitter_parse_ms),
+        format_elapsed(metrics.syntax_walk_ms),
+        format_elapsed(metrics.local_propagation_ms),
+        format_elapsed(metrics.local_function_discovery_ms),
+        format_elapsed(metrics.local_owner_lookup_ms),
+        format_elapsed(metrics.local_seed_ms),
+        format_elapsed(metrics.local_event_walk_ms),
+        format_elapsed(metrics.local_declaration_ms),
+        format_elapsed(metrics.local_expression_statement_ms),
+        format_elapsed(metrics.local_return_statement_ms),
+        format_elapsed(metrics.local_nested_block_ms),
+        format_elapsed(metrics.local_return_collection_ms),
+        format_elapsed(metrics.graph_relation_ms),
+        format_elapsed(metrics.graph_rule_compile_ms),
+        format_elapsed(metrics.graph_rule_execute_ms),
+        format_elapsed(metrics.reference_normalization_ms)
+    );
 }
 
 fn print_help() {
@@ -173,6 +317,11 @@ fn print_help() {
     println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");
     println!("  --json       Write JSON snapshots alongside the SQLite database");
     println!("  -h, --help   Show this help message");
+    println!();
+    println!("Optional build metadata:");
+    println!("  If a workspace contains `compile_commands.json`, CodeAtlas auto-detects it");
+    println!("  and uses include directories, output paths, and cheap define hints to");
+    println!("  refine metadata classification without requiring an LSP or compile DB.");
     println!();
     println!("Output:");
     println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
@@ -341,7 +490,12 @@ fn run_full(
     json_mode: bool,
     verbose: bool,
     data_dir: &Path,
-) {
+    build_metadata: Option<&build_metadata::BuildMetadataContext>,
+) -> IndexStageTimings {
+    let mut timings = IndexStageTimings::default();
+    let mut resolve_breakdown = ResolveBreakdownTimings::default();
+
+    let parse_start = Instant::now();
     let (
         raw_symbols,
         raw_calls,
@@ -349,21 +503,38 @@ fn run_full(
         local_propagation_events,
         callable_flow_summaries,
         file_records,
-    ) = parse_files(workspace_root, all_relative, verbose);
+        parse_metrics,
+    ) = parse_files(workspace_root, all_relative, verbose, build_metadata);
+    timings.parse_ms = parse_start.elapsed().as_millis();
+
+    let resolve_start = Instant::now();
+    let merge_symbols_start = Instant::now();
     let symbols = resolver::merge_symbols(&raw_symbols);
+    resolve_breakdown.merge_symbols_ms = merge_symbols_start.elapsed().as_millis();
+
+    let resolve_calls_start = Instant::now();
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
+    resolve_breakdown.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
+
+    let boundary_start = Instant::now();
     let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
         &raw_calls,
         &calls,
         &callable_flow_summaries,
         &symbols,
     );
+    resolve_breakdown.boundary_propagation_ms = boundary_start.elapsed().as_millis();
+
+    let propagation_merge_start = Instant::now();
     let propagation_events = resolver::merge_propagation_events(
         &local_propagation_events,
         &boundary_propagation_events,
     );
+    resolve_breakdown.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
+    timings.resolve_ms = resolve_start.elapsed().as_millis();
 
     let raw_count: usize = all_relative.len();
+    let persist_start = Instant::now();
     db.write_all(
         &raw_symbols,
         &symbols,
@@ -374,13 +545,16 @@ fn run_full(
         &file_records,
     )
         .expect("Failed to write to SQLite");
+    timings.persist_ms = persist_start.elapsed().as_millis();
 
     if json_mode {
+        let json_start = Instant::now();
         write_json(&data_dir.join("symbols.json"), &symbols);
         write_json(&data_dir.join("calls.json"), &calls);
         write_json(&data_dir.join("references.json"), &normalized_references);
         write_json(&data_dir.join("propagation.json"), &propagation_events);
         write_json(&data_dir.join("files.json"), &file_records);
+        timings.json_ms = json_start.elapsed().as_millis();
     }
 
     println!(
@@ -390,6 +564,10 @@ fn run_full(
         propagation_events.len(),
         raw_count
     );
+    print_parse_breakdown("Parse breakdown", &parse_metrics);
+    print_resolve_breakdown("Resolve breakdown", &resolve_breakdown);
+
+    timings
 }
 
 fn run_incremental(
@@ -397,7 +575,10 @@ fn run_incremental(
     workspace_root: &Path,
     plan: &incremental::IncrementalPlan,
     verbose: bool,
+    build_metadata: Option<&build_metadata::BuildMetadataContext>,
 ) -> Result<(), String> {
+    let mut timings = IncrementalStageTimings::default();
+    let initial_parse_start = Instant::now();
     let (
         parsed_symbols,
         new_raw_calls,
@@ -405,8 +586,9 @@ fn run_incremental(
         new_local_propagation,
         new_callable_summaries,
         new_files,
+        parse_metrics,
     ) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index, verbose)?
+        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata)?
     } else {
         (
             Vec::new(),
@@ -415,8 +597,13 @@ fn run_incremental(
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            ParseMetrics::default(),
         )
     };
+    timings.initial_parse_ms = initial_parse_start.elapsed().as_millis();
+    if parse_metrics != ParseMetrics::default() {
+        print_parse_breakdown("Incremental parse breakdown", &parse_metrics);
+    }
 
     let mut replaced_paths = plan.to_delete.clone();
     replaced_paths.extend(plan.to_index.clone());
@@ -436,6 +623,7 @@ fn run_incremental(
     db.begin().map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     let tx_result: Result<(), String> = (|| {
+        let cleanup_refresh_start = Instant::now();
         for path in &plan.to_delete {
             println!("  DELETE: {}", path);
             db.delete_calls_for_file(path)
@@ -483,6 +671,7 @@ fn run_incremental(
         let affected_references = db
             .cleanup_dangling_references()
             .map_err(|e| format!("Failed to cleanup dangling references: {}", e))?;
+        timings.cleanup_refresh_ms = cleanup_refresh_start.elapsed().as_millis();
 
         let mut all_calls = new_raw_calls;
         let mut all_references = new_references;
@@ -506,6 +695,7 @@ fn run_incremental(
             }
         }
 
+        let affected_reparse_start = Instant::now();
         for path in &affected {
             if !files_to_reresolve.contains(path) {
                 files_to_reresolve.push(path.clone());
@@ -514,7 +704,7 @@ fn run_incremental(
                 continue;
             }
 
-            let (result, _, lossy) = parse_file_strict(workspace_root, path)?;
+            let (result, _, lossy) = parse_file_strict(workspace_root, path, build_metadata)?;
             if verbose && lossy {
                 println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
             }
@@ -529,21 +719,35 @@ fn run_incremental(
             all_local_propagation.extend(result.propagation_events);
             all_callable_summaries.extend(result.callable_flow_summaries);
         }
+        timings.affected_reparse_ms = affected_reparse_start.elapsed().as_millis();
 
+        let resolve_calls_start = Instant::now();
         let resolved = resolver::resolve_calls_with_db(&all_calls, &refreshed_symbols, db);
+        timings.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
+
+        let summary_load_start = Instant::now();
         let callable_summaries = merge_callable_summaries(
             &all_callable_summaries,
             &load_missing_callable_summaries(db, &resolved, &all_callable_summaries)
                 .map_err(|e| format!("Failed to read callable summaries: {}", e))?,
         );
+        timings.summary_load_ms = summary_load_start.elapsed().as_millis();
+
+        let boundary_start = Instant::now();
         let boundary_propagation = resolver::derive_function_boundary_propagation_events(
             &all_calls,
             &resolved,
             &callable_summaries,
             &refreshed_symbols,
         );
+        timings.boundary_propagation_ms = boundary_start.elapsed().as_millis();
+
+        let propagation_merge_start = Instant::now();
         let propagation_events =
             resolver::merge_propagation_events(&all_local_propagation, &boundary_propagation);
+        timings.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
+
+        let persist_start = Instant::now();
         if !resolved.is_empty() {
             db.write_calls(&resolved)
                 .map_err(|e| format!("Failed to write calls: {}", e))?;
@@ -568,6 +772,7 @@ fn run_incremental(
 
         db.refresh_fts_for_symbol_ids(&affected_symbol_ids)
             .map_err(|e| format!("Failed to refresh FTS: {}", e))?;
+        timings.persist_ms = persist_start.elapsed().as_millis();
 
         let total_syms: i64 = db.count_symbols().unwrap_or(0);
         let total_calls: i64 = db.count_calls().unwrap_or(0);
@@ -586,8 +791,11 @@ fn run_incremental(
         return Err(err);
     }
 
+    let commit_start = Instant::now();
     db.commit()
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+    timings.commit_ms = commit_start.elapsed().as_millis();
+    print_incremental_timings(&timings);
 
     if plan.to_index.is_empty() && !plan.to_delete.is_empty() {
         println!("  Deleted {} file(s)", plan.to_delete.len());
@@ -729,7 +937,7 @@ mod tests {
         fs::create_dir_all(&data_dir).unwrap();
         let db = storage::Database::open(db_path).unwrap();
         let all_relative = discover_relative_paths(workspace_root);
-        run_full(&db, workspace_root, &all_relative, false, false, &data_dir);
+        run_full(&db, workspace_root, &all_relative, false, false, &data_dir, None);
         db.checkpoint().unwrap();
     }
 
@@ -741,7 +949,7 @@ mod tests {
         let all_relative = discover_relative_paths(workspace_root);
         let stored = db.read_file_records().unwrap();
         let plan = incremental::plan(&all_relative, &stored, workspace_root);
-        run_incremental(&db, workspace_root, &plan, false).unwrap();
+        run_incremental(&db, workspace_root, &plan, false, None).unwrap();
         db.checkpoint().unwrap();
         plan
     }

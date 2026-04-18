@@ -832,6 +832,42 @@ First-release rules:
 - no repository-specific config is required in the initial version
 - absent or weak path evidence should leave fields unset rather than guessed
 
+Milestone 7 extends this with an optional build-metadata overlay.
+
+Build-metadata overlay rules:
+
+- `compile_commands.json` ingestion is optional and auto-detected when present
+- baseline indexing and query behavior remain fully usable without compile DB presence
+- first-release build metadata is used only for lightweight metadata refinement, not compiler-grade parsing
+- build metadata may:
+  - promote `headerRole` to `public` when a header lives under a workspace include directory discovered from compile commands
+  - refine `artifactKind` when compile output paths or cheap define hints indicate test/editor/tool/generated intent
+- build metadata must not silently replace the path-derived baseline with speculative semantics
+- compiler-grade include resolution, macro expansion, and configuration-specific parsing remain out of scope
+
+Milestone 7 also introduces lightweight C++ fragility signals.
+
+File and symbol risk-signal fields:
+
+- `parseFragility`
+  - `low`
+  - `elevated`
+- `macroSensitivity`
+  - `low`
+  - `high`
+- `includeHeaviness`
+  - `light`
+  - `heavy`
+
+Risk-signal rules:
+
+- these are lightweight structural heuristics, not compiler-grade diagnostics
+- risk signals are attached at file level and copied onto symbols declared in that file
+- `parseFragility = elevated` may be raised by tree-sitter error recovery, macro density, or unusually heavy include load
+- `macroSensitivity = high` indicates macro-heavy regions where build-configuration-specific meaning may diverge from the structural index
+- `includeHeaviness = heavy` indicates files whose include volume makes build-context interactions more likely
+- risk signals are meant to guide agent caution and follow-up exploration, not to suppress otherwise useful results
+
 Metadata-aware query behavior:
 
 - `GET /search` and MCP `search_symbols` accept optional `subsystem`, `module`, `projectArea`, and `artifactKind` filters

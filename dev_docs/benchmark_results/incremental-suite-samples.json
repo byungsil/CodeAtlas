@@ -1,0 +1,1151 @@
+﻿{
+    "schemaVersion":  1,
+    "recordedAt":  "2026-04-19T01:30:12.7620320+09:00",
+    "gitCommit":  "e6288974d382e6877255a425e58292fe77b9cbc0",
+    "indexerPath":  "E:\\Dev\\CodeAtlas\\indexer\\target\\debug\\codeatlas-indexer.exe",
+    "buildProfile":  "debug",
+    "tempWorkspaceRoot":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces",
+    "results":  [
+                    {
+                        "scenario":  "no_change_rerun",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  556,
+                                         "reportedTotalMs":  205,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  2,
+                                                        "calls":  1,
+                                                        "propagation":  0,
+                                                        "files":  3
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  0,
+                                                         "parse":  160,
+                                                         "resolve":  0,
+                                                         "persist":  31,
+                                                         "checkpoint":  13
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  157,
+                                                                "graph-compile":  157,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun",
+                                                           "Found 3 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 2 | Calls: 1 | Propagation: 0 | Files: 3",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 157ms | graph-compile 157ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 0ms | parse 160ms | resolve 0ms | persist 31ms | checkpoint 13ms",
+                                                           "",
+                                                           "Done in 205ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas"
+                                                       ]
+                                     },
+                        "noOpIncremental":  {
+                                                "exitCode":  0,
+                                                "wallClockMs":  40,
+                                                "reportedTotalMs":  0,
+                                                "peakWorkingSetBytes":  0,
+                                                "mode":  {
+                                                             "kind":  "incremental",
+                                                             "toIndex":  0,
+                                                             "unchanged":  3,
+                                                             "toDelete":  0
+                                                         },
+                                                "escalation":  null,
+                                                "modeOverrideFull":  false,
+                                                "counts":  null,
+                                                "timings":  {
+
+                                                            },
+                                                "incrementalTimings":  {
+
+                                                                       },
+                                                "parseBreakdown":  {
+
+                                                                   },
+                                                "resolveBreakdown":  {
+
+                                                                     },
+                                                "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas",
+                                                "rawOutput":  [
+                                                                  "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun",
+                                                                  "Found 3 C++ files",
+                                                                  "Mode: incremental (0 to index, 3 unchanged, 0 to delete)",
+                                                                  "",
+                                                                  "Nothing to do.",
+                                                                  "Done in 0ms",
+                                                                  "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas"
+                                                              ]
+                                            },
+                        "scenarioRun":  {
+                                            "exitCode":  0,
+                                            "wallClockMs":  40,
+                                            "reportedTotalMs":  0,
+                                            "peakWorkingSetBytes":  0,
+                                            "mode":  {
+                                                         "kind":  "incremental",
+                                                         "toIndex":  0,
+                                                         "unchanged":  3,
+                                                         "toDelete":  0
+                                                     },
+                                            "escalation":  null,
+                                            "modeOverrideFull":  false,
+                                            "counts":  null,
+                                            "timings":  {
+
+                                                        },
+                                            "incrementalTimings":  {
+
+                                                                   },
+                                            "parseBreakdown":  {
+
+                                                               },
+                                            "resolveBreakdown":  {
+
+                                                                 },
+                                            "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas",
+                                            "rawOutput":  [
+                                                              "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun",
+                                                              "Found 3 C++ files",
+                                                              "Mode: incremental (0 to index, 3 unchanged, 0 to delete)",
+                                                              "",
+                                                              "Nothing to do.",
+                                                              "Done in 0ms",
+                                                              "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun\\.codeatlas"
+                                                          ]
+                                        },
+                        "databaseSizeBytes":  159744,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\no_change_rerun"
+                    },
+                    {
+                        "scenario":  "single_cpp_edit",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  577,
+                                         "reportedTotalMs":  195,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  2,
+                                                        "calls":  1,
+                                                        "propagation":  0,
+                                                        "files":  3
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  0,
+                                                         "parse":  155,
+                                                         "resolve":  0,
+                                                         "persist":  25,
+                                                         "checkpoint":  13
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  153,
+                                                                "graph-compile":  153,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit",
+                                                           "Found 3 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 2 | Calls: 1 | Propagation: 0 | Files: 3",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 153ms | graph-compile 153ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 0ms | parse 155ms | resolve 0ms | persist 25ms | checkpoint 13ms",
+                                                           "",
+                                                           "Done in 195ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas"
+                                                       ]
+                                     },
+                        "noOpIncremental":  {
+                                                "exitCode":  0,
+                                                "wallClockMs":  46,
+                                                "reportedTotalMs":  0,
+                                                "peakWorkingSetBytes":  0,
+                                                "mode":  {
+                                                             "kind":  "incremental",
+                                                             "toIndex":  0,
+                                                             "unchanged":  3,
+                                                             "toDelete":  0
+                                                         },
+                                                "escalation":  null,
+                                                "modeOverrideFull":  false,
+                                                "counts":  null,
+                                                "timings":  {
+
+                                                            },
+                                                "incrementalTimings":  {
+
+                                                                       },
+                                                "parseBreakdown":  {
+
+                                                                   },
+                                                "resolveBreakdown":  {
+
+                                                                     },
+                                                "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas",
+                                                "rawOutput":  [
+                                                                  "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit",
+                                                                  "Found 3 C++ files",
+                                                                  "Mode: incremental (0 to index, 3 unchanged, 0 to delete)",
+                                                                  "",
+                                                                  "Nothing to do.",
+                                                                  "Done in 0ms",
+                                                                  "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas"
+                                                              ]
+                                            },
+                        "scenarioRun":  {
+                                            "exitCode":  0,
+                                            "wallClockMs":  255,
+                                            "reportedTotalMs":  191,
+                                            "peakWorkingSetBytes":  0,
+                                            "mode":  {
+                                                         "kind":  "incremental",
+                                                         "toIndex":  3,
+                                                         "unchanged":  0,
+                                                         "toDelete":  0
+                                                     },
+                                            "escalation":  null,
+                                            "modeOverrideFull":  false,
+                                            "counts":  null,
+                                            "timings":  {
+                                                            "discovery":  0,
+                                                            "checkpoint":  0
+                                                        },
+                                            "incrementalTimings":  {
+                                                                       "initial-parse":  166,
+                                                                       "cleanup-refresh":  1,
+                                                                       "affected-reparse":  0,
+                                                                       "resolve-calls":  0,
+                                                                       "summary-load":  0,
+                                                                       "boundary-propagation":  0,
+                                                                       "propagation-merge":  0,
+                                                                       "persist":  0,
+                                                                       "commit":  18
+                                                                   },
+                                            "parseBreakdown":  {
+                                                                   "tree-sitter":  0,
+                                                                   "syntax-walk":  0,
+                                                                   "local-propagation":  0,
+                                                                   "local-function-discovery":  0,
+                                                                   "local-owner-lookup":  0,
+                                                                   "local-seed":  0,
+                                                                   "local-event-walk":  0,
+                                                                   "local-declaration":  0,
+                                                                   "local-expression":  0,
+                                                                   "local-return":  0,
+                                                                   "local-nested-block":  0,
+                                                                   "local-return-collection":  0,
+                                                                   "graph-relations":  165,
+                                                                   "graph-compile":  165,
+                                                                   "graph-execute":  0,
+                                                                   "reference-normalization":  0
+                                                               },
+                                            "resolveBreakdown":  {
+
+                                                                 },
+                                            "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas",
+                                            "rawOutput":  [
+                                                              "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit",
+                                                              "Found 3 C++ files",
+                                                              "Mode: incremental (3 to index, 0 unchanged, 0 to delete)",
+                                                              "  Incremental parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 165ms | graph-compile 165ms | graph-execute 0ms | reference-normalization 0ms",
+                                                              "  Symbols: 2 | Calls: 0 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 3 file(s)",
+                                                              "  Incremental timings: initial-parse 166ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 18ms",
+                                                              "  Timings: discovery 0ms | checkpoint 0ms",
+                                                              "",
+                                                              "Done in 191ms",
+                                                              "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit\\.codeatlas"
+                                                          ]
+                                        },
+                        "databaseSizeBytes":  159744,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\single_cpp_edit"
+                    },
+                    {
+                        "scenario":  "header_edit",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  569,
+                                         "reportedTotalMs":  192,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  2,
+                                                        "calls":  1,
+                                                        "propagation":  0,
+                                                        "files":  3
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  0,
+                                                         "parse":  159,
+                                                         "resolve":  0,
+                                                         "persist":  21,
+                                                         "checkpoint":  11
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  157,
+                                                                "graph-compile":  156,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit",
+                                                           "Found 3 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 2 | Calls: 1 | Propagation: 0 | Files: 3",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 157ms | graph-compile 156ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 0ms | parse 159ms | resolve 0ms | persist 21ms | checkpoint 11ms",
+                                                           "",
+                                                           "Done in 192ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas"
+                                                       ]
+                                     },
+                        "noOpIncremental":  {
+                                                "exitCode":  0,
+                                                "wallClockMs":  42,
+                                                "reportedTotalMs":  0,
+                                                "peakWorkingSetBytes":  0,
+                                                "mode":  {
+                                                             "kind":  "incremental",
+                                                             "toIndex":  0,
+                                                             "unchanged":  3,
+                                                             "toDelete":  0
+                                                         },
+                                                "escalation":  null,
+                                                "modeOverrideFull":  false,
+                                                "counts":  null,
+                                                "timings":  {
+
+                                                            },
+                                                "incrementalTimings":  {
+
+                                                                       },
+                                                "parseBreakdown":  {
+
+                                                                   },
+                                                "resolveBreakdown":  {
+
+                                                                     },
+                                                "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas",
+                                                "rawOutput":  [
+                                                                  "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit",
+                                                                  "Found 3 C++ files",
+                                                                  "Mode: incremental (0 to index, 3 unchanged, 0 to delete)",
+                                                                  "",
+                                                                  "Nothing to do.",
+                                                                  "Done in 0ms",
+                                                                  "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas"
+                                                              ]
+                                            },
+                        "scenarioRun":  {
+                                            "exitCode":  0,
+                                            "wallClockMs":  243,
+                                            "reportedTotalMs":  187,
+                                            "peakWorkingSetBytes":  0,
+                                            "mode":  {
+                                                         "kind":  "incremental",
+                                                         "toIndex":  3,
+                                                         "unchanged":  0,
+                                                         "toDelete":  0
+                                                     },
+                                            "escalation":  null,
+                                            "modeOverrideFull":  false,
+                                            "counts":  null,
+                                            "timings":  {
+                                                            "discovery":  0,
+                                                            "checkpoint":  0
+                                                        },
+                                            "incrementalTimings":  {
+                                                                       "initial-parse":  158,
+                                                                       "cleanup-refresh":  1,
+                                                                       "affected-reparse":  0,
+                                                                       "resolve-calls":  0,
+                                                                       "summary-load":  0,
+                                                                       "boundary-propagation":  0,
+                                                                       "propagation-merge":  0,
+                                                                       "persist":  0,
+                                                                       "commit":  23
+                                                                   },
+                                            "parseBreakdown":  {
+                                                                   "tree-sitter":  0,
+                                                                   "syntax-walk":  0,
+                                                                   "local-propagation":  0,
+                                                                   "local-function-discovery":  0,
+                                                                   "local-owner-lookup":  0,
+                                                                   "local-seed":  0,
+                                                                   "local-event-walk":  0,
+                                                                   "local-declaration":  0,
+                                                                   "local-expression":  0,
+                                                                   "local-return":  0,
+                                                                   "local-nested-block":  0,
+                                                                   "local-return-collection":  0,
+                                                                   "graph-relations":  158,
+                                                                   "graph-compile":  157,
+                                                                   "graph-execute":  0,
+                                                                   "reference-normalization":  0
+                                                               },
+                                            "resolveBreakdown":  {
+
+                                                                 },
+                                            "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas",
+                                            "rawOutput":  [
+                                                              "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit",
+                                                              "Found 3 C++ files",
+                                                              "Mode: incremental (3 to index, 0 unchanged, 0 to delete)",
+                                                              "  Incremental parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 158ms | graph-compile 157ms | graph-execute 0ms | reference-normalization 0ms",
+                                                              "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 3 file(s)",
+                                                              "  Incremental timings: initial-parse 158ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 23ms",
+                                                              "  Timings: discovery 0ms | checkpoint 0ms",
+                                                              "",
+                                                              "Done in 187ms",
+                                                              "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit\\.codeatlas"
+                                                          ]
+                                        },
+                        "databaseSizeBytes":  159744,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\header_edit"
+                    },
+                    {
+                        "scenario":  "repeated_file_burst",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  591,
+                                         "reportedTotalMs":  190,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  2,
+                                                        "calls":  1,
+                                                        "propagation":  0,
+                                                        "files":  3
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  0,
+                                                         "parse":  157,
+                                                         "resolve":  0,
+                                                         "persist":  20,
+                                                         "checkpoint":  12
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  155,
+                                                                "graph-compile":  154,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                           "Found 3 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 2 | Calls: 1 | Propagation: 0 | Files: 3",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 155ms | graph-compile 154ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 0ms | parse 157ms | resolve 0ms | persist 20ms | checkpoint 12ms",
+                                                           "",
+                                                           "Done in 190ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                       ]
+                                     },
+                        "burstRuns":  [
+                                          {
+                                              "exitCode":  0,
+                                              "wallClockMs":  70,
+                                              "reportedTotalMs":  17,
+                                              "peakWorkingSetBytes":  0,
+                                              "mode":  {
+                                                           "kind":  "incremental",
+                                                           "toIndex":  1,
+                                                           "unchanged":  2,
+                                                           "toDelete":  0
+                                                       },
+                                              "escalation":  null,
+                                              "modeOverrideFull":  false,
+                                              "counts":  null,
+                                              "timings":  {
+                                                              "discovery":  0,
+                                                              "checkpoint":  0
+                                                          },
+                                              "incrementalTimings":  {
+                                                                         "initial-parse":  0,
+                                                                         "cleanup-refresh":  1,
+                                                                         "affected-reparse":  0,
+                                                                         "resolve-calls":  0,
+                                                                         "summary-load":  0,
+                                                                         "boundary-propagation":  0,
+                                                                         "propagation-merge":  0,
+                                                                         "persist":  0,
+                                                                         "commit":  14
+                                                                     },
+                                              "parseBreakdown":  {
+
+                                                                 },
+                                              "resolveBreakdown":  {
+
+                                                                   },
+                                              "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                              "rawOutput":  [
+                                                                "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                                "Found 3 C++ files",
+                                                                "Mode: incremental (1 to index, 2 unchanged, 0 to delete)",
+                                                                "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 1 file(s)",
+                                                                "  Incremental timings: initial-parse 0ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 14ms",
+                                                                "  Timings: discovery 0ms | checkpoint 0ms",
+                                                                "",
+                                                                "Done in 17ms",
+                                                                "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                            ]
+                                          },
+                                          {
+                                              "exitCode":  0,
+                                              "wallClockMs":  72,
+                                              "reportedTotalMs":  17,
+                                              "peakWorkingSetBytes":  0,
+                                              "mode":  {
+                                                           "kind":  "incremental",
+                                                           "toIndex":  1,
+                                                           "unchanged":  2,
+                                                           "toDelete":  0
+                                                       },
+                                              "escalation":  null,
+                                              "modeOverrideFull":  false,
+                                              "counts":  null,
+                                              "timings":  {
+                                                              "discovery":  0,
+                                                              "checkpoint":  0
+                                                          },
+                                              "incrementalTimings":  {
+                                                                         "initial-parse":  0,
+                                                                         "cleanup-refresh":  1,
+                                                                         "affected-reparse":  0,
+                                                                         "resolve-calls":  0,
+                                                                         "summary-load":  0,
+                                                                         "boundary-propagation":  0,
+                                                                         "propagation-merge":  0,
+                                                                         "persist":  0,
+                                                                         "commit":  14
+                                                                     },
+                                              "parseBreakdown":  {
+
+                                                                 },
+                                              "resolveBreakdown":  {
+
+                                                                   },
+                                              "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                              "rawOutput":  [
+                                                                "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                                "Found 3 C++ files",
+                                                                "Mode: incremental (1 to index, 2 unchanged, 0 to delete)",
+                                                                "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 1 file(s)",
+                                                                "  Incremental timings: initial-parse 0ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 14ms",
+                                                                "  Timings: discovery 0ms | checkpoint 0ms",
+                                                                "",
+                                                                "Done in 17ms",
+                                                                "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                            ]
+                                          },
+                                          {
+                                              "exitCode":  0,
+                                              "wallClockMs":  72,
+                                              "reportedTotalMs":  17,
+                                              "peakWorkingSetBytes":  0,
+                                              "mode":  {
+                                                           "kind":  "incremental",
+                                                           "toIndex":  1,
+                                                           "unchanged":  2,
+                                                           "toDelete":  0
+                                                       },
+                                              "escalation":  null,
+                                              "modeOverrideFull":  false,
+                                              "counts":  null,
+                                              "timings":  {
+                                                              "discovery":  0,
+                                                              "checkpoint":  0
+                                                          },
+                                              "incrementalTimings":  {
+                                                                         "initial-parse":  0,
+                                                                         "cleanup-refresh":  1,
+                                                                         "affected-reparse":  0,
+                                                                         "resolve-calls":  0,
+                                                                         "summary-load":  0,
+                                                                         "boundary-propagation":  0,
+                                                                         "propagation-merge":  0,
+                                                                         "persist":  0,
+                                                                         "commit":  14
+                                                                     },
+                                              "parseBreakdown":  {
+
+                                                                 },
+                                              "resolveBreakdown":  {
+
+                                                                   },
+                                              "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                              "rawOutput":  [
+                                                                "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                                "Found 3 C++ files",
+                                                                "Mode: incremental (1 to index, 2 unchanged, 0 to delete)",
+                                                                "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 1 file(s)",
+                                                                "  Incremental timings: initial-parse 0ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 14ms",
+                                                                "  Timings: discovery 0ms | checkpoint 0ms",
+                                                                "",
+                                                                "Done in 17ms",
+                                                                "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                            ]
+                                          },
+                                          {
+                                              "exitCode":  0,
+                                              "wallClockMs":  77,
+                                              "reportedTotalMs":  21,
+                                              "peakWorkingSetBytes":  0,
+                                              "mode":  {
+                                                           "kind":  "incremental",
+                                                           "toIndex":  1,
+                                                           "unchanged":  2,
+                                                           "toDelete":  0
+                                                       },
+                                              "escalation":  null,
+                                              "modeOverrideFull":  false,
+                                              "counts":  null,
+                                              "timings":  {
+                                                              "discovery":  0,
+                                                              "checkpoint":  0
+                                                          },
+                                              "incrementalTimings":  {
+                                                                         "initial-parse":  0,
+                                                                         "cleanup-refresh":  1,
+                                                                         "affected-reparse":  0,
+                                                                         "resolve-calls":  0,
+                                                                         "summary-load":  0,
+                                                                         "boundary-propagation":  0,
+                                                                         "propagation-merge":  0,
+                                                                         "persist":  0,
+                                                                         "commit":  18
+                                                                     },
+                                              "parseBreakdown":  {
+
+                                                                 },
+                                              "resolveBreakdown":  {
+
+                                                                   },
+                                              "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                              "rawOutput":  [
+                                                                "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                                "Found 3 C++ files",
+                                                                "Mode: incremental (1 to index, 2 unchanged, 0 to delete)",
+                                                                "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 1 file(s)",
+                                                                "  Incremental timings: initial-parse 0ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 18ms",
+                                                                "  Timings: discovery 0ms | checkpoint 0ms",
+                                                                "",
+                                                                "Done in 21ms",
+                                                                "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                            ]
+                                          },
+                                          {
+                                              "exitCode":  0,
+                                              "wallClockMs":  86,
+                                              "reportedTotalMs":  24,
+                                              "peakWorkingSetBytes":  0,
+                                              "mode":  {
+                                                           "kind":  "incremental",
+                                                           "toIndex":  1,
+                                                           "unchanged":  2,
+                                                           "toDelete":  0
+                                                       },
+                                              "escalation":  null,
+                                              "modeOverrideFull":  false,
+                                              "counts":  null,
+                                              "timings":  {
+                                                              "discovery":  0,
+                                                              "checkpoint":  0
+                                                          },
+                                              "incrementalTimings":  {
+                                                                         "initial-parse":  0,
+                                                                         "cleanup-refresh":  1,
+                                                                         "affected-reparse":  0,
+                                                                         "resolve-calls":  0,
+                                                                         "summary-load":  0,
+                                                                         "boundary-propagation":  0,
+                                                                         "propagation-merge":  0,
+                                                                         "persist":  0,
+                                                                         "commit":  20
+                                                                     },
+                                              "parseBreakdown":  {
+
+                                                                 },
+                                              "resolveBreakdown":  {
+
+                                                                   },
+                                              "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas",
+                                              "rawOutput":  [
+                                                                "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst",
+                                                                "Found 3 C++ files",
+                                                                "Mode: incremental (1 to index, 2 unchanged, 0 to delete)",
+                                                                "  Symbols: 2 | Calls: 1 | References: 0 | Propagation: 0 | Files: 3 | Re-resolved: 1 file(s)",
+                                                                "  Incremental timings: initial-parse 0ms | cleanup-refresh 1ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 20ms",
+                                                                "  Timings: discovery 0ms | checkpoint 0ms",
+                                                                "",
+                                                                "Done in 24ms",
+                                                                "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst\\.codeatlas"
+                                                            ]
+                                          }
+                                      ],
+                        "databaseSizeBytes":  159744,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\repeated_file_burst"
+                    },
+                    {
+                        "scenario":  "branch_like_mass_change",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  586,
+                                         "reportedTotalMs":  190,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  3,
+                                                        "calls":  2,
+                                                        "propagation":  0,
+                                                        "files":  5
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  0,
+                                                         "parse":  157,
+                                                         "resolve":  0,
+                                                         "persist":  19,
+                                                         "checkpoint":  13
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  154,
+                                                                "graph-compile":  154,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change",
+                                                           "Found 5 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 3 | Calls: 2 | Propagation: 0 | Files: 5",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 154ms | graph-compile 154ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 0ms | parse 157ms | resolve 0ms | persist 19ms | checkpoint 13ms",
+                                                           "",
+                                                           "Done in 190ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas"
+                                                       ]
+                                     },
+                        "noOpIncremental":  {
+                                                "exitCode":  0,
+                                                "wallClockMs":  41,
+                                                "reportedTotalMs":  0,
+                                                "peakWorkingSetBytes":  0,
+                                                "mode":  {
+                                                             "kind":  "incremental",
+                                                             "toIndex":  0,
+                                                             "unchanged":  5,
+                                                             "toDelete":  0
+                                                         },
+                                                "escalation":  null,
+                                                "modeOverrideFull":  false,
+                                                "counts":  null,
+                                                "timings":  {
+
+                                                            },
+                                                "incrementalTimings":  {
+
+                                                                       },
+                                                "parseBreakdown":  {
+
+                                                                   },
+                                                "resolveBreakdown":  {
+
+                                                                     },
+                                                "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas",
+                                                "rawOutput":  [
+                                                                  "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change",
+                                                                  "Found 5 C++ files",
+                                                                  "Mode: incremental (0 to index, 5 unchanged, 0 to delete)",
+                                                                  "",
+                                                                  "Nothing to do.",
+                                                                  "Done in 0ms",
+                                                                  "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas"
+                                                              ]
+                                            },
+                        "scenarioRun":  {
+                                            "exitCode":  0,
+                                            "wallClockMs":  231,
+                                            "reportedTotalMs":  177,
+                                            "peakWorkingSetBytes":  0,
+                                            "mode":  {
+                                                         "kind":  "incremental",
+                                                         "toIndex":  5,
+                                                         "unchanged":  0,
+                                                         "toDelete":  2
+                                                     },
+                                            "escalation":  null,
+                                            "modeOverrideFull":  false,
+                                            "counts":  null,
+                                            "timings":  {
+                                                            "discovery":  0,
+                                                            "checkpoint":  0
+                                                        },
+                                            "incrementalTimings":  {
+                                                                       "initial-parse":  156,
+                                                                       "cleanup-refresh":  2,
+                                                                       "affected-reparse":  0,
+                                                                       "resolve-calls":  0,
+                                                                       "summary-load":  0,
+                                                                       "boundary-propagation":  0,
+                                                                       "propagation-merge":  0,
+                                                                       "persist":  0,
+                                                                       "commit":  14
+                                                                   },
+                                            "parseBreakdown":  {
+                                                                   "tree-sitter":  0,
+                                                                   "syntax-walk":  0,
+                                                                   "local-propagation":  0,
+                                                                   "local-function-discovery":  0,
+                                                                   "local-owner-lookup":  0,
+                                                                   "local-seed":  0,
+                                                                   "local-event-walk":  0,
+                                                                   "local-declaration":  0,
+                                                                   "local-expression":  0,
+                                                                   "local-return":  0,
+                                                                   "local-nested-block":  0,
+                                                                   "local-return-collection":  0,
+                                                                   "graph-relations":  154,
+                                                                   "graph-compile":  154,
+                                                                   "graph-execute":  0,
+                                                                   "reference-normalization":  0
+                                                               },
+                                            "resolveBreakdown":  {
+
+                                                                 },
+                                            "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas",
+                                            "rawOutput":  [
+                                                              "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change",
+                                                              "Found 5 C++ files",
+                                                              "Mode: incremental (5 to index, 0 unchanged, 2 to delete)",
+                                                              "  Incremental parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 154ms | graph-compile 154ms | graph-execute 0ms | reference-normalization 0ms",
+                                                              "  DELETE: a.cpp",
+                                                              "  DELETE: a.h",
+                                                              "  Symbols: 3 | Calls: 0 | References: 0 | Propagation: 0 | Files: 5 | Re-resolved: 5 file(s)",
+                                                              "  Incremental timings: initial-parse 156ms | cleanup-refresh 2ms | affected-reparse 0ms | resolve-calls 0ms | summary-load 0ms | boundary-propagation 0ms | propagation-merge 0ms | persist 0ms | commit 14ms",
+                                                              "  Timings: discovery 0ms | checkpoint 0ms",
+                                                              "",
+                                                              "Done in 177ms",
+                                                              "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change\\.codeatlas"
+                                                          ]
+                                        },
+                        "databaseSizeBytes":  159744,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_mass_change"
+                    },
+                    {
+                        "scenario":  "branch_like_percentage_churn_synthetic",
+                        "fullSeed":  {
+                                         "exitCode":  0,
+                                         "wallClockMs":  439,
+                                         "reportedTotalMs":  39,
+                                         "peakWorkingSetBytes":  0,
+                                         "mode":  {
+                                                      "kind":  "full_rebuild"
+                                                  },
+                                         "escalation":  null,
+                                         "modeOverrideFull":  false,
+                                         "counts":  {
+                                                        "symbols":  30,
+                                                        "calls":  0,
+                                                        "propagation":  0,
+                                                        "files":  30
+                                                    },
+                                         "timings":  {
+                                                         "discovery":  1,
+                                                         "parse":  2,
+                                                         "resolve":  0,
+                                                         "persist":  22,
+                                                         "checkpoint":  12
+                                                     },
+                                         "incrementalTimings":  {
+
+                                                                },
+                                         "parseBreakdown":  {
+                                                                "tree-sitter":  0,
+                                                                "syntax-walk":  0,
+                                                                "local-propagation":  0,
+                                                                "local-function-discovery":  0,
+                                                                "local-owner-lookup":  0,
+                                                                "local-seed":  0,
+                                                                "local-event-walk":  0,
+                                                                "local-declaration":  0,
+                                                                "local-expression":  0,
+                                                                "local-return":  0,
+                                                                "local-nested-block":  0,
+                                                                "local-return-collection":  0,
+                                                                "graph-relations":  0,
+                                                                "graph-compile":  0,
+                                                                "graph-execute":  0,
+                                                                "reference-normalization":  0
+                                                            },
+                                         "resolveBreakdown":  {
+                                                                  "merge-symbols":  0,
+                                                                  "resolve-calls":  0,
+                                                                  "boundary-propagation":  0,
+                                                                  "propagation-merge":  0
+                                                              },
+                                         "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas",
+                                         "rawOutput":  [
+                                                           "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic",
+                                                           "Found 30 C++ files",
+                                                           "Mode: full rebuild",
+                                                           "  Symbols: 30 | Calls: 0 | Propagation: 0 | Files: 30",
+                                                           "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 0ms | graph-compile 0ms | graph-execute 0ms | reference-normalization 0ms",
+                                                           "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                           "  Timings: discovery 1ms | parse 2ms | resolve 0ms | persist 22ms | checkpoint 12ms",
+                                                           "",
+                                                           "Done in 39ms",
+                                                           "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas"
+                                                       ]
+                                     },
+                        "noOpIncremental":  {
+                                                "exitCode":  0,
+                                                "wallClockMs":  42,
+                                                "reportedTotalMs":  2,
+                                                "peakWorkingSetBytes":  0,
+                                                "mode":  {
+                                                             "kind":  "incremental",
+                                                             "toIndex":  0,
+                                                             "unchanged":  30,
+                                                             "toDelete":  0
+                                                         },
+                                                "escalation":  null,
+                                                "modeOverrideFull":  false,
+                                                "counts":  null,
+                                                "timings":  {
+
+                                                            },
+                                                "incrementalTimings":  {
+
+                                                                       },
+                                                "parseBreakdown":  {
+
+                                                                   },
+                                                "resolveBreakdown":  {
+
+                                                                     },
+                                                "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas",
+                                                "rawOutput":  [
+                                                                  "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic",
+                                                                  "Found 30 C++ files",
+                                                                  "Mode: incremental (0 to index, 30 unchanged, 0 to delete)",
+                                                                  "",
+                                                                  "Nothing to do.",
+                                                                  "Done in 2ms",
+                                                                  "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas"
+                                                              ]
+                                            },
+                        "scenarioRun":  {
+                                            "exitCode":  0,
+                                            "wallClockMs":  77,
+                                            "reportedTotalMs":  23,
+                                            "peakWorkingSetBytes":  0,
+                                            "mode":  {
+                                                         "kind":  "incremental",
+                                                         "toIndex":  12,
+                                                         "unchanged":  18,
+                                                         "toDelete":  0
+                                                     },
+                                            "escalation":  "branch-like churn detected (12 of 30 files changed, 40%)",
+                                            "modeOverrideFull":  true,
+                                            "counts":  {
+                                                           "symbols":  30,
+                                                           "calls":  0,
+                                                           "propagation":  0,
+                                                           "files":  30
+                                                       },
+                                            "timings":  {
+                                                            "discovery":  1,
+                                                            "checkpoint":  0
+                                                        },
+                                            "incrementalTimings":  {
+
+                                                                   },
+                                            "parseBreakdown":  {
+                                                                   "tree-sitter":  0,
+                                                                   "syntax-walk":  0,
+                                                                   "local-propagation":  0,
+                                                                   "local-function-discovery":  0,
+                                                                   "local-owner-lookup":  0,
+                                                                   "local-seed":  0,
+                                                                   "local-event-walk":  0,
+                                                                   "local-declaration":  0,
+                                                                   "local-expression":  0,
+                                                                   "local-return":  0,
+                                                                   "local-nested-block":  0,
+                                                                   "local-return-collection":  0,
+                                                                   "graph-relations":  0,
+                                                                   "graph-compile":  0,
+                                                                   "graph-execute":  0,
+                                                                   "reference-normalization":  0
+                                                               },
+                                            "resolveBreakdown":  {
+                                                                     "merge-symbols":  0,
+                                                                     "resolve-calls":  0,
+                                                                     "boundary-propagation":  0,
+                                                                     "propagation-merge":  0
+                                                                 },
+                                            "outputPath":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas",
+                                            "rawOutput":  [
+                                                              "Indexing: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic",
+                                                              "Found 30 C++ files",
+                                                              "Mode: incremental (12 to index, 18 unchanged, 0 to delete)",
+                                                              "  Escalation: branch-like churn detected (12 of 30 files changed, 40%)",
+                                                              "Mode override: full rebuild",
+                                                              "  Symbols: 30 | Calls: 0 | Propagation: 0 | Files: 30",
+                                                              "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 0ms | graph-compile 0ms | graph-execute 0ms | reference-normalization 0ms",
+                                                              "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                                              "  Timings: discovery 1ms | checkpoint 0ms",
+                                                              "",
+                                                              "Done in 23ms",
+                                                              "  Output: E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic\\.codeatlas"
+                                                          ]
+                                        },
+                        "databaseSizeBytes":  167936,
+                        "workspace":  "E:\\Dev\\CodeAtlas\\storage\\benchmark_workspaces\\branch_like_percentage_churn_synthetic"
+                    }
+                ],
+    "summary":  {
+                    "generatedScenarios":  6
+                }
+}

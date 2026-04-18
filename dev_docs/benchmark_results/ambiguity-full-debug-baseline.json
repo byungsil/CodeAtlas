@@ -1,0 +1,82 @@
+﻿{
+    "schemaVersion":  1,
+    "recordedAt":  "2026-04-19T01:15:49.9442817+09:00",
+    "workspaceRoot":  "E:\\Dev\\CodeAtlas\\samples\\ambiguity",
+    "workspaceName":  "ambiguity",
+    "mode":  "full",
+    "repeatCount":  1,
+    "indexerPath":  "E:\\Dev\\CodeAtlas\\indexer\\target\\debug\\codeatlas-indexer.exe",
+    "gitCommit":  "e6288974d382e6877255a425e58292fe77b9cbc0",
+    "buildProfile":  "debug",
+    "machine":  {
+                    "computerName":  "DESKTOP-CA0V3NL",
+                    "os":  "Microsoft Windows NT 10.0.26200.0",
+                    "powershell":  "5.1.26100.8115"
+                },
+    "runs":  [
+                 {
+                     "runIndex":  1,
+                     "attemptsUsed":  1,
+                     "exitCode":  0,
+                     "wallClockMs":  578,
+                     "reportedTotalMs":  208,
+                     "counts":  {
+                                    "symbols":  17,
+                                    "calls":  9,
+                                    "propagation":  1,
+                                    "files":  10
+                                },
+                     "timings":  {
+                                     "discovery":  0,
+                                     "parse":  163,
+                                     "resolve":  0,
+                                     "persist":  28,
+                                     "checkpoint":  15
+                                 },
+                     "parseBreakdown":  {
+                                            "tree-sitter":  0,
+                                            "syntax-walk":  0,
+                                            "local-propagation":  0,
+                                            "local-function-discovery":  0,
+                                            "local-owner-lookup":  0,
+                                            "local-seed":  0,
+                                            "local-event-walk":  0,
+                                            "local-declaration":  0,
+                                            "local-expression":  0,
+                                            "local-return":  0,
+                                            "local-nested-block":  0,
+                                            "local-return-collection":  0,
+                                            "graph-relations":  792,
+                                            "graph-compile":  791,
+                                            "graph-execute":  0,
+                                            "reference-normalization":  0
+                                        },
+                     "resolveBreakdown":  {
+                                              "merge-symbols":  0,
+                                              "resolve-calls":  0,
+                                              "boundary-propagation":  0,
+                                              "propagation-merge":  0
+                                          },
+                     "outputPath":  "E:\\Dev\\CodeAtlas\\samples\\ambiguity\\.codeatlas",
+                     "rawOutput":  [
+                                       "Indexing: E:\\Dev\\CodeAtlas\\samples\\ambiguity",
+                                       "Found 10 C++ files",
+                                       "Mode: full rebuild",
+                                       "  Symbols: 17 | Calls: 9 | Propagation: 1 | Files: 10",
+                                       "  Parse breakdown: tree-sitter 0ms | syntax-walk 0ms | local-propagation 0ms | local-function-discovery 0ms | local-owner-lookup 0ms | local-seed 0ms | local-event-walk 0ms | local-declaration 0ms | local-expression 0ms | local-return 0ms | local-nested-block 0ms | local-return-collection 0ms | graph-relations 792ms | graph-compile 791ms | graph-execute 0ms | reference-normalization 0ms",
+                                       "  Resolve breakdown: merge-symbols 0ms | resolve-calls 0ms | boundary-propagation 0ms | propagation-merge 0ms",
+                                       "  Timings: discovery 0ms | parse 163ms | resolve 0ms | persist 28ms | checkpoint 15ms",
+                                       "",
+                                       "Done in 208ms",
+                                       "  Output: E:\\Dev\\CodeAtlas\\samples\\ambiguity\\.codeatlas"
+                                   ]
+                 }
+             ],
+    "summary":  {
+                    "successfulRuns":  1,
+                    "totalRuns":  1,
+                    "averageReportedTotalMs":  208,
+                    "minReportedTotalMs":  208,
+                    "maxReportedTotalMs":  208
+                }
+}

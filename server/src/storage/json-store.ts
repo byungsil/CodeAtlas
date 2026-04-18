@@ -62,6 +62,15 @@ export class JsonStore {
     return data.symbols.find((s) => s.id === id);
   }
 
+  getSymbolsByIds(ids: string[]): Symbol[] {
+    if (ids.length === 0) {
+      return [];
+    }
+    const wanted = new Set(ids);
+    const data = this.load();
+    return data.symbols.filter((symbol) => wanted.has(symbol.id));
+  }
+
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
     const data = this.load();
     return data.symbols.find((s) => s.qualifiedName === qualifiedName);

@@ -130,6 +130,104 @@ codeatlas-indexer watch <workspace-root>          # watch mode
 
 Supported file extensions: `.cpp`, `.h`, `.hpp`, `.cc`, `.cxx`, `.inl`, `.inc`
 
+Optional build metadata:
+
+- if a workspace contains `compile_commands.json`, the indexer auto-detects it
+- CodeAtlas uses workspace include directories, compile output paths, and cheap define hints to refine metadata such as `headerRole` and `artifactKind`
+- the indexer still works normally without a compile database; build metadata is an optional enrichment layer, not a requirement
+
+Risk signaling:
+
+- CodeAtlas also emits lightweight fragility signals such as `parseFragility`, `macroSensitivity`, and `includeHeaviness`
+- these signals are heuristic guidance for AI agents, not compiler-grade diagnostics
+- they are meant to highlight areas where macro-heavy code, unstable parsing, or heavy include context may justify extra caution
+
+## Benchmark Harness
+
+Repeatable benchmark runs are available through:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\Run-CodeAtlasBenchmark.ps1 `
+  -WorkspaceRoot E:\Dev\CodeAtlas\samples\ambiguity `
+  -Mode full `
+  -OutputPath .\dev_docs\benchmark_results\ambiguity-full-debug-baseline.json
+```
+
+Representative examples:
+
+```powershell
+# Small deterministic fixture
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\Run-CodeAtlasBenchmark.ps1 `
+  -WorkspaceRoot E:\Dev\CodeAtlas\samples\ambiguity `
+  -Mode full
+
+# Medium real-project sample
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\Run-CodeAtlasBenchmark.ps1 `
+  -WorkspaceRoot E:\Dev\benchmark `
+  -Mode full
+
+# Large OpenCV benchmark with retry for transient publish locks
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\Run-CodeAtlasBenchmark.ps1 `
+  -WorkspaceRoot E:\Dev\opencv `
+  -Mode full `
+  -RetryCount 3 `
+  -RetryDelayMs 1000
+```
+
+Harness output:
+
+- writes machine-readable JSON to `dev_docs/benchmark_results/`
+- captures commit, machine notes, counts, stage timings, parse/resolve breakdowns, and raw indexer output
+- supports both `full` and `incremental` runs through `-Mode`
+
+Operational note:
+
+- on Windows, external indexing or antivirus tools can still transiently lock `<workspace>/.codeatlas/`
+- if that happens, the harness preserves the run output and retry count in JSON
+- excluding `.codeatlas/` from Everything, Windows Search, and Defender remains recommended for stable large-workspace benchmarking
+
+Query profiling is available through:
+
+```powershell
+E:\Dev\CodeAtlas\.tools\node\node.exe E:\Dev\CodeAtlas\server\node_modules\ts-node\dist\bin.js `
+  E:\Dev\CodeAtlas\server\src\query-profiler.ts `
+  --data-dir E:\Dev\opencv\.codeatlas `
+  --output E:\Dev\CodeAtlas\dev_docs\benchmark_results\opencv-query-profile.json `
+  --repeat 5 `
+  --exact-qualified cv::imread `
+  --callers-qualified cv::imread `
+  --impact-qualified cv::imread `
+  --references-qualified cv::v_float32x4 `
+  --trace-source-qualified cv::AGAST `
+  --trace-target-qualified cv::makeAgastOffsets `
+  --search-query imread
+```
+
+This profiler records repeated timings for:
+
+- exact lookup
+- search
+- callers
+- references
+- call-path tracing
+- impact analysis
+
+Incremental scale benchmarking is available through:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark\Run-CodeAtlasIncrementalSuite.ps1 `
+  -OutputPath .\dev_docs\benchmark_results\incremental-suite-samples.json
+```
+
+This suite currently records:
+
+- no-change rerun
+- representative single `.cpp` edit
+- representative header edit
+- repeated single-file burst updates
+- fixture-driven mass change
+- synthetic branch-like churn that verifies rebuild-escalation behavior
+
 ## Ignore Rules
 
 Create a `.codeatlasignore` file in the workspace root to exclude files/folders from indexing. Each line is a regex pattern matched against workspace-relative paths (forward slashes).

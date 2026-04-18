@@ -450,6 +450,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         }
     }
 

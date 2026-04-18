@@ -69,15 +69,25 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     version: "0.1.0",
   });
 
+  function buildSymbolMap(ids: Iterable<string>) {
+    const uniqueIds = Array.from(new Set(Array.from(ids)));
+    return new Map(store.getSymbolsByIds(uniqueIds).map((symbol) => [symbol.id, symbol]));
+  }
+
   function buildCallReferences(
     calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
     targetField: "callerId" | "calleeId",
   ): CallReference[] {
+    const symbolMap = buildSymbolMap(
+      calls
+        .map((call) => call[targetField])
+        .filter((symbolId): symbolId is string => Boolean(symbolId)),
+    );
     return calls
       .map((c) => {
         const targetId = c[targetField];
         if (!targetId) return null;
-        const s = store.getSymbolById(targetId);
+        const s = symbolMap.get(targetId) ?? store.getSymbolById(targetId);
         if (!s) return null;
         return makeResolvedCallReference({
           symbol: s,
@@ -106,10 +116,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     symbolIds: Iterable<string>,
     keySelector: (symbol: NonNullable<ReturnType<Store["getSymbolById"]>>) => string | undefined,
   ): MetadataGroupSummary[] {
+    const symbolMap = buildSymbolMap(symbolIds);
     const counts = new Map<string, number>();
-    for (const symbolId of symbolIds) {
-      const symbol = store.getSymbolById(symbolId);
-      if (!symbol) continue;
+    for (const symbol of symbolMap.values()) {
       const key = keySelector(symbol);
       if (!key) continue;
       counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -125,8 +134,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     limit: number,
     metadataFilters?: MetadataFilters,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
-    const refs = buildCallReferences(calls, targetField)
-      .filter((ref) => matchesMetadataFilters(store.getSymbolById(ref.symbolId), metadataFilters))
+    const refs = buildCallReferences(calls, targetField);
+    const symbolMap = buildSymbolMap(refs.map((ref) => ref.symbolId));
+    const filteredRefs = refs
+      .filter((ref) => matchesMetadataFilters(symbolMap.get(ref.symbolId), metadataFilters))
       .sort((a, b) => {
         if (a.qualifiedName !== b.qualifiedName) return a.qualifiedName.localeCompare(b.qualifiedName);
         if (a.filePath !== b.filePath) return a.filePath.localeCompare(b.filePath);
@@ -136,7 +147,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
     const deduped: CallReference[] = [];
     const seen = new Set<string>();
-    for (const ref of refs) {
+    for (const ref of filteredRefs) {
       if (seen.has(ref.symbolId)) continue;
       seen.add(ref.symbolId);
       deduped.push(ref);
@@ -201,9 +212,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
-    const references = store.getReferences(targetSymbolId, category, filePath)
+    const rawReferences = store.getReferences(targetSymbolId, category, filePath);
+    const symbolMap = buildSymbolMap(rawReferences.map((reference) => reference.sourceSymbolId));
+    const references = rawReferences
       .map((reference) => {
-        const sourceSymbol = store.getSymbolById(reference.sourceSymbolId);
+        const sourceSymbol = symbolMap.get(reference.sourceSymbolId);
         if (!sourceSymbol || !matchesMetadataFilters(sourceSymbol, metadataFilters)) return null;
         return {
           ...reference,
@@ -288,6 +301,20 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     return { propagationConfidence, riskMarkers, confidenceNotes };
   }
 
+  function buildFileRiskNotes(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): string[] {
+    const notes: string[] = [];
+    if (symbol.parseFragility === "elevated") {
+      notes.push("This symbol lives in a parse-fragile file, so structurally exact results may still sit near unstable syntax.");
+    }
+    if (symbol.macroSensitivity === "high") {
+      notes.push("This symbol lives in a macro-sensitive file, so macro-expanded meaning may be weaker than the structural index suggests.");
+    }
+    if (symbol.includeHeaviness === "heavy") {
+      notes.push("This symbol lives in an include-heavy file, so build-context interactions may matter more than usual.");
+    }
+    return notes;
+  }
+
   function buildPropagationFollowUpQueries(
     symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
     riskMarkers: PropagationEventRecord["risks"],
@@ -305,6 +332,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     }
     if (riskMarkers.includes("pointerHeavyFlow")) {
       queries.push(`trace_variable_flow qualifiedName=${symbol.qualifiedName} maxDepth=1`);
+    }
+    if (symbol.parseFragility === "elevated" || symbol.macroSensitivity === "high") {
+      queries.push(`list_file_symbols filePath=${symbol.filePath}`);
     }
 
     return Array.from(new Set(queries));
@@ -339,7 +369,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       incoming: incoming.results,
       outgoing: outgoing.results,
       riskMarkers: assessment.riskMarkers,
-      confidenceNotes: assessment.confidenceNotes,
+      confidenceNotes: [...assessment.confidenceNotes, ...buildFileRiskNotes(symbol)],
       summary: [
         `incoming: ${incoming.totalCount} event(s)`,
         `outgoing: ${outgoing.totalCount} event(s)`,
@@ -458,7 +488,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       window: buildResultWindow(bestPath.length, bestPath.length, truncated, maxEdges),
       propagationConfidence: assessment.propagationConfidence,
       riskMarkers: assessment.riskMarkers,
-      confidenceNotes: assessment.confidenceNotes,
+      confidenceNotes: [...assessment.confidenceNotes, ...buildFileRiskNotes(symbol)],
       pathFound: bestPath.length > 0,
       truncated,
       maxDepth,
@@ -527,9 +557,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       impactedFileCounts.set(reference.filePath, (impactedFileCounts.get(reference.filePath) ?? 0) + 1);
     }
 
-    const topAffectedSymbols: ImpactedSymbolSummary[] = Array.from(impactedSymbolCounts.entries())
-      .map(([symbolId, count]) => {
-        const impacted = store.getSymbolById(symbolId);
+    const impactedSymbolEntries = Array.from(impactedSymbolCounts.entries())
+      .map(([symbolId, count]) => ({ symbolId, count }))
+      .sort((a, b) => b.count - a.count || a.symbolId.localeCompare(b.symbolId));
+    const impactedSymbolMap = buildSymbolMap(impactedSymbolEntries.map((entry) => entry.symbolId));
+    const resolvedTopAffectedSymbols: ImpactedSymbolSummary[] = impactedSymbolEntries
+      .map(({ symbolId, count }) => {
+        const impacted = impactedSymbolMap.get(symbolId);
         if (!impacted || !matchesMetadataFilters(impacted, metadataFilters)) return null;
         return {
           symbolId,
@@ -558,7 +592,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       directReferences: directReferences.results,
       totalAffectedSymbols: impactedSymbolCounts.size,
       totalAffectedFiles: impactedFileCounts.size,
-      topAffectedSymbols,
+      topAffectedSymbols: resolvedTopAffectedSymbols,
       topAffectedFiles,
       ...metadataFilterEcho(metadataFilters),
       affectedSubsystems: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.subsystem),

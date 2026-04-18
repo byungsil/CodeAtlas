@@ -11,6 +11,7 @@ use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rusqlite::ErrorCode;
 
+use crate::build_metadata;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS};
 use crate::discovery;
 use crate::indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict};
@@ -258,6 +259,13 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
 }
 
 fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
+    let build_metadata = match build_metadata::load_build_metadata(workspace_root) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("Build metadata disabled in watch mode: {}", err);
+            None
+        }
+    };
     let staging_db_path = make_watch_staging_db_path(db_path, "full");
     if staging_db_path.exists() {
         retry_io("watch staging cleanup", || fs::remove_file(&staging_db_path))
@@ -281,7 +289,8 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
         local_propagation_events,
         callable_flow_summaries,
         file_records,
-    ) = parse_files(workspace_root, &all_relative, verbose);
+        _parse_metrics,
+    ) = parse_files(workspace_root, &all_relative, verbose, build_metadata.as_ref());
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
     let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
@@ -451,6 +460,13 @@ fn merge_callable_summaries(
 }
 
 fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
+    let build_metadata = match build_metadata::load_build_metadata(workspace_root) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("Build metadata disabled in watch mode: {}", err);
+            None
+        }
+    };
     let db = open_database_with_retry(db_path, "watch open incremental sqlite database")?;
     let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
     let all_relative: Vec<String> = files
@@ -510,8 +526,9 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         new_local_propagation,
         new_callable_summaries,
         new_files,
+        _parse_metrics,
     ) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index, verbose)?
+        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata.as_ref())?
     } else {
         (
             Vec::new(),
@@ -520,6 +537,7 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            crate::models::ParseMetrics::default(),
         )
     };
 
@@ -615,7 +633,7 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
                 continue;
             }
 
-            let (result, _, lossy) = parse_file_strict(workspace_root, path)?;
+            let (result, _, lossy) = parse_file_strict(workspace_root, path, build_metadata.as_ref())?;
             if verbose && lossy {
                 println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
             }

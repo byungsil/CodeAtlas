@@ -16,6 +16,15 @@ Success outcome:
 
 - CodeAtlas can prove its large-C++ value proposition with benchmark evidence, not just design intent
 
+Current status:
+
+- `M7-E1` is complete.
+- `M7-E2` is complete.
+- `M7-E3` is complete.
+- `M7-E4` is complete.
+- `M7-E5` is complete.
+- `M7-E6` is complete.
+
 ---
 
 ## 2. Recommended Order
@@ -36,6 +45,10 @@ Success outcome:
 Goal:
 
 - define what performance evidence CodeAtlas should collect and publish
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -65,6 +78,13 @@ Exit criteria:
 
 - there is a clear benchmark contract for future measurements
 
+Completion summary:
+
+- added a benchmark contract covering small fixture, medium curated, and large real-project datasets
+- defined required metrics for indexing, incremental operation, query latency, DB size, and row counts
+- documented stage timing expectations for full indexing runs so regressions can be localized
+- recorded an initial OpenCV baseline after Milestone 6, showing that the main regression is concentrated in parse and resolve rather than persistence
+
 ---
 
 ### M7-E2. Benchmark Harness Implementation
@@ -72,6 +92,10 @@ Exit criteria:
 Goal:
 
 - make performance measurement repeatable
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -94,6 +118,20 @@ Exit criteria:
 
 - CodeAtlas has an operational benchmark harness
 
+Current progress note:
+
+- added `scripts/benchmark/Run-CodeAtlasBenchmark.ps1` as a repeatable PowerShell benchmark runner
+- benchmark output now lands in `dev_docs/benchmark_results/` as machine-readable JSON
+- checked-in baseline examples now exist for at least one deterministic fixture workspace
+- the harness also records retry usage and raw output so transient `.codeatlas` publish lock failures remain diagnosable on Windows
+
+Completion summary:
+
+- created a repeatable benchmark runner for `full` and `incremental` indexer runs
+- captured commit, environment notes, counts, stage timings, parse breakdowns, and resolve breakdowns in JSON
+- documented harness usage in `README.md`
+- established `dev_docs/benchmark_results/` as the stable baseline location
+
 ---
 
 ### M7-E3. Query Profiling and Hot-Path Optimization
@@ -101,6 +139,10 @@ Exit criteria:
 Goal:
 
 - optimize the queries agents use most often
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -128,6 +170,19 @@ Exit criteria:
 
 - common structural queries remain interactive on larger datasets
 
+Current progress note:
+
+- added `server/src/query-profiler.ts` to produce repeatable query-latency JSON output
+- added batch symbol lookup support to reduce repeated `getSymbolById` calls in caller, reference, metadata-grouping, and impact paths
+- added query-oriented SQLite indexes for exact lookup and common structural relation access patterns
+- captured an OpenCV query-profile snapshot covering exact lookup, search, callers, references, call-path tracing, and impact analysis
+
+Completion summary:
+
+- query latency now has a repeatable measurement path instead of ad-hoc observation
+- the main agent-facing structural queries have evidence-backed timing data on a large real-project dataset
+- first-pass storage and response-shaping optimizations were applied without weakening correctness
+
 ---
 
 ### M7-E4. Incremental and Watcher Scale Benchmarks
@@ -135,6 +190,10 @@ Exit criteria:
 Goal:
 
 - measure the core differentiator of CodeAtlas under active development conditions
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -163,6 +222,19 @@ Exit criteria:
 
 - CodeAtlas has evidence for its operational scale advantage
 
+Current progress note:
+
+- added `scripts/benchmark/Run-CodeAtlasIncrementalSuite.ps1` for repeatable fixture-based incremental benchmarking
+- generated `dev_docs/benchmark_results/incremental-suite-samples.json`
+- captured no-change rerun, single `.cpp` edit, header edit, repeated burst edits, fixture mass change, and synthetic branch-like churn
+- synthetic branch-like churn now proves that rebuild-escalation behavior is exercised by the benchmark suite rather than only inferred from tests
+
+Completion summary:
+
+- incremental operating behavior is now benchmarked through a repeatable script instead of one-off manual notes
+- burst-edit and branch-like churn behavior are both represented in machine-readable benchmark output
+- the suite records plan shape, elapsed time, parse and resolve timing details, and escalation behavior per scenario
+
 ---
 
 ### M7-E5. Build Metadata Ingestion
@@ -170,6 +242,10 @@ Exit criteria:
 Goal:
 
 - improve resolution quality using available build metadata without becoming an LSP-dependent product
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -195,6 +271,22 @@ Exit criteria:
 
 - CodeAtlas can selectively use build metadata while staying true to its lightweight identity
 
+Current progress note:
+
+- added optional `compile_commands.json` auto-detection in the Rust indexer
+- build metadata now ingests workspace include directories, compile output paths, and cheap define hints
+- build metadata refines existing metadata classification instead of attempting compiler-grade semantics
+- current first-release effects are:
+  - promoting `headerRole` to `public` when headers live under compile-db-discovered workspace include directories
+  - refining `artifactKind` when compile output paths or define hints indicate test/editor/tool/generated intent
+- baseline operation remains unchanged when compile DB metadata is absent or unreadable
+
+Completion summary:
+
+- build metadata ingestion is now an optional overlay instead of a hard dependency
+- the indexer stays fully usable without compile DB presence
+- first-release metadata refinement is intentionally lightweight and avoids redefining CodeAtlas as an LSP-dependent product
+
 ---
 
 ### M7-E6. Include and Macro Risk Signals
@@ -202,6 +294,10 @@ Exit criteria:
 Goal:
 
 - surface C++ fragility zones honestly instead of hiding them
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -227,6 +323,22 @@ Exit criteria:
 
 - hard C++ corners are surfaced as risk signals instead of silent inaccuracies
 
+Current progress note:
+
+- added lightweight file-risk signal derivation in the parser
+- current first-release signals are:
+  - `parseFragility`
+  - `macroSensitivity`
+  - `includeHeaviness`
+- these signals are persisted onto file records and copied onto symbols from the same file
+- propagation-oriented guidance now includes file-risk notes when exact symbols live in parse-fragile, macro-sensitive, or include-heavy files
+
+Completion summary:
+
+- CodeAtlas now exposes structural fragility cues instead of silently presenting all indexed C++ as equally trustworthy
+- the implementation stays intentionally lightweight and heuristic-driven
+- the result improves agent guidance without turning CodeAtlas into a compiler or LSP-dependent product
+
 ---
 
 ## 4. Final Exit Criteria
@@ -236,4 +348,9 @@ Exit criteria:
 - hot-path queries are profiled and improved with evidence
 - incremental and watcher performance is measured under realistic scenarios
 - optional build metadata improves accuracy without redefining the product
+
+Current milestone reading:
+
+- all milestone exit criteria are satisfied
+- Milestone 7 is complete
 

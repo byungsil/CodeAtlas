@@ -3,12 +3,12 @@ use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use crate::models::{
     Call, CallableFlowSummary, FileRecord, InheritanceEdge, NormalizedReference,
-    PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind,
-    RawExtractionConfidence, ReferenceCategory, Symbol,
+    PropagationAnchorKind, PropagationEvent, PropagationKind, RawExtractionConfidence,
+    ReferenceCategory, Symbol,
 };
 use crate::resolver;
 
-const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role";
+const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS symbols_raw (
@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS symbols_raw (
     subsystem   TEXT,
     project_area TEXT,
     artifact_kind TEXT,
-    header_role TEXT
+    header_role TEXT,
+    parse_fragility TEXT,
+    macro_sensitivity TEXT,
+    include_heaviness TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -62,7 +65,10 @@ CREATE TABLE IF NOT EXISTS symbols (
     subsystem   TEXT,
     project_area TEXT,
     artifact_kind TEXT,
-    header_role TEXT
+    header_role TEXT,
+    parse_fragility TEXT,
+    macro_sensitivity TEXT,
+    include_heaviness TEXT
 );
 
 CREATE TABLE IF NOT EXISTS calls (
@@ -114,25 +120,38 @@ CREATE TABLE IF NOT EXISTS files (
     subsystem       TEXT,
     project_area    TEXT,
     artifact_kind   TEXT,
-    header_role     TEXT
+    header_role     TEXT,
+    parse_fragility TEXT,
+    macro_sensitivity TEXT,
+    include_heaviness TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_id ON symbols_raw(id);
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_name ON symbols_raw(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_file ON symbols_raw(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_qualified ON symbols(qualified_name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
+CREATE INDEX IF NOT EXISTS idx_symbols_file_order ON symbols(file_path, line, end_line, qualified_name);
 CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_scope ON symbols(scope_kind, scope_qualified_name, line, end_line, qualified_name);
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_id);
+CREATE INDEX IF NOT EXISTS idx_calls_caller_order ON calls(caller_id, file_path, line, callee_id);
+CREATE INDEX IF NOT EXISTS idx_calls_callee_order ON calls(callee_id, file_path, line, caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_references_source ON symbol_references(source_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_references_target_category_file ON symbol_references(target_symbol_id, category, file_path, line, source_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_category ON symbol_references(category);
 CREATE INDEX IF NOT EXISTS idx_references_file ON symbol_references(file_path);
 CREATE INDEX IF NOT EXISTS idx_propagation_owner ON propagation_events(owner_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_propagation_source_symbol ON propagation_events(source_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_propagation_target_symbol ON propagation_events(target_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_source_anchor ON propagation_events(source_anchor_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_target_anchor ON propagation_events(target_anchor_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_source_kind_file ON propagation_events(source_symbol_id, propagation_kind, file_path, line);
+CREATE INDEX IF NOT EXISTS idx_propagation_target_kind_file ON propagation_events(target_symbol_id, propagation_kind, file_path, line);
 CREATE INDEX IF NOT EXISTS idx_propagation_file ON propagation_events(file_path);
 CREATE INDEX IF NOT EXISTS idx_callable_flow_summaries_file ON callable_flow_summaries(file_path);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
@@ -185,6 +204,9 @@ impl Database {
         Self::ensure_column(conn, "symbols_raw", "project_area", "TEXT")?;
         Self::ensure_column(conn, "symbols_raw", "artifact_kind", "TEXT")?;
         Self::ensure_column(conn, "symbols_raw", "header_role", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "parse_fragility", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "macro_sensitivity", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "include_heaviness", "TEXT")?;
 
         Self::ensure_column(conn, "symbols", "parameter_count", "INTEGER")?;
         Self::ensure_column(conn, "symbols", "scope_qualified_name", "TEXT")?;
@@ -201,12 +223,18 @@ impl Database {
         Self::ensure_column(conn, "symbols", "project_area", "TEXT")?;
         Self::ensure_column(conn, "symbols", "artifact_kind", "TEXT")?;
         Self::ensure_column(conn, "symbols", "header_role", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "parse_fragility", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "macro_sensitivity", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "include_heaviness", "TEXT")?;
 
         Self::ensure_column(conn, "files", "module", "TEXT")?;
         Self::ensure_column(conn, "files", "subsystem", "TEXT")?;
         Self::ensure_column(conn, "files", "project_area", "TEXT")?;
         Self::ensure_column(conn, "files", "artifact_kind", "TEXT")?;
         Self::ensure_column(conn, "files", "header_role", "TEXT")?;
+        Self::ensure_column(conn, "files", "parse_fragility", "TEXT")?;
+        Self::ensure_column(conn, "files", "macro_sensitivity", "TEXT")?;
+        Self::ensure_column(conn, "files", "include_heaviness", "TEXT")?;
 
         Ok(())
     }
@@ -263,8 +291,8 @@ impl Database {
 
     pub fn write_raw_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
         )?;
         for s in symbols {
             let normalized = normalize_dual_locations(s);
@@ -293,6 +321,9 @@ impl Database {
                 normalized.project_area,
                 normalized.artifact_kind,
                 normalized.header_role,
+                normalized.parse_fragility,
+                normalized.macro_sensitivity,
+                normalized.include_heaviness,
             ])?;
         }
         Ok(())
@@ -300,8 +331,8 @@ impl Database {
 
     pub fn write_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
         )?;
         for s in symbols {
             let normalized = normalize_dual_locations(s);
@@ -330,6 +361,9 @@ impl Database {
                 normalized.project_area,
                 normalized.artifact_kind,
                 normalized.header_role,
+                normalized.parse_fragility,
+                normalized.macro_sensitivity,
+                normalized.include_heaviness,
             ])?;
         }
         Ok(())
@@ -426,7 +460,7 @@ impl Database {
 
     pub fn write_files(&self, files: &[FileRecord]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
         for f in files {
             stmt.execute(params![
@@ -438,7 +472,10 @@ impl Database {
                 f.subsystem,
                 f.project_area,
                 f.artifact_kind,
-                f.header_role
+                f.header_role,
+                f.parse_fragility,
+                f.macro_sensitivity,
+                f.include_heaviness,
             ])?;
         }
         Ok(())
@@ -493,7 +530,7 @@ impl Database {
 
     pub fn read_file_records(&self) -> SqlResult<Vec<FileRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role FROM files",
+            "SELECT path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness FROM files",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(FileRecord {
@@ -506,6 +543,9 @@ impl Database {
                 project_area: row.get(6)?,
                 artifact_kind: row.get(7)?,
                 header_role: row.get(8)?,
+                parse_fragility: row.get(9)?,
+                macro_sensitivity: row.get(10)?,
+                include_heaviness: row.get(11)?,
             })
         })?;
         rows.collect()
@@ -865,6 +905,9 @@ fn row_to_symbol(row: &rusqlite::Row<'_>) -> SqlResult<Symbol> {
         project_area: row.get(21)?,
         artifact_kind: row.get(22)?,
         header_role: row.get(23)?,
+        parse_fragility: row.get(24)?,
+        macro_sensitivity: row.get(25)?,
+        include_heaviness: row.get(26)?,
     })
 }
 
@@ -948,6 +991,7 @@ fn normalize_dual_locations(symbol: &Symbol) -> Symbol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::PropagationAnchor;
 
     fn make_sym(id: &str, name: &str) -> Symbol {
         Symbol {
@@ -959,6 +1003,7 @@ mod tests {
             definition_file_path: None, definition_line: None, definition_end_line: None,
             parent_id: None,
             module: None, subsystem: None, project_area: None, artifact_kind: None, header_role: None,
+            parse_fragility: None, macro_sensitivity: None, include_heaviness: None,
         }
     }
 
@@ -997,6 +1042,7 @@ mod tests {
             path: "test.cpp".into(), content_hash: "abc".into(),
             last_indexed: "2026-01-01T00:00:00Z".into(), symbol_count: 2,
             module: None, subsystem: None, project_area: None, artifact_kind: None, header_role: None,
+            parse_fragility: None, macro_sensitivity: None, include_heaviness: None,
         }];
 
         db.write_all(&symbols, &symbols, &calls, &[], &[], &[], &files).unwrap();
@@ -1032,7 +1078,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 19);
+        assert_eq!(idx_count, 29);
     }
 
     #[test]
@@ -1063,6 +1109,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
         let source = Symbol {
             id: "Foo::Bar".into(),
@@ -1089,6 +1138,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         db.write_raw_symbols(&[header.clone(), source]).unwrap();
@@ -1135,6 +1187,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         let definition = Symbol {
@@ -1162,6 +1217,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         db.write_raw_symbols(&[declaration]).unwrap();
@@ -1206,6 +1264,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
         let definition = Symbol {
             id: "Foo::Bar".into(),
@@ -1232,6 +1293,9 @@ mod tests {
             project_area: None,
             artifact_kind: None,
             header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
         };
 
         db.write_raw_symbols(&[caller.clone(), declaration.clone(), definition]).unwrap();
@@ -1345,6 +1409,9 @@ mod tests {
             project_area: Some("ui".into()),
             artifact_kind: Some("runtime".into()),
             header_role: Some("public".into()),
+            parse_fragility: Some("low".into()),
+            macro_sensitivity: Some("low".into()),
+            include_heaviness: Some("light".into()),
         };
         let file = FileRecord {
             path: "src/ui/public/panel.h".into(),
@@ -1356,6 +1423,9 @@ mod tests {
             project_area: Some("ui".into()),
             artifact_kind: Some("runtime".into()),
             header_role: Some("public".into()),
+            parse_fragility: Some("low".into()),
+            macro_sensitivity: Some("low".into()),
+            include_heaviness: Some("light".into()),
         };
 
         db.write_symbols(&[symbol]).unwrap();

@@ -47,6 +47,20 @@ Latest rerun after the current Milestone 6 changes:
 - propagation edges: `265137`
 - elapsed time: `212545ms (212.54s)` in non-verbose full-rebuild mode with propagation persistence enabled
 
+Latest rerun after the current Milestone 7 changes:
+
+- files: `3695`
+- symbols: `50526`
+- call edges: `84298`
+- propagation edges: `266005`
+- elapsed time: `24567ms (24.57s)` in non-verbose full-rebuild mode with the current debug build
+- stage timings:
+  - discovery: `392ms`
+  - parse: `9268ms (9.27s)`
+  - resolve: `3484ms (3.48s)`
+  - persist: `10705ms (10.71s)`
+  - checkpoint: `161ms`
+
 ## Milestone 3 Query-Surface Validation
 
 After rebuilding the indexer from the current workspace and regenerating `E:\Dev\opencv\.codeatlas`, the OpenCV database now includes the Milestone 3 `symbol_references` table as expected.
@@ -133,6 +147,47 @@ Validated live query surfaces:
 
 These checks show that the Milestone 6 propagation surfaces are live against the real OpenCV workspace, not only against fixtures. They also confirm the intended honesty behavior: real-project propagation answers can stay useful while still reporting partial confidence and truncation on complex symbols.
 
+## Milestone 7 Performance and Risk Validation
+
+After rebuilding the indexer from the current workspace and regenerating `E:\Dev\opencv\.codeatlas`, the Milestone 7 benchmarking, metadata, and risk-signaling work was validated against the same real OpenCV database.
+
+Validated live query and metadata surfaces:
+
+- query profiler rerun
+  - output written to `dev_docs/benchmark_results/opencv-query-profile-ms7-final.json`
+  - repeat count: `5`
+- exact lookup profile
+  - `cv::imread`
+  - average latency: `0.102ms`
+- search profile
+  - `imread`
+  - average latency: `0.472ms`
+- direct caller profile
+  - `cv::imread`
+  - average latency: `0.200ms`
+- generalized reference profile
+  - `cv::v_float32x4`
+  - average latency: `0.693ms`
+- bounded call-path profile
+  - `cv::AGAST -> cv::makeAgastOffsets`
+  - average latency: `0.201ms`
+- impact profile
+  - `cv::imread`
+  - average latency: `0.289ms`
+- metadata enrichment check
+  - `cv::imread` now reports:
+    - `module = imgcodecs`
+    - `subsystem = modules`
+    - `artifactKind = runtime`
+    - `headerRole = public`
+- file/symbol risk signaling check
+  - `cv::imread` now reports:
+    - `parseFragility = elevated`
+    - `macroSensitivity = low`
+    - `includeHeaviness = light`
+
+These checks show that the Milestone 7 benchmark and profiling tools are operational on the real OpenCV workspace, while the metadata/risk fields are also visible on live symbol payloads.
+
 ## Sample Query Findings
 
 Validation queries were executed against a copied database file because the original `index.db` could not yet be reopened reliably from a fresh process.
@@ -188,6 +243,10 @@ This suggests that the Milestone 2 extraction pipeline is operational, but repre
   - propagation summary queries
   - bounded variable-flow tracing
   - explicit propagation confidence and truncation reporting
+- Milestone 7 performance and metadata surfaces are operational on the real OpenCV workspace:
+  - repeatable query profiling
+  - build-metadata-backed symbol/file enrichment
+  - parse/macro/include risk signaling on live symbol payloads
 
 ## What This Exposed
 
@@ -216,6 +275,8 @@ Recommended operating posture:
 
 Milestone 2 passed the large-project extraction check, Milestone 3 remained usable on the same real workspace, Milestone 5 verifies that higher-level hierarchy/path/metadata reasoning works against real OpenCV data, and Milestone 6 now confirms that bounded propagation queries also operate on the same real project.
 
+Milestone 7 extends that result by showing that the performance-proof tooling, query profiling workflow, metadata enrichment, and file-risk signaling also operate on the same OpenCV workspace with current production-like data.
+
 In practical terms:
 
 - parsing and relationship extraction scale to OpenCV
@@ -223,4 +284,6 @@ In practical terms:
 - caller/reference/impact/overview queries all respond on real OpenCV data after rebuilding with the current schema
 - hierarchy, override, call-path, and metadata-aware queries also respond on real OpenCV data after rebuilding with the current schema
 - propagation summary and bounded variable-flow queries also respond on real OpenCV data after rebuilding with the current schema
+- query profiler runs cleanly against the real OpenCV database and reports sub-millisecond average latencies for the sampled exact/search/caller/impact surfaces
+- live symbol payloads now expose metadata and risk signals that help the agent judge confidence on difficult C++ files
 - the database finalization path still needs follow-up before this can be treated as production-ready end-to-end behavior

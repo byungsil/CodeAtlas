@@ -9,7 +9,8 @@ Current status:
 - Milestone 4 (`Production-Grade Incremental Operation`) is complete.
 - Milestone 5 (`Large-Project Intelligence`) is complete.
 - Milestone 6 (`Variable and Data-Flow Propagation`) is complete.
-- The next planned execution target is Milestone 7 (`Performance Proof`).
+- Milestone 7 (`Performance Proof`) is complete.
+- The current documented milestone plan through Milestone 7 is complete.
 
 ## 1. Goal
 
@@ -86,7 +87,7 @@ Execution status:
 - Step 5 is complete through Milestone 5.
 - Step 6 is complete through Milestone 5.
 - Step 7 is complete through Milestone 6.
-- Step 8 is the next active milestone track through Milestone 7.
+- Step 8 is complete through Milestone 7.
 
 ---
 

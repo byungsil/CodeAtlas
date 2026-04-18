@@ -45,6 +45,12 @@ pub struct Symbol {
     pub artifact_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_fragility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macro_sensitivity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_heaviness: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +79,41 @@ pub struct FileRecord {
     pub artifact_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_fragility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macro_sensitivity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_heaviness: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParseFragility {
+    Low,
+    Elevated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MacroSensitivity {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IncludeHeaviness {
+    Light,
+    Heavy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRiskSignals {
+    pub parse_fragility: ParseFragility,
+    pub macro_sensitivity: MacroSensitivity,
+    pub include_heaviness: IncludeHeaviness,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,13 +368,36 @@ pub struct CallableFlowSummary {
     pub return_anchors: Vec<PropagationAnchor>,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseMetrics {
+    pub tree_sitter_parse_ms: u128,
+    pub syntax_walk_ms: u128,
+    pub local_propagation_ms: u128,
+    pub local_function_discovery_ms: u128,
+    pub local_owner_lookup_ms: u128,
+    pub local_seed_ms: u128,
+    pub local_event_walk_ms: u128,
+    pub local_declaration_ms: u128,
+    pub local_expression_statement_ms: u128,
+    pub local_return_statement_ms: u128,
+    pub local_nested_block_ms: u128,
+    pub local_return_collection_ms: u128,
+    pub graph_relation_ms: u128,
+    pub graph_rule_compile_ms: u128,
+    pub graph_rule_execute_ms: u128,
+    pub reference_normalization_ms: u128,
+}
+
 #[derive(Debug)]
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
+    pub file_risk_signals: FileRiskSignals,
     pub relation_events: Vec<RawRelationEvent>,
     pub normalized_references: Vec<NormalizedReference>,
     #[allow(dead_code)]
     pub propagation_events: Vec<PropagationEvent>,
     pub callable_flow_summaries: Vec<CallableFlowSummary>,
     pub raw_calls: Vec<RawCallSite>,
+    pub metrics: ParseMetrics,
 }

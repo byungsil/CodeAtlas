@@ -1,0 +1,2693 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-04-18T16:24:32.941Z",
+  "dataDir": "E:\\Dev\\opencv\\.codeatlas",
+  "repeatCount": 5,
+  "profiles": [
+    {
+      "label": "exact:cv::imread",
+      "repeatCount": 5,
+      "minMs": 0.878,
+      "maxMs": 14.811,
+      "avgMs": 3.904,
+      "lastResult": {
+        "id": "cv::imread",
+        "name": "imread",
+        "qualifiedName": "cv::imread",
+        "type": "function",
+        "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+        "line": 384,
+        "endLine": 384,
+        "signature": "CV_EXPORTS_W Mat imread( const String& filename, int flags = IMREAD_COLOR_BGR )",
+        "parameterCount": 2,
+        "symbolRole": "declaration",
+        "declarationFilePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+        "declarationLine": 384,
+        "declarationEndLine": 384,
+        "module": "imgcodecs",
+        "subsystem": "modules",
+        "artifactKind": "runtime",
+        "headerRole": "public"
+      },
+      "samples": [
+        {
+          "query": "exact:cv::imread",
+          "runMs": 14.811
+        },
+        {
+          "query": "exact:cv::imread",
+          "runMs": 1.374
+        },
+        {
+          "query": "exact:cv::imread",
+          "runMs": 1.369
+        },
+        {
+          "query": "exact:cv::imread",
+          "runMs": 1.087
+        },
+        {
+          "query": "exact:cv::imread",
+          "runMs": 0.878
+        }
+      ]
+    },
+    {
+      "label": "search:imread",
+      "repeatCount": 5,
+      "minMs": 0.338,
+      "maxMs": 7.972,
+      "avgMs": 1.961,
+      "lastResult": {
+        "results": [
+          {
+            "id": "imreadanimation",
+            "name": "imreadanimation",
+            "qualifiedName": "imreadanimation",
+            "type": "function",
+            "filePath": "modules/imgcodecs/src/loadsave.cpp",
+            "line": 923,
+            "endLine": 928,
+            "signature": "bool imreadanimation(const String& filename, CV_OUT Animation& animation, int start, int count)",
+            "parameterCount": 4,
+            "symbolRole": "definition",
+            "definitionFilePath": "modules/imgcodecs/src/loadsave.cpp",
+            "definitionLine": 923,
+            "definitionEndLine": 928,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime"
+          },
+          {
+            "id": "cv::imreadWithMetadata",
+            "name": "imreadWithMetadata",
+            "qualifiedName": "cv::imreadWithMetadata",
+            "type": "function",
+            "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "line": 411,
+            "endLine": 412,
+            "signature": "CV_EXPORTS_W Mat imreadWithMetadata( const String& filename, CV_OUT std::vector<int>& metadataTypes,\r\n                                     OutputArrayOfArrays metadata, int flags = IMREAD_ANYCOLOR)",
+            "parameterCount": 4,
+            "symbolRole": "declaration",
+            "declarationFilePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "declarationLine": 411,
+            "declarationEndLine": 412,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime",
+            "headerRole": "public"
+          },
+          {
+            "id": "cv::imread",
+            "name": "imread",
+            "qualifiedName": "cv::imread",
+            "type": "function",
+            "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "line": 384,
+            "endLine": 384,
+            "signature": "CV_EXPORTS_W Mat imread( const String& filename, int flags = IMREAD_COLOR_BGR )",
+            "parameterCount": 2,
+            "symbolRole": "declaration",
+            "declarationFilePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "declarationLine": 384,
+            "declarationEndLine": 384,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime",
+            "headerRole": "public"
+          },
+          {
+            "id": "imreadWithMetadata",
+            "name": "imreadWithMetadata",
+            "qualifiedName": "imreadWithMetadata",
+            "type": "function",
+            "filePath": "modules/imgcodecs/src/loadsave.cpp",
+            "line": 768,
+            "endLine": 783,
+            "signature": "Mat imreadWithMetadata( const String& filename,\r\n                        std::vector<int>& metadata_types,\r\n                        OutputArrayOfArrays metadata,\r\n                        int flags )",
+            "parameterCount": 4,
+            "symbolRole": "definition",
+            "definitionFilePath": "modules/imgcodecs/src/loadsave.cpp",
+            "definitionLine": 768,
+            "definitionEndLine": 783,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime"
+          },
+          {
+            "id": "cv::imreadmulti",
+            "name": "imreadmulti",
+            "qualifiedName": "cv::imreadmulti",
+            "type": "function",
+            "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "line": 422,
+            "endLine": 422,
+            "signature": "CV_EXPORTS_W bool imreadmulti(const String& filename, CV_OUT std::vector<Mat>& mats, int flags = IMREAD_ANYCOLOR)",
+            "parameterCount": 4,
+            "symbolRole": "declaration",
+            "declarationFilePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "declarationLine": 422,
+            "declarationEndLine": 422,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime",
+            "headerRole": "public"
+          },
+          {
+            "id": "imread",
+            "name": "imread",
+            "qualifiedName": "imread",
+            "type": "function",
+            "filePath": "modules/imgcodecs/src/loadsave.cpp",
+            "line": 754,
+            "endLine": 766,
+            "signature": "Mat imread( const String& filename, int flags )",
+            "parameterCount": 2,
+            "symbolRole": "definition",
+            "definitionFilePath": "modules/imgcodecs/src/loadsave.cpp",
+            "definitionLine": 785,
+            "definitionEndLine": 791,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime"
+          },
+          {
+            "id": "imreadmulti",
+            "name": "imreadmulti",
+            "qualifiedName": "imreadmulti",
+            "type": "function",
+            "filePath": "modules/imgcodecs/src/loadsave.cpp",
+            "line": 803,
+            "endLine": 808,
+            "signature": "bool imreadmulti(const String& filename, std::vector<Mat>& mats, int flags)",
+            "parameterCount": 3,
+            "symbolRole": "definition",
+            "definitionFilePath": "modules/imgcodecs/src/loadsave.cpp",
+            "definitionLine": 811,
+            "definitionEndLine": 816,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime"
+          },
+          {
+            "id": "cv::ImreadModes",
+            "name": "ImreadModes",
+            "qualifiedName": "cv::ImreadModes",
+            "type": "enum",
+            "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "line": 69,
+            "endLine": 85,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime",
+            "headerRole": "public"
+          },
+          {
+            "id": "imreadanimation_",
+            "name": "imreadanimation_",
+            "qualifiedName": "imreadanimation_",
+            "type": "function",
+            "filePath": "modules/imgcodecs/src/loadsave.cpp",
+            "line": 818,
+            "endLine": 921,
+            "signature": "bool imreadanimation_(const String& filename, int flags, int start, int count, Animation& animation)",
+            "parameterCount": 5,
+            "symbolRole": "definition",
+            "definitionFilePath": "modules/imgcodecs/src/loadsave.cpp",
+            "definitionLine": 818,
+            "definitionEndLine": 921,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime"
+          },
+          {
+            "id": "cv::imreadanimation",
+            "name": "imreadanimation",
+            "qualifiedName": "cv::imreadanimation",
+            "type": "function",
+            "filePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "line": 452,
+            "endLine": 452,
+            "signature": "CV_EXPORTS_W bool imreadanimation(const String& filename, CV_OUT Animation& animation, int start = 0, int count = INT16_MAX)",
+            "parameterCount": 4,
+            "symbolRole": "declaration",
+            "declarationFilePath": "modules/imgcodecs/include/opencv2/imgcodecs.hpp",
+            "declarationLine": 452,
+            "declarationEndLine": 452,
+            "module": "imgcodecs",
+            "subsystem": "modules",
+            "artifactKind": "runtime",
+            "headerRole": "public"
+          }
+        ],
+        "totalCount": 10
+      },
+      "samples": [
+        {
+          "query": "search:imread",
+          "runMs": 7.972
+        },
+        {
+          "query": "search:imread",
+          "runMs": 0.7
+        },
+        {
+          "query": "search:imread",
+          "runMs": 0.349
+        },
+        {
+          "query": "search:imread",
+          "runMs": 0.338
+        },
+        {
+          "query": "search:imread",
+          "runMs": 0.448
+        }
+      ]
+    },
+    {
+      "label": "callers:cv::imread",
+      "repeatCount": 5,
+      "minMs": 1.328,
+      "maxMs": 2.396,
+      "avgMs": 1.614,
+      "lastResult": [
+        {
+          "symbolId": "cv::CvCapture_Images::grabFrame",
+          "qualifiedName": "cv::CvCapture_Images::grabFrame",
+          "filePath": "modules/videoio/src/cap_images.cpp",
+          "line": 129
+        },
+        {
+          "symbolId": "main",
+          "qualifiedName": "main",
+          "filePath": "samples/cpp/tutorial_code/gapi/doc_snippets/api_ref_snippets.cpp",
+          "line": 194
+        }
+      ],
+      "samples": [
+        {
+          "query": "callers:cv::imread",
+          "runMs": 2.396
+        },
+        {
+          "query": "callers:cv::imread",
+          "runMs": 1.49
+        },
+        {
+          "query": "callers:cv::imread",
+          "runMs": 1.402
+        },
+        {
+          "query": "callers:cv::imread",
+          "runMs": 1.454
+        },
+        {
+          "query": "callers:cv::imread",
+          "runMs": 1.328
+        }
+      ]
+    },
+    {
+      "label": "references:cv::v_float32x4",
+      "repeatCount": 5,
+      "minMs": 2.284,
+      "maxMs": 15.233,
+      "avgMs": 5.122,
+      "lastResult": [
+        {
+          "sourceSymbolId": "cv::v_reinterpret_as_f32",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 471,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reinterpret_as_f32"
+        },
+        {
+          "sourceSymbolId": "cv::v_reinterpret_as_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 478,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reinterpret_as_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_select",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 750,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_select"
+        },
+        {
+          "sourceSymbolId": "cv::v_gt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 804,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_gt"
+        },
+        {
+          "sourceSymbolId": "cv::v_ge",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 807,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ge"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 816,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 972,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1085,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1112,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1113,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1183,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1185,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_signmask",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1249,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_signmask"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1261,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1305,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_abs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1324,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_abs"
+        },
+        {
+          "sourceSymbolId": "cv::v_absdiff",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1345,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_absdiff"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1364,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1373,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1379,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1385,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1407,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1410,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1542,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1603,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1626,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1772,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1773,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1784,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1785,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_transpose4x4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1813,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_transpose4x4"
+        },
+        {
+          "sourceSymbolId": "cv::v_transpose4x4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1814,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_transpose4x4"
+        },
+        {
+          "sourceSymbolId": "cv::v_transpose4x4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 1815,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_transpose4x4"
+        },
+        {
+          "sourceSymbolId": "cv::v_extract_n",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2044,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_extract_n"
+        },
+        {
+          "sourceSymbolId": "cv::v_broadcast_element",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2068,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_broadcast_element"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2507,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2527,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2528,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2529,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2530,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2531,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_lsx.hpp",
+          "line": 2532,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 325,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 326,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 327,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 337,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 338,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 339,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_not",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 621,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 716,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 755,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 757,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqr_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 761,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqr_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_fma",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 766,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_fma"
+        },
+        {
+          "sourceSymbolId": "cv::v_muladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 776,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_muladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 942,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1043,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1044,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1091,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_signmask",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1166,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_signmask"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1185,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_all",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1215,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_all"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_any",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1224,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_any"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1343,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1348,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1354,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1360,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1480,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1485,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1695,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1747,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1766,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_broadcast_element",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1819,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_broadcast_element"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1836,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1855,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1867,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1868,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1869,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1870,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1871,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_msa.hpp",
+          "line": 1872,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 486,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 487,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 488,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 498,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 499,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 500,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_div",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 544,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_div"
+        },
+        {
+          "sourceSymbolId": "cv::v_not",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 960,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 966,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 971,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 973,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 977,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 986,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_abs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1002,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_abs"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1128,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1172,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1174,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqr_magnitude",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1178,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqr_magnitude"
+        },
+        {
+          "sourceSymbolId": "cv::v_fma",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1183,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_fma"
+        },
+        {
+          "sourceSymbolId": "cv::v_muladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1199,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_muladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1466,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1467,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1559,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_signmask",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1641,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_signmask"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1669,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_all",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1723,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_all"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_any",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1732,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_any"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1907,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1979,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 1994,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2001,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2008,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2015,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2283,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2288,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2508,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2555,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2571,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2622,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2641,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2660,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2661,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2662,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2663,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2664,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_neon.hpp",
+          "line": 2665,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        },
+        {
+          "sourceSymbolId": "cv::v_reinterpret_as_f32",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 402,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reinterpret_as_f32"
+        },
+        {
+          "sourceSymbolId": "cv::v_reinterpret_as_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 405,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reinterpret_as_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 721,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 722,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 723,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 733,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 734,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 735,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1052,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1055,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_abs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1086,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_abs"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1281,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_fma",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1358,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_fma"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1737,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1738,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1789,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 1857,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2006,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2026,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2029,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2036,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2043,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2319,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2328,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2345,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2767,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2790,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2791,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2823,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 2824,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3023,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3028,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3213,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3286,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3312,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_extract_n",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3375,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_extract_n"
+        },
+        {
+          "sourceSymbolId": "cv::v_broadcast_element",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3403,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_broadcast_element"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3430,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3463,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3464,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3465,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3466,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3467,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_sse.hpp",
+          "line": 3468,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 675,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 780,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 881,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 882,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 929,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_signmask",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 978,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_signmask"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 997,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_all",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1013,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_all"
+        },
+        {
+          "sourceSymbolId": "cv::v_check_any",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1029,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_check_any"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1037,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1042,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_abs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1075,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_abs"
+        },
+        {
+          "sourceSymbolId": "cv::v_absdiff",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1092,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_absdiff"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1106,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1115,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1121,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1127,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1149,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1152,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1276,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1334,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1357,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1389,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1556,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1557,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1558,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1567,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1568,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1569,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1600,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1601,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1602,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1603,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1604,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_vsx.hpp",
+          "line": 1605,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 832,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 833,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmul",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 834,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmul"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 848,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 849,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_matmuladd",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 850,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_matmuladd"
+        },
+        {
+          "sourceSymbolId": "cv::v_sqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1135,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_invsqrt",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1140,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_invsqrt"
+        },
+        {
+          "sourceSymbolId": "cv::v_abs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1169,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_abs"
+        },
+        {
+          "sourceSymbolId": "cv::v_not_nan",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1253,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_not_nan"
+        },
+        {
+          "sourceSymbolId": "cv::v_fma",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1350,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_fma"
+        },
+        {
+          "sourceSymbolId": "cv::v_absdiff",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1360,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_absdiff"
+        },
+        {
+          "sourceSymbolId": "cv::v_reverse",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1602,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reverse"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1659,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sum4",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1660,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sum4"
+        },
+        {
+          "sourceSymbolId": "cv::v_reduce_sad",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1732,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_reduce_sad"
+        },
+        {
+          "sourceSymbolId": "cv::v_scan_forward",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1828,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_scan_forward"
+        },
+        {
+          "sourceSymbolId": "cv::v_round",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1924,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_round"
+        },
+        {
+          "sourceSymbolId": "cv::v_floor",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1930,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_floor"
+        },
+        {
+          "sourceSymbolId": "cv::v_ceil",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1937,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_ceil"
+        },
+        {
+          "sourceSymbolId": "cv::v_trunc",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 1944,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_trunc"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2118,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2127,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2142,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2144,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2145,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2146,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_load_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2147,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_load_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2329,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2339,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2340,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2355,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2356,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_store_interleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2359,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_store_interleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2522,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64"
+        },
+        {
+          "sourceSymbolId": "cv::v_cvt_f64_high",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2532,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cvt_f64_high"
+        },
+        {
+          "sourceSymbolId": "cv::v_lut_deinterleave",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2674,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_lut_deinterleave"
+        },
+        {
+          "sourceSymbolId": "cv::v_interleave_pairs",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2721,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_interleave_pairs"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_triplets",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2740,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_triplets"
+        },
+        {
+          "sourceSymbolId": "cv::v_broadcast_element",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2759,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_broadcast_element"
+        },
+        {
+          "sourceSymbolId": "cv::v_pack_store",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2775,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_pack_store"
+        },
+        {
+          "sourceSymbolId": "cv::v_exp",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2788,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_exp"
+        },
+        {
+          "sourceSymbolId": "cv::v_log",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2789,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_log"
+        },
+        {
+          "sourceSymbolId": "cv::v_sincos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2790,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sincos"
+        },
+        {
+          "sourceSymbolId": "cv::v_sin",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2791,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_sin"
+        },
+        {
+          "sourceSymbolId": "cv::v_cos",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2792,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_cos"
+        },
+        {
+          "sourceSymbolId": "cv::v_erf",
+          "targetSymbolId": "cv::v_float32x4",
+          "category": "typeUsage",
+          "filePath": "modules/core/include/opencv2/core/hal/intrin_wasm.hpp",
+          "line": 2793,
+          "confidence": "partial",
+          "sourceQualifiedName": "cv::v_erf"
+        }
+      ],
+      "samples": [
+        {
+          "query": "references:cv::v_float32x4",
+          "runMs": 15.233
+        },
+        {
+          "query": "references:cv::v_float32x4",
+          "runMs": 2.867
+        },
+        {
+          "query": "references:cv::v_float32x4",
+          "runMs": 2.625
+        },
+        {
+          "query": "references:cv::v_float32x4",
+          "runMs": 2.599
+        },
+        {
+          "query": "references:cv::v_float32x4",
+          "runMs": 2.284
+        }
+      ]
+    },
+    {
+      "label": "trace:cv::AGAST->cv::makeAgastOffsets",
+      "repeatCount": 5,
+      "minMs": 4.972,
+      "maxMs": 17.87,
+      "avgMs": 7.912,
+      "lastResult": {
+        "pathFound": true,
+        "steps": [
+          {
+            "callerId": "cv::AGAST",
+            "calleeId": "cv::makeAgastOffsets",
+            "filePath": "modules/features2d/src/agast.cpp",
+            "line": 8061
+          }
+        ]
+      },
+      "samples": [
+        {
+          "query": "trace:cv::AGAST->cv::makeAgastOffsets",
+          "runMs": 17.87
+        },
+        {
+          "query": "trace:cv::AGAST->cv::makeAgastOffsets",
+          "runMs": 5.885
+        },
+        {
+          "query": "trace:cv::AGAST->cv::makeAgastOffsets",
+          "runMs": 5.149
+        },
+        {
+          "query": "trace:cv::AGAST->cv::makeAgastOffsets",
+          "runMs": 4.972
+        },
+        {
+          "query": "trace:cv::AGAST->cv::makeAgastOffsets",
+          "runMs": 5.686
+        }
+      ]
+    },
+    {
+      "label": "impact:cv::imread",
+      "repeatCount": 5,
+      "minMs": 1.235,
+      "maxMs": 2.943,
+      "avgMs": 1.743,
+      "lastResult": {
+        "totalAffectedSymbols": 3,
+        "totalAffectedFiles": 2
+      },
+      "samples": [
+        {
+          "query": "impact:cv::imread",
+          "runMs": 2.943
+        },
+        {
+          "query": "impact:cv::imread",
+          "runMs": 1.412
+        },
+        {
+          "query": "impact:cv::imread",
+          "runMs": 1.235
+        },
+        {
+          "query": "impact:cv::imread",
+          "runMs": 1.247
+        },
+        {
+          "query": "impact:cv::imread",
+          "runMs": 1.88
+        }
+      ]
+    }
+  ]
+}

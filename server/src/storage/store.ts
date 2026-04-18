@@ -19,6 +19,7 @@ export interface MetadataFilters {
 export interface Store {
   getSymbolsByName(name: string): Symbol[];
   getSymbolById(id: string): Symbol | undefined;
+  getSymbolsByIds(ids: string[]): Symbol[];
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined;
   searchSymbols(query: string, type?: string, limit?: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number };
   getFileSymbols(filePath: string): Symbol[];

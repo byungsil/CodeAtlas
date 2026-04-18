@@ -1,15 +1,19 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_graph::ast::File as GraphDslFile;
 use tree_sitter_graph::functions::Functions as GraphFunctions;
 use tree_sitter_graph::graph::Value as GraphValue;
-use tree_sitter_graph::{ExecutionConfig as GraphExecutionConfig, Identifier as GraphIdentifier};
+use tree_sitter_graph::ExecutionConfig as GraphExecutionConfig;
 use tree_sitter_graph::{NoCancellation, Variables as GraphVariables};
 use crate::graph_rules::CPP_CALL_RELATIONS;
 use crate::models::{
-    CallableFlowSummary, NormalizedReference, ParseResult, PropagationAnchor,
+    CallableFlowSummary, FileRiskSignals, IncludeHeaviness, MacroSensitivity,
+    NormalizedReference, ParseFragility, ParseResult, PropagationAnchor,
     PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
+    ParseMetrics,
     RawCallKind, RawCallSite, RawEventSource, RawExtractionConfidence,
     RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind,
     ReferenceCategory, Symbol,
@@ -43,6 +47,24 @@ enum WalkItem<'a> {
     ExitClass,
 }
 
+thread_local! {
+    static CPP_GRAPH_FILE: RefCell<Option<Result<GraphDslFile, String>>> = const { RefCell::new(None) };
+}
+
+fn graph_call_extraction_enabled() -> bool {
+    !matches!(
+        std::env::var("CODEATLAS_DISABLE_GRAPH_CALLS").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn local_propagation_enabled() -> bool {
+    !matches!(
+        std::env::var("CODEATLAS_DISABLE_LOCAL_PROPAGATION").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, String> {
     let mut parser = Parser::new();
     let lang = tree_sitter_cpp::LANGUAGE;
@@ -50,9 +72,11 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         .set_language(&lang.into())
         .map_err(|e| format!("Failed to set language: {}", e))?;
 
+    let tree_parse_start = Instant::now();
     let tree: Tree = parser
         .parse(source, None)
         .ok_or_else(|| "Failed to parse".to_string())?;
+    let tree_sitter_parse_ms = tree_parse_start.elapsed().as_millis();
 
     let mut ctx = Ctx {
         file_path: file_path.to_string(),
@@ -63,11 +87,38 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         namespace_ids: HashSet::new(),
     };
 
+    let syntax_walk_start = Instant::now();
     visit_tree(tree.root_node(), &mut ctx);
+    let syntax_walk_ms = syntax_walk_start.elapsed().as_millis();
+    let file_risk_signals = derive_file_risk_signals(tree.root_node(), source);
 
-    let (propagation_events, callable_flow_summaries) =
-        extract_local_propagation_data(tree.root_node(), &ctx);
-    let graph_relation_events = extract_graph_relation_events(file_path, source, &tree, &ctx);
+    let local_flow_candidates_exist = ctx.symbols.iter().any(|symbol| {
+        (symbol.symbol_type == "function" || symbol.symbol_type == "method")
+            && matches!(
+                symbol.symbol_role.as_deref(),
+                Some("definition") | Some("inline_definition")
+            )
+    });
+    let local_propagation_start = Instant::now();
+    let (propagation_events, callable_flow_summaries, local_metrics) = if local_propagation_enabled()
+        && local_flow_candidates_exist
+    {
+        extract_local_propagation_data(tree.root_node(), &ctx)
+    } else {
+        (Vec::new(), Vec::new(), LocalPropagationMetrics::default())
+    };
+    let local_propagation_ms = local_propagation_start.elapsed().as_millis();
+    let legacy_type_usage_events = extract_type_usage_relation_events(tree.root_node(), &ctx);
+    let legacy_inheritance_events = extract_inheritance_relation_events(tree.root_node(), &ctx);
+    let graph_call_candidates_exist = !ctx.raw_calls.is_empty();
+    let graph_relation_start = Instant::now();
+    let (graph_relation_events, graph_rule_compile_ms, graph_rule_execute_ms) =
+        if graph_call_extraction_enabled() && graph_call_candidates_exist {
+            extract_graph_relation_events(file_path, source, &tree, &ctx)
+        } else {
+            (Vec::new(), 0, 0)
+        };
+    let graph_relation_ms = graph_relation_start.elapsed().as_millis();
     let legacy_raw_calls = ctx.raw_calls;
     let legacy_relation_events: Vec<RawRelationEvent> = legacy_raw_calls
         .iter()
@@ -80,12 +131,17 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
 
     let (relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
     {
+        let mut relation_events = graph_relation_events;
+        relation_events.extend(legacy_type_usage_events);
+        relation_events.extend(legacy_inheritance_events);
         (
-            graph_relation_events,
+            relation_events,
             enrich_graph_raw_calls_with_legacy_details(graph_raw_calls, &legacy_raw_calls),
         )
     } else {
         let mut mixed_relation_events = legacy_relation_events;
+        mixed_relation_events.extend(legacy_type_usage_events);
+        mixed_relation_events.extend(legacy_inheritance_events);
         mixed_relation_events.extend(
             graph_relation_events
                 .into_iter()
@@ -93,16 +149,90 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         );
         (mixed_relation_events, legacy_raw_calls)
     };
+    let reference_normalization_start = Instant::now();
     let normalized_references = extract_normalized_references(&relation_events, &ctx.symbols);
+    let reference_normalization_ms = reference_normalization_start.elapsed().as_millis();
 
     Ok(ParseResult {
         symbols: ctx.symbols,
+        file_risk_signals,
         relation_events,
         normalized_references,
         propagation_events,
         callable_flow_summaries,
         raw_calls,
+        metrics: ParseMetrics {
+            tree_sitter_parse_ms,
+            syntax_walk_ms,
+            local_propagation_ms,
+            local_function_discovery_ms: local_metrics.function_discovery_ms,
+            local_owner_lookup_ms: local_metrics.owner_lookup_ms,
+            local_seed_ms: local_metrics.seed_ms,
+            local_event_walk_ms: local_metrics.event_walk_ms,
+            local_declaration_ms: local_metrics.declaration_ms,
+            local_expression_statement_ms: local_metrics.expression_statement_ms,
+            local_return_statement_ms: local_metrics.return_statement_ms,
+            local_nested_block_ms: local_metrics.nested_block_ms,
+            local_return_collection_ms: local_metrics.return_collection_ms,
+            graph_relation_ms,
+            graph_rule_compile_ms,
+            graph_rule_execute_ms,
+            reference_normalization_ms,
+        },
     })
+}
+
+fn derive_file_risk_signals(root: Node, source: &str) -> FileRiskSignals {
+    let mut include_count = 0usize;
+    let mut macro_lines = 0usize;
+    let mut conditional_macro_lines = 0usize;
+    let mut function_like_defines = 0usize;
+
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if let Some(directive) = trimmed.strip_prefix('#') {
+            macro_lines += 1;
+            let directive = directive.trim_start();
+            if directive.starts_with("include") {
+                include_count += 1;
+            }
+            if directive.starts_with("if")
+                || directive.starts_with("ifdef")
+                || directive.starts_with("ifndef")
+                || directive.starts_with("elif")
+            {
+                conditional_macro_lines += 1;
+            }
+            if let Some(rest) = directive.strip_prefix("define") {
+                let rest = rest.trim_start();
+                if rest.contains('(') {
+                    function_like_defines += 1;
+                }
+            }
+        }
+    }
+
+    let macro_sensitive = macro_lines >= 12 || conditional_macro_lines >= 4 || function_like_defines >= 3;
+    let include_heavy = include_count >= 15;
+    let parse_fragile = root.has_error() || macro_sensitive || include_count >= 25;
+
+    FileRiskSignals {
+        parse_fragility: if parse_fragile {
+            ParseFragility::Elevated
+        } else {
+            ParseFragility::Low
+        },
+        macro_sensitivity: if macro_sensitive {
+            MacroSensitivity::High
+        } else {
+            MacroSensitivity::Low
+        },
+        include_heaviness: if include_heavy {
+            IncludeHeaviness::Heavy
+        } else {
+            IncludeHeaviness::Light
+        },
+    }
 }
 
 fn enrich_graph_raw_calls_with_legacy_details(
@@ -140,84 +270,98 @@ fn extract_graph_relation_events(
     source: &str,
     tree: &Tree,
     ctx: &Ctx,
-) -> Vec<RawRelationEvent> {
-    let graph_file = match GraphDslFile::from_str(tree_sitter_cpp::LANGUAGE.into(), CPP_CALL_RELATIONS) {
-        Ok(file) => file,
-        Err(_) => return Vec::new(),
-    };
-
-    let functions = GraphFunctions::stdlib();
-    let mut globals = GraphVariables::new();
-    if globals
-        .add(GraphIdentifier::from("filepath"), file_path.into())
-        .is_err()
-    {
-        return Vec::new();
-    }
-
-    let config = GraphExecutionConfig::new(&functions, &globals).lazy(true);
-    let graph = match graph_file.execute(tree, source, &config, &NoCancellation) {
-        Ok(graph) => graph,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut events = Vec::new();
-    for node_ref in graph.iter_nodes() {
-        let attrs = &graph[node_ref].attributes;
-        if !matches!(read_attr_str(attrs, "relation_kind"), Some("call" | "type_usage" | "inheritance")) {
-            continue;
+) -> (Vec<RawRelationEvent>, u128, u128) {
+    CPP_GRAPH_FILE.with(|slot| {
+        let mut compile_ms = 0;
+        if slot.borrow().is_none() {
+            let compile_start = Instant::now();
+            let parsed = GraphDslFile::from_str(tree_sitter_cpp::LANGUAGE.into(), CPP_CALL_RELATIONS)
+                .map_err(|err| err.to_string());
+            compile_ms = compile_start.elapsed().as_millis();
+            *slot.borrow_mut() = Some(parsed);
         }
 
-        let relation_kind = match read_attr_str(attrs, "relation_kind") {
-            Some("call") => RawRelationKind::Call,
-            Some("type_usage") => RawRelationKind::TypeUsage,
-            Some("inheritance") => RawRelationKind::Inheritance,
-            _ => continue,
+        let functions = GraphFunctions::stdlib();
+        let globals = GraphVariables::new();
+        let config = GraphExecutionConfig::new(&functions, &globals).lazy(true);
+        let borrowed = slot.borrow();
+        let Some(Ok(graph_file)) = borrowed.as_ref() else {
+            return (Vec::new(), compile_ms, 0);
         };
 
-        let target_name = read_attr_string(attrs, "target_name");
-        let line = read_attr_u32(attrs, "line").map(|value| value as usize).unwrap_or(0);
-        if relation_kind == RawRelationKind::Call && (target_name.is_none() || line == 0) {
-            continue;
+        let execute_start = Instant::now();
+        let graph = match graph_file.execute(tree, source, &config, &NoCancellation) {
+            Ok(graph) => graph,
+            Err(_) => return (Vec::new(), compile_ms, execute_start.elapsed().as_millis()),
+        };
+        let execute_ms = execute_start.elapsed().as_millis();
+
+        let mut events = Vec::new();
+        for node_ref in graph.iter_nodes() {
+            let attrs = &graph[node_ref].attributes;
+            if !matches!(read_attr_str(attrs, "relation_kind"), Some("call" | "type_usage" | "inheritance")) {
+                continue;
+            }
+
+            let relation_kind = match read_attr_str(attrs, "relation_kind") {
+                Some("call") => RawRelationKind::Call,
+                Some("type_usage") => RawRelationKind::TypeUsage,
+                Some("inheritance") => RawRelationKind::Inheritance,
+                _ => continue,
+            };
+
+            let target_name = read_attr_string(attrs, "target_name");
+            let line = read_attr_u32(attrs, "line").map(|value| value as usize).unwrap_or(0);
+            if relation_kind == RawRelationKind::Call && (target_name.is_none() || line == 0) {
+                continue;
+            }
+
+            let qualifier = read_attr_string(attrs, "qualifier");
+            let qualifier_kind = qualifier
+                .as_deref()
+                .and_then(|value| classify_qualifier_kind(value, ctx));
+            let confidence = match relation_kind {
+                RawRelationKind::Inheritance => RawExtractionConfidence::Partial,
+                RawRelationKind::TypeUsage => RawExtractionConfidence::Partial,
+                RawRelationKind::Call => match read_attr_str(attrs, "call_kind") {
+                    Some("qualified") => RawExtractionConfidence::Partial,
+                    _ => {
+                        if read_attr_string(attrs, "receiver")
+                            .as_deref()
+                            .map(|receiver| receiver.contains('('))
+                            .unwrap_or(false)
+                        {
+                            RawExtractionConfidence::Partial
+                        } else {
+                            RawExtractionConfidence::High
+                        }
+                    }
+                },
+            };
+            let event = RawRelationEvent {
+                relation_kind: relation_kind.clone(),
+                source: RawEventSource::TreeSitterGraph,
+                confidence,
+                caller_id: if relation_kind == RawRelationKind::Call {
+                    read_enclosing_caller_id(tree.root_node(), line, ctx)
+                } else {
+                    read_enclosing_symbol_id(line, ctx)
+                },
+                target_name,
+                call_kind: read_attr_str(attrs, "call_kind").and_then(parse_call_kind),
+                argument_count: read_attr_u32(attrs, "argument_count").map(|value| value as usize),
+                receiver: read_attr_string(attrs, "receiver"),
+                receiver_kind: graph_receiver_kind(read_attr_string(attrs, "receiver"), None),
+                qualifier,
+                qualifier_kind,
+                file_path: file_path.to_string(),
+                line,
+            };
+            events.push(event);
         }
 
-        let qualifier = read_attr_string(attrs, "qualifier");
-        let qualifier_kind = qualifier
-            .as_deref()
-            .and_then(|value| classify_qualifier_kind(value, ctx));
-        let event = RawRelationEvent {
-            relation_kind: relation_kind.clone(),
-            source: match read_attr_str(attrs, "extraction_source") {
-                Some("tree_sitter_graph") => RawEventSource::TreeSitterGraph,
-                _ => RawEventSource::LegacyAst,
-            },
-            confidence: match read_attr_str(attrs, "confidence") {
-                Some("partial") => RawExtractionConfidence::Partial,
-                _ => RawExtractionConfidence::High,
-            },
-            caller_id: if relation_kind == RawRelationKind::Call {
-                read_enclosing_caller_id(tree.root_node(), line, ctx)
-            } else {
-                read_enclosing_symbol_id(line, ctx)
-            },
-            target_name,
-            call_kind: read_attr_str(attrs, "call_kind").and_then(parse_call_kind),
-            argument_count: read_attr_u32(attrs, "argument_count").map(|value| value as usize),
-            receiver: read_attr_string(attrs, "receiver"),
-            receiver_kind: graph_receiver_kind(
-                read_attr_string(attrs, "receiver"),
-                read_attr_str(attrs, "receiver_kind").and_then(parse_receiver_kind),
-            ),
-            qualifier,
-            qualifier_kind,
-            file_path: read_attr_string(attrs, "file_path")
-                .unwrap_or_else(|| file_path.to_string()),
-            line,
-        };
-        events.push(event);
-    }
-
-    events
+        (events, compile_ms, execute_ms)
+    })
 }
 
 fn graph_receiver_kind(
@@ -313,6 +457,143 @@ fn extract_normalized_references(
     references
 }
 
+fn extract_type_usage_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationEvent> {
+    let mut events = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "declaration" | "field_declaration" | "parameter_declaration" => {
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    push_type_usage_event(type_node, ctx, &mut events);
+                }
+            }
+            _ => {
+                for child in named_children(node) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    events
+}
+
+fn extract_inheritance_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationEvent> {
+    let mut events = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "class_specifier" | "struct_specifier" => {
+                if let Some(base_clause) = find_child(node, "base_class_clause") {
+                    for child in named_children(base_clause) {
+                        match child.kind() {
+                            "type_identifier" | "qualified_identifier" => {
+                                push_inheritance_event(node, child, ctx, &mut events);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {
+                for child in named_children(node) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    events
+}
+
+fn push_type_usage_event(node: Node, ctx: &Ctx, events: &mut Vec<RawRelationEvent>) {
+    let Some((target_name, qualifier, qualifier_kind)) = type_usage_target(node, ctx) else {
+        return;
+    };
+    let line = node.start_position().row + 1;
+    events.push(RawRelationEvent {
+        relation_kind: RawRelationKind::TypeUsage,
+        source: RawEventSource::LegacyAst,
+        confidence: RawExtractionConfidence::Partial,
+        caller_id: read_enclosing_symbol_id(line, ctx),
+        target_name: Some(target_name),
+        call_kind: None,
+        argument_count: None,
+        receiver: None,
+        receiver_kind: None,
+        qualifier,
+        qualifier_kind,
+        file_path: ctx.file_path.clone(),
+        line,
+    });
+}
+
+fn push_inheritance_event(class_node: Node, base_node: Node, ctx: &Ctx, events: &mut Vec<RawRelationEvent>) {
+    let Some((target_name, qualifier, qualifier_kind)) = inheritance_target(base_node, ctx) else {
+        return;
+    };
+    let caller_id = class_node
+        .child_by_field_name("name")
+        .map(|name_node| {
+            let name = ctx.node_text(name_node);
+            read_enclosing_symbol_id(base_node.start_position().row + 1, ctx)
+                .unwrap_or_else(|| name)
+        });
+    let Some(caller_id) = caller_id else {
+        return;
+    };
+    events.push(RawRelationEvent {
+        relation_kind: RawRelationKind::Inheritance,
+        source: RawEventSource::LegacyAst,
+        confidence: RawExtractionConfidence::Partial,
+        caller_id: Some(caller_id),
+        target_name: Some(target_name),
+        call_kind: None,
+        argument_count: None,
+        receiver: None,
+        receiver_kind: None,
+        qualifier,
+        qualifier_kind,
+        file_path: ctx.file_path.clone(),
+        line: base_node.start_position().row + 1,
+    });
+}
+
+fn type_usage_target(
+    node: Node,
+    ctx: &Ctx,
+) -> Option<(String, Option<String>, Option<RawQualifierKind>)> {
+    match node.kind() {
+        "type_identifier" => Some((ctx.node_text(node), None, None)),
+        "qualified_identifier" => {
+            let text = ctx.node_text(node);
+            let qualifier_kind = classify_qualifier_kind(text.as_str(), ctx);
+            Some((text.clone(), Some(text), qualifier_kind))
+        }
+        _ => None,
+    }
+}
+
+fn inheritance_target(
+    node: Node,
+    ctx: &Ctx,
+) -> Option<(String, Option<String>, Option<RawQualifierKind>)> {
+    match node.kind() {
+        "type_identifier" => Some((ctx.node_text(node), None, None)),
+        "qualified_identifier" => {
+            let text = ctx.node_text(node);
+            Some((
+                text.clone(),
+                Some(text.clone()),
+                classify_qualifier_kind(text.as_str(), ctx),
+            ))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 struct LocalBinding {
     anchor: PropagationAnchor,
@@ -329,40 +610,80 @@ struct FlowAnchorResolution {
 struct FunctionPropagationExtraction {
     events: Vec<PropagationEvent>,
     summary: CallableFlowSummary,
+    metrics: LocalPropagationMetrics,
+}
+
+#[derive(Default)]
+struct LocalPropagationMetrics {
+    function_discovery_ms: u128,
+    owner_lookup_ms: u128,
+    seed_ms: u128,
+    event_walk_ms: u128,
+    declaration_ms: u128,
+    expression_statement_ms: u128,
+    return_statement_ms: u128,
+    nested_block_ms: u128,
+    return_collection_ms: u128,
 }
 
 fn extract_local_propagation_data(
     root: Node,
     ctx: &Ctx,
-) -> (Vec<PropagationEvent>, Vec<CallableFlowSummary>) {
+) -> (Vec<PropagationEvent>, Vec<CallableFlowSummary>, LocalPropagationMetrics) {
     let mut events = Vec::new();
     let mut summaries = Vec::new();
+    let mut metrics = LocalPropagationMetrics::default();
+    let discovery_start = Instant::now();
+    let mut function_nodes = Vec::new();
     let mut stack = vec![root];
 
     while let Some(node) = stack.pop() {
         if node.kind() == "function_definition" {
-            if let Some(extraction) = extract_local_propagation_events_for_function(node, ctx) {
-                events.extend(extraction.events);
-                summaries.push(extraction.summary);
-            }
+            function_nodes.push(node);
             continue;
         }
 
-        for child in named_children(node) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
             stack.push(child);
         }
     }
+    metrics.function_discovery_ms = discovery_start.elapsed().as_millis();
 
-    (events, summaries)
+    for node in function_nodes {
+        if let Some(extraction) =
+            extract_local_propagation_events_for_function(node, None, ctx)
+        {
+            events.extend(extraction.events);
+            summaries.push(extraction.summary);
+            metrics.owner_lookup_ms += extraction.metrics.owner_lookup_ms;
+            metrics.seed_ms += extraction.metrics.seed_ms;
+            metrics.event_walk_ms += extraction.metrics.event_walk_ms;
+            metrics.declaration_ms += extraction.metrics.declaration_ms;
+            metrics.expression_statement_ms += extraction.metrics.expression_statement_ms;
+            metrics.return_statement_ms += extraction.metrics.return_statement_ms;
+            metrics.nested_block_ms += extraction.metrics.nested_block_ms;
+            metrics.return_collection_ms += extraction.metrics.return_collection_ms;
+        }
+    }
+
+    (events, summaries, metrics)
 }
 
 fn extract_local_propagation_events_for_function(
     node: Node,
+    owner_symbol_id_override: Option<&str>,
     ctx: &Ctx,
 ) -> Option<FunctionPropagationExtraction> {
-    let owner_symbol_id = match find_function_owner_symbol_id(node, ctx) {
-        Some(id) => id,
-        None => return None,
+    let (owner_symbol_id, owner_lookup_ms) = if let Some(owner_symbol_id) = owner_symbol_id_override {
+        (owner_symbol_id.to_string(), 0)
+    } else {
+        let owner_lookup_start = Instant::now();
+        let owner_symbol_id = match find_function_owner_symbol_id(node, ctx) {
+            Some(id) => id,
+            None => return None,
+        };
+        (owner_symbol_id, owner_lookup_start.elapsed().as_millis())
     };
     let body = match node.child_by_field_name("body") {
         Some(body) if body.kind() == "compound_statement" => body,
@@ -370,12 +691,27 @@ fn extract_local_propagation_events_for_function(
     };
 
     let mut scopes = vec![HashMap::new()];
+    let seed_start = Instant::now();
     let parameter_anchors = seed_parameter_bindings(node, ctx, &owner_symbol_id, &mut scopes[0]);
+    let seed_ms = seed_start.elapsed().as_millis();
 
     let mut events = Vec::new();
     let mut return_anchors = Vec::new();
-    process_local_flow_block(body, ctx, &owner_symbol_id, &mut scopes, &mut events, false);
+    let event_walk_start = Instant::now();
+    let mut flow_metrics = LocalPropagationMetrics::default();
+    process_local_flow_block(
+        body,
+        ctx,
+        &owner_symbol_id,
+        &mut scopes,
+        &mut events,
+        &mut flow_metrics,
+        false,
+    );
+    let event_walk_ms = event_walk_start.elapsed().as_millis();
+    let return_collection_start = Instant::now();
     collect_return_anchors(body, ctx, &owner_symbol_id, &scopes[0], &mut return_anchors);
+    let return_collection_ms = return_collection_start.elapsed().as_millis();
 
     Some(FunctionPropagationExtraction {
         events,
@@ -383,6 +719,17 @@ fn extract_local_propagation_events_for_function(
             callable_symbol_id: owner_symbol_id,
             parameter_anchors,
             return_anchors,
+        },
+        metrics: LocalPropagationMetrics {
+            function_discovery_ms: 0,
+            owner_lookup_ms,
+            seed_ms,
+            event_walk_ms,
+            declaration_ms: flow_metrics.declaration_ms,
+            expression_statement_ms: flow_metrics.expression_statement_ms,
+            return_statement_ms: flow_metrics.return_statement_ms,
+            nested_block_ms: flow_metrics.nested_block_ms,
+            return_collection_ms,
         },
     })
 }
@@ -455,14 +802,16 @@ fn process_local_flow_block(
     owner_symbol_id: &str,
     scopes: &mut Vec<HashMap<String, LocalBinding>>,
     events: &mut Vec<PropagationEvent>,
+    metrics: &mut LocalPropagationMetrics,
     create_scope: bool,
 ) {
     if create_scope {
         scopes.push(HashMap::new());
     }
 
-    for child in named_children(block) {
-        process_local_flow_node(child, ctx, owner_symbol_id, scopes, events);
+    let mut cursor = block.walk();
+    for child in block.named_children(&mut cursor) {
+        process_local_flow_node(child, ctx, owner_symbol_id, scopes, events, metrics);
     }
 
     if create_scope {
@@ -476,21 +825,36 @@ fn process_local_flow_node(
     owner_symbol_id: &str,
     scopes: &mut Vec<HashMap<String, LocalBinding>>,
     events: &mut Vec<PropagationEvent>,
+    metrics: &mut LocalPropagationMetrics,
 ) {
     match node.kind() {
         "compound_statement" => {
-            process_local_flow_block(node, ctx, owner_symbol_id, scopes, events, true);
+            let started = Instant::now();
+            process_local_flow_block(node, ctx, owner_symbol_id, scopes, events, metrics, true);
+            metrics.nested_block_ms += started.elapsed().as_millis();
         }
-        "declaration" => process_local_declaration(node, ctx, owner_symbol_id, scopes, events),
-        "return_statement" => process_return_statement(node, ctx, owner_symbol_id, scopes, events),
+        "declaration" => {
+            let started = Instant::now();
+            process_local_declaration(node, ctx, owner_symbol_id, scopes, events);
+            metrics.declaration_ms += started.elapsed().as_millis();
+        }
+        "return_statement" => {
+            let started = Instant::now();
+            process_return_statement(node, ctx, owner_symbol_id, scopes, events);
+            metrics.return_statement_ms += started.elapsed().as_millis();
+        }
         "expression_statement" => {
-            if let Some(expression) = named_children(node).into_iter().next() {
+            let started = Instant::now();
+            let mut cursor = node.walk();
+            if let Some(expression) = node.named_children(&mut cursor).next() {
                 let _ = extract_expression_flow(expression, ctx, owner_symbol_id, scopes, events);
             }
+            metrics.expression_statement_ms += started.elapsed().as_millis();
         }
         _ => {
-            for child in named_children(node) {
-                process_local_flow_node(child, ctx, owner_symbol_id, scopes, events);
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                process_local_flow_node(child, ctx, owner_symbol_id, scopes, events, metrics);
             }
         }
     }
@@ -503,7 +867,8 @@ fn process_return_statement(
     scopes: &mut Vec<HashMap<String, LocalBinding>>,
     events: &mut Vec<PropagationEvent>,
 ) {
-    let Some(expression) = named_children(node).into_iter().next() else {
+    let mut cursor = node.walk();
+    let Some(expression) = node.named_children(&mut cursor).next() else {
         return;
     };
     let Some(source) = extract_expression_flow(expression, ctx, owner_symbol_id, scopes, events) else {
@@ -562,7 +927,8 @@ fn collect_return_anchors_in_block(
         scopes.push(HashMap::new());
     }
 
-    for child in named_children(block) {
+    let mut cursor = block.walk();
+    for child in block.named_children(&mut cursor) {
         match child.kind() {
             "compound_statement" => collect_return_anchors_in_block(
                 child,
@@ -574,7 +940,9 @@ fn collect_return_anchors_in_block(
             ),
             "declaration" => seed_declaration_bindings_for_return_scope(child, ctx, owner_symbol_id, scopes),
             "return_statement" => {
-                if let Some(expression) = named_children(child).into_iter().next() {
+                let mut return_cursor = child.walk();
+                let expression = child.named_children(&mut return_cursor).next();
+                if let Some(expression) = expression {
                     if let Some(flow) =
                         extract_expression_flow(expression, ctx, owner_symbol_id, scopes, &mut Vec::new())
                     {
@@ -613,7 +981,8 @@ fn seed_declaration_bindings_for_return_scope(
     }
 
     let mut pending_bindings = Vec::new();
-    for child in named_children(node) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
         match child.kind() {
             "init_declarator" => {
                 let Some(declarator) = child.child_by_field_name("declarator") else {
@@ -662,7 +1031,8 @@ fn process_local_declaration(
 
     let mut pending_bindings = Vec::new();
 
-    for child in named_children(node) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
         match child.kind() {
             "init_declarator" => {
                 let declarator = match child.child_by_field_name("declarator") {
@@ -773,10 +1143,13 @@ fn extract_expression_flow(
                 risks,
             })
         }
-        "parenthesized_expression" => named_children(node)
-            .into_iter()
-            .next()
-            .and_then(|child| extract_expression_flow(child, ctx, owner_symbol_id, scopes, events)),
+        "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            let result = node.named_children(&mut cursor)
+                .next()
+                .and_then(|child| extract_expression_flow(child, ctx, owner_symbol_id, scopes, events));
+            result
+        }
         "identifier" => {
             let name = ctx.node_text(node);
             Some(resolve_identifier_anchor(&name, scopes).unwrap_or_else(|| FlowAnchorResolution {
@@ -833,10 +1206,13 @@ fn resolve_assignment_target(
             let name = ctx.node_text(node);
             resolve_identifier_anchor(&name, scopes)
         }
-        "parenthesized_expression" => named_children(node)
-            .into_iter()
-            .next()
-            .and_then(|child| resolve_assignment_target(child, ctx, owner_symbol_id, scopes)),
+        "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            let result = node.named_children(&mut cursor)
+                .next()
+                .and_then(|child| resolve_assignment_target(child, ctx, owner_symbol_id, scopes));
+            result
+        }
         "field_expression" => resolve_field_expression_anchor(node, ctx, owner_symbol_id),
         _ => None,
     }
@@ -983,10 +1359,12 @@ fn resolve_field_expression_anchor(
 }
 
 fn declaration_contains_function_declarator(node: Node) -> bool {
-    named_children(node).into_iter().any(|child| {
+    let mut cursor = node.walk();
+    let contains = node.named_children(&mut cursor).any(|child| {
         child.kind() == "function_declarator"
             || find_descendant(child, "function_declarator").is_some()
-    })
+    });
+    contains
 }
 
 fn extract_identifier_node(node: Node) -> Option<Node> {
@@ -994,7 +1372,8 @@ fn extract_identifier_node(node: Node) -> Option<Node> {
         return Some(node);
     }
 
-    for child in named_children(node) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
         if let Some(identifier) = extract_identifier_node(child) {
             return Some(identifier);
         }
@@ -1008,9 +1387,9 @@ fn is_pointer_like_declarator(node: Node) -> bool {
         return true;
     }
 
-    named_children(node)
-        .into_iter()
-        .any(is_pointer_like_declarator)
+    let mut cursor = node.walk();
+    let pointer_like = node.named_children(&mut cursor).any(is_pointer_like_declarator);
+    pointer_like
 }
 
 fn expression_looks_pointer_heavy(kind: &str, text: &str) -> bool {
@@ -1144,18 +1523,6 @@ fn parse_call_kind(value: &str) -> Option<RawCallKind> {
         "pointer_member_access" => Some(RawCallKind::PointerMemberAccess),
         "this_pointer_access" => Some(RawCallKind::ThisPointerAccess),
         "qualified" => Some(RawCallKind::Qualified),
-        _ => None,
-    }
-}
-
-fn parse_receiver_kind(value: &str) -> Option<RawReceiverKind> {
-    match value {
-        "identifier" => Some(RawReceiverKind::Identifier),
-        "this" => Some(RawReceiverKind::This),
-        "pointer_expression" => Some(RawReceiverKind::PointerExpression),
-        "field_expression" => Some(RawReceiverKind::FieldExpression),
-        "qualified_identifier" => Some(RawReceiverKind::QualifiedIdentifier),
-        "other" => Some(RawReceiverKind::Other),
         _ => None,
     }
 }
@@ -1314,6 +1681,9 @@ fn enter_class<'a>(node: Node<'a>, ctx: &mut Ctx, kind: &str, stack: &mut Vec<Wa
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 
     let body = match node.child_by_field_name("body") {
@@ -1391,6 +1761,9 @@ fn visit_field_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 }
 
@@ -1436,6 +1809,9 @@ fn visit_member_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 }
 
@@ -1478,6 +1854,9 @@ fn visit_inline_method(node: Node, ctx: &mut Ctx, parent_id: &str) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 
     if let Some(body) = node.child_by_field_name("body") {
@@ -1518,6 +1897,9 @@ fn visit_enum(node: Node, ctx: &mut Ctx) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 }
 
@@ -1591,6 +1973,9 @@ fn visit_function_definition(node: Node, ctx: &mut Ctx) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 
     if let Some(body) = node.child_by_field_name("body") {
@@ -1643,6 +2028,9 @@ fn visit_declaration(node: Node, ctx: &mut Ctx) {
         project_area: None,
         artifact_kind: None,
         header_role: None,
+        parse_fragility: None,
+        macro_sensitivity: None,
+        include_heaviness: None,
     });
 }
 
@@ -2140,6 +2528,7 @@ mod tests {
         };
         visit_tree(tree.root_node(), &mut ctx);
         extract_graph_relation_events(file_path, source, &tree, &ctx)
+            .0
             .into_iter()
             .filter_map(|event| event.to_raw_call_site())
             .collect()
@@ -2492,7 +2881,7 @@ T Max(T a, T b) { return a > b ? a : b; }
     #[test]
     fn exposes_cpp_call_graph_rules_for_initial_shapes() {
         let rules = cpp_call_graph_rule_source();
-        assert!(rules.contains("global filepath"));
+        assert!(rules.contains("relation_kind = \"call\""));
         assert!(rules.contains("call_kind = \"unqualified\""));
         assert!(rules.contains("call_kind = \"qualified\""));
         assert!(rules.contains("call_kind = \"member_access\""));
@@ -2542,7 +2931,7 @@ T Max(T a, T b) { return a > b ? a : b; }
     }
 
     #[test]
-    fn emits_type_usage_relation_events_from_graph() {
+    fn emits_type_usage_relation_events_from_ast_extraction() {
         let src = r#"
 namespace Game {
 class Actor {};
@@ -2563,7 +2952,7 @@ public:
             .filter(|event| event.relation_kind == RawRelationKind::TypeUsage)
             .collect();
         assert!(!type_usage_events.is_empty());
-        assert!(type_usage_events.iter().all(|event| event.source == RawEventSource::TreeSitterGraph));
+        assert!(type_usage_events.iter().all(|event| event.source == RawEventSource::LegacyAst));
         assert!(type_usage_events
             .iter()
             .any(|event| event.target_name.as_deref() == Some("Actor")));
@@ -2583,7 +2972,7 @@ public:
     }
 
     #[test]
-    fn emits_inheritance_relation_events_from_graph() {
+    fn emits_inheritance_relation_events_from_ast_extraction() {
         let src = r#"
 namespace Game {
 class Actor {};
@@ -2597,7 +2986,7 @@ class Player : public Actor {};
             .filter(|event| event.relation_kind == RawRelationKind::Inheritance)
             .collect();
         assert_eq!(inheritance_events.len(), 1);
-        assert_eq!(inheritance_events[0].source, RawEventSource::TreeSitterGraph);
+        assert_eq!(inheritance_events[0].source, RawEventSource::LegacyAst);
         assert_eq!(inheritance_events[0].target_name.as_deref(), Some("Actor"));
         assert_eq!(inheritance_events[0].caller_id.as_deref(), Some("Game::Player"));
         assert_eq!(result.normalized_references.len(), 1);
@@ -2782,6 +3171,30 @@ void alwaysPresent() {}
 "#;
         let result = parse_cpp_file("test.cpp", src).unwrap();
         assert!(result.symbols.iter().any(|s| s.name == "alwaysPresent"));
+        assert_eq!(result.file_risk_signals.macro_sensitivity, MacroSensitivity::Low);
+    }
+
+    #[test]
+    fn marks_include_heavy_file_risk_signals() {
+        let includes = (0..16)
+            .map(|index| format!("#include \"header{}.h\"", index))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let src = format!(
+            "{}\nnamespace Demo {{\nclass Widget {{}};\n}}\n",
+            includes
+        );
+
+        let result = parse_cpp_file("include_heavy.cpp", &src).unwrap();
+        assert_eq!(result.file_risk_signals.include_heaviness, IncludeHeaviness::Heavy);
+        assert_eq!(result.file_risk_signals.macro_sensitivity, MacroSensitivity::High);
+    }
+
+    #[test]
+    fn marks_parse_fragility_when_tree_contains_errors() {
+        let src = "class Broken { void Tick( }";
+        let result = parse_cpp_file("broken.cpp", src).unwrap();
+        assert_eq!(result.file_risk_signals.parse_fragility, ParseFragility::Elevated);
     }
 
     #[test]

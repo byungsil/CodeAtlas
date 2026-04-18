@@ -161,6 +161,9 @@ describe("Heuristic ambiguity metadata", () => {
       getSymbolById(id: string) {
         return symbols.find((symbol) => symbol.id === id);
       },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
       getSymbolByQualifiedName(qualifiedName: string) {
         return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
       },

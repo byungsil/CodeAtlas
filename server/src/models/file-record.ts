@@ -8,4 +8,7 @@ export interface FileRecord {
   projectArea?: string;
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
   headerRole?: "public" | "private" | "internal";
+  parseFragility?: "low" | "elevated";
+  macroSensitivity?: "low" | "high";
+  includeHeaviness?: "light" | "heavy";
 }
