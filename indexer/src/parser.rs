@@ -8,9 +8,11 @@ use tree_sitter_graph::{ExecutionConfig as GraphExecutionConfig, Identifier as G
 use tree_sitter_graph::{NoCancellation, Variables as GraphVariables};
 use crate::graph_rules::CPP_CALL_RELATIONS;
 use crate::models::{
-    NormalizedReference, ParseResult, RawCallKind, RawCallSite, RawEventSource,
-    RawExtractionConfidence, RawQualifierKind, RawReceiverKind, RawRelationEvent,
-    RawRelationKind, ReferenceCategory, Symbol,
+    CallableFlowSummary, NormalizedReference, ParseResult, PropagationAnchor,
+    PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
+    RawCallKind, RawCallSite, RawEventSource, RawExtractionConfidence,
+    RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind,
+    ReferenceCategory, Symbol,
 };
 
 struct Ctx {
@@ -63,6 +65,8 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
 
     visit_tree(tree.root_node(), &mut ctx);
 
+    let (propagation_events, callable_flow_summaries) =
+        extract_local_propagation_data(tree.root_node(), &ctx);
     let graph_relation_events = extract_graph_relation_events(file_path, source, &tree, &ctx);
     let legacy_raw_calls = ctx.raw_calls;
     let legacy_relation_events: Vec<RawRelationEvent> = legacy_raw_calls
@@ -76,7 +80,10 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
 
     let (relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
     {
-        (graph_relation_events, graph_raw_calls)
+        (
+            graph_relation_events,
+            enrich_graph_raw_calls_with_legacy_details(graph_raw_calls, &legacy_raw_calls),
+        )
     } else {
         let mut mixed_relation_events = legacy_relation_events;
         mixed_relation_events.extend(
@@ -92,8 +99,36 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         symbols: ctx.symbols,
         relation_events,
         normalized_references,
+        propagation_events,
+        callable_flow_summaries,
         raw_calls,
     })
+}
+
+fn enrich_graph_raw_calls_with_legacy_details(
+    graph_raw_calls: Vec<RawCallSite>,
+    legacy_raw_calls: &[RawCallSite],
+) -> Vec<RawCallSite> {
+    let mut legacy_by_key: HashMap<String, Vec<&RawCallSite>> = HashMap::new();
+    for raw_call in legacy_raw_calls {
+        legacy_by_key
+            .entry(raw_call_comparison_key(raw_call))
+            .or_default()
+            .push(raw_call);
+    }
+
+    let mut enriched = Vec::new();
+    for mut raw_call in graph_raw_calls {
+        if let Some(candidates) = legacy_by_key.get_mut(&raw_call_comparison_key(&raw_call)) {
+            if let Some(legacy) = candidates.pop() {
+                raw_call.argument_texts = legacy.argument_texts.clone();
+                raw_call.result_target = legacy.result_target.clone();
+            }
+        }
+        enriched.push(raw_call);
+    }
+
+    enriched
 }
 
 pub fn cpp_call_graph_rule_source() -> &'static str {
@@ -276,6 +311,733 @@ fn extract_normalized_references(
     }
 
     references
+}
+
+#[derive(Clone)]
+struct LocalBinding {
+    anchor: PropagationAnchor,
+    pointer_like: bool,
+}
+
+#[derive(Clone)]
+struct FlowAnchorResolution {
+    anchor: PropagationAnchor,
+    pointer_like: bool,
+    risks: Vec<PropagationRisk>,
+}
+
+struct FunctionPropagationExtraction {
+    events: Vec<PropagationEvent>,
+    summary: CallableFlowSummary,
+}
+
+fn extract_local_propagation_data(
+    root: Node,
+    ctx: &Ctx,
+) -> (Vec<PropagationEvent>, Vec<CallableFlowSummary>) {
+    let mut events = Vec::new();
+    let mut summaries = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_definition" {
+            if let Some(extraction) = extract_local_propagation_events_for_function(node, ctx) {
+                events.extend(extraction.events);
+                summaries.push(extraction.summary);
+            }
+            continue;
+        }
+
+        for child in named_children(node) {
+            stack.push(child);
+        }
+    }
+
+    (events, summaries)
+}
+
+fn extract_local_propagation_events_for_function(
+    node: Node,
+    ctx: &Ctx,
+) -> Option<FunctionPropagationExtraction> {
+    let owner_symbol_id = match find_function_owner_symbol_id(node, ctx) {
+        Some(id) => id,
+        None => return None,
+    };
+    let body = match node.child_by_field_name("body") {
+        Some(body) if body.kind() == "compound_statement" => body,
+        _ => return None,
+    };
+
+    let mut scopes = vec![HashMap::new()];
+    let parameter_anchors = seed_parameter_bindings(node, ctx, &owner_symbol_id, &mut scopes[0]);
+
+    let mut events = Vec::new();
+    let mut return_anchors = Vec::new();
+    process_local_flow_block(body, ctx, &owner_symbol_id, &mut scopes, &mut events, false);
+    collect_return_anchors(body, ctx, &owner_symbol_id, &scopes[0], &mut return_anchors);
+
+    Some(FunctionPropagationExtraction {
+        events,
+        summary: CallableFlowSummary {
+            callable_symbol_id: owner_symbol_id,
+            parameter_anchors,
+            return_anchors,
+        },
+    })
+}
+
+fn find_function_owner_symbol_id(node: Node, ctx: &Ctx) -> Option<String> {
+    let line = node.start_position().row + 1;
+    ctx.symbols
+        .iter()
+        .filter(|symbol| {
+            (symbol.symbol_type == "function" || symbol.symbol_type == "method")
+                && matches!(
+                    symbol.symbol_role.as_deref(),
+                    Some("definition") | Some("inline_definition")
+                )
+                && symbol.line == line
+        })
+        .min_by_key(|symbol| symbol.end_line.saturating_sub(symbol.line))
+        .map(|symbol| symbol.id.clone())
+}
+
+fn seed_parameter_bindings(
+    function_node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scope: &mut HashMap<String, LocalBinding>,
+) -> Vec<PropagationAnchor> {
+    let func_decl = match find_descendant(function_node, "function_declarator") {
+        Some(node) => node,
+        None => return Vec::new(),
+    };
+    let parameter_list = match find_descendant(func_decl, "parameter_list") {
+        Some(node) => node,
+        None => return Vec::new(),
+    };
+
+    let mut anchors = Vec::new();
+    for child in named_children(parameter_list) {
+        if child.kind() != "parameter_declaration" {
+            continue;
+        }
+        let declarator = match child.child_by_field_name("declarator") {
+            Some(node) => node,
+            None => continue,
+        };
+        let name_node = match extract_identifier_node(declarator) {
+            Some(node) => node,
+            None => continue,
+        };
+        let name = ctx.node_text(name_node);
+        let line = name_node.start_position().row + 1;
+        let binding = LocalBinding {
+            anchor: PropagationAnchor {
+                anchor_id: Some(format!("{}::param:{}@{}", owner_symbol_id, name, line)),
+                symbol_id: None,
+                expression_text: Some(name.clone()),
+                anchor_kind: PropagationAnchorKind::Parameter,
+            },
+            pointer_like: is_pointer_like_declarator(declarator),
+        };
+        anchors.push(binding.anchor.clone());
+        scope.insert(name, binding);
+    }
+
+    anchors
+}
+
+fn process_local_flow_block(
+    block: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+    create_scope: bool,
+) {
+    if create_scope {
+        scopes.push(HashMap::new());
+    }
+
+    for child in named_children(block) {
+        process_local_flow_node(child, ctx, owner_symbol_id, scopes, events);
+    }
+
+    if create_scope {
+        scopes.pop();
+    }
+}
+
+fn process_local_flow_node(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+) {
+    match node.kind() {
+        "compound_statement" => {
+            process_local_flow_block(node, ctx, owner_symbol_id, scopes, events, true);
+        }
+        "declaration" => process_local_declaration(node, ctx, owner_symbol_id, scopes, events),
+        "return_statement" => process_return_statement(node, ctx, owner_symbol_id, scopes, events),
+        "expression_statement" => {
+            if let Some(expression) = named_children(node).into_iter().next() {
+                let _ = extract_expression_flow(expression, ctx, owner_symbol_id, scopes, events);
+            }
+        }
+        _ => {
+            for child in named_children(node) {
+                process_local_flow_node(child, ctx, owner_symbol_id, scopes, events);
+            }
+        }
+    }
+}
+
+fn process_return_statement(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+) {
+    let Some(expression) = named_children(node).into_iter().next() else {
+        return;
+    };
+    let Some(source) = extract_expression_flow(expression, ctx, owner_symbol_id, scopes, events) else {
+        return;
+    };
+    if source.anchor.anchor_kind != PropagationAnchorKind::Field {
+        return;
+    }
+
+    let (confidence, risks) =
+        combine_local_flow_risk(false, source.pointer_like, source.risks.clone());
+    events.push(PropagationEvent {
+        owner_symbol_id: Some(owner_symbol_id.to_string()),
+        source_anchor: source.anchor.clone(),
+        target_anchor: PropagationAnchor {
+            anchor_id: Some(format!("{}::return@{}", owner_symbol_id, node.start_position().row + 1)),
+            symbol_id: None,
+            expression_text: source.anchor.expression_text.clone(),
+            anchor_kind: PropagationAnchorKind::ReturnValue,
+        },
+        propagation_kind: PropagationKind::FieldRead,
+        file_path: ctx.file_path.clone(),
+        line: node.start_position().row + 1,
+        confidence,
+        risks,
+    });
+}
+
+fn collect_return_anchors(
+    block: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    root_scope: &HashMap<String, LocalBinding>,
+    return_anchors: &mut Vec<PropagationAnchor>,
+) {
+    let mut scopes = vec![root_scope.clone()];
+    collect_return_anchors_in_block(
+        block,
+        ctx,
+        owner_symbol_id,
+        &mut scopes,
+        return_anchors,
+        false,
+    );
+}
+
+fn collect_return_anchors_in_block(
+    block: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    return_anchors: &mut Vec<PropagationAnchor>,
+    create_scope: bool,
+) {
+    if create_scope {
+        scopes.push(HashMap::new());
+    }
+
+    for child in named_children(block) {
+        match child.kind() {
+            "compound_statement" => collect_return_anchors_in_block(
+                child,
+                ctx,
+                owner_symbol_id,
+                scopes,
+                return_anchors,
+                true,
+            ),
+            "declaration" => seed_declaration_bindings_for_return_scope(child, ctx, owner_symbol_id, scopes),
+            "return_statement" => {
+                if let Some(expression) = named_children(child).into_iter().next() {
+                    if let Some(flow) =
+                        extract_expression_flow(expression, ctx, owner_symbol_id, scopes, &mut Vec::new())
+                    {
+                        let mut anchor = flow.anchor;
+                        anchor.anchor_kind = PropagationAnchorKind::ReturnValue;
+                        if anchor.anchor_id.is_none() {
+                            anchor.anchor_id = Some(format!(
+                                "{}::return@{}",
+                                owner_symbol_id,
+                                child.start_position().row + 1
+                            ));
+                        }
+                        if !return_anchors.contains(&anchor) {
+                            return_anchors.push(anchor);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if create_scope {
+        scopes.pop();
+    }
+}
+
+fn seed_declaration_bindings_for_return_scope(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+) {
+    if declaration_contains_function_declarator(node) {
+        return;
+    }
+
+    let mut pending_bindings = Vec::new();
+    for child in named_children(node) {
+        match child.kind() {
+            "init_declarator" => {
+                let Some(declarator) = child.child_by_field_name("declarator") else {
+                    continue;
+                };
+                let Some(name_node) = extract_identifier_node(declarator) else {
+                    continue;
+                };
+                let name = ctx.node_text(name_node);
+                pending_bindings.push((
+                    name.clone(),
+                    make_local_binding(owner_symbol_id, &name, name_node.start_position().row + 1, declarator),
+                ));
+            }
+            kind if kind.contains("declarator") && kind != "function_declarator" => {
+                let Some(name_node) = extract_identifier_node(child) else {
+                    continue;
+                };
+                let name = ctx.node_text(name_node);
+                pending_bindings.push((
+                    name.clone(),
+                    make_local_binding(owner_symbol_id, &name, name_node.start_position().row + 1, child),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(scope) = scopes.last_mut() {
+        for (name, binding) in pending_bindings {
+            scope.insert(name, binding);
+        }
+    }
+}
+
+fn process_local_declaration(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+) {
+    if declaration_contains_function_declarator(node) {
+        return;
+    }
+
+    let mut pending_bindings = Vec::new();
+
+    for child in named_children(node) {
+        match child.kind() {
+            "init_declarator" => {
+                let declarator = match child.child_by_field_name("declarator") {
+                    Some(declarator) => declarator,
+                    None => continue,
+                };
+                let name_node = match extract_identifier_node(declarator) {
+                    Some(node) => node,
+                    None => continue,
+                };
+                let name = ctx.node_text(name_node);
+                let target_binding = make_local_binding(owner_symbol_id, &name, name_node.start_position().row + 1, declarator);
+
+                if let Some(value) = child.child_by_field_name("value") {
+                    if let Some(source) =
+                        extract_expression_flow(value, ctx, owner_symbol_id, scopes, events)
+                    {
+                        let combined_risks = merge_propagation_risks(
+                            source.risks.clone(),
+                            Vec::new(),
+                        );
+                        let propagation_kind = propagation_kind_for_local_flow(
+                            &source.anchor,
+                            &target_binding.anchor,
+                            PropagationKind::InitializerBinding,
+                        );
+                        let (confidence, risks) = combine_local_flow_risk(
+                            target_binding.pointer_like,
+                            source.pointer_like,
+                            combined_risks,
+                        );
+                        events.push(PropagationEvent {
+                            owner_symbol_id: Some(owner_symbol_id.to_string()),
+                            source_anchor: source.anchor,
+                            target_anchor: target_binding.anchor.clone(),
+                            propagation_kind,
+                            file_path: ctx.file_path.clone(),
+                            line: child.start_position().row + 1,
+                            confidence,
+                            risks,
+                        });
+                    }
+                }
+
+                pending_bindings.push((name, target_binding));
+            }
+            kind if kind.contains("declarator") && kind != "function_declarator" => {
+                let name_node = match extract_identifier_node(child) {
+                    Some(node) => node,
+                    None => continue,
+                };
+                let name = ctx.node_text(name_node);
+                pending_bindings.push((
+                    name.clone(),
+                    make_local_binding(owner_symbol_id, &name, name_node.start_position().row + 1, child),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(scope) = scopes.last_mut() {
+        for (name, binding) in pending_bindings {
+            scope.insert(name, binding);
+        }
+    }
+}
+
+fn extract_expression_flow(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+) -> Option<FlowAnchorResolution> {
+    match node.kind() {
+        "assignment_expression" => {
+            let right = node.child_by_field_name("right")?;
+            let left = node.child_by_field_name("left")?;
+            let source = extract_expression_flow(right, ctx, owner_symbol_id, scopes, events)?;
+            let target = resolve_assignment_target(left, ctx, owner_symbol_id, scopes)?;
+            let combined_risks =
+                merge_propagation_risks(source.risks.clone(), target.risks.clone());
+            let propagation_kind = propagation_kind_for_local_flow(
+                &source.anchor,
+                &target.anchor,
+                PropagationKind::Assignment,
+            );
+            let (confidence, risks) = combine_local_flow_risk(
+                target.pointer_like,
+                source.pointer_like,
+                combined_risks,
+            );
+            events.push(PropagationEvent {
+                owner_symbol_id: Some(owner_symbol_id.to_string()),
+                source_anchor: source.anchor.clone(),
+                target_anchor: target.anchor.clone(),
+                propagation_kind,
+                file_path: ctx.file_path.clone(),
+                line: node.start_position().row + 1,
+                confidence,
+                risks: risks.clone(),
+            });
+
+            Some(FlowAnchorResolution {
+                anchor: target.anchor,
+                pointer_like: target.pointer_like,
+                risks,
+            })
+        }
+        "parenthesized_expression" => named_children(node)
+            .into_iter()
+            .next()
+            .and_then(|child| extract_expression_flow(child, ctx, owner_symbol_id, scopes, events)),
+        "identifier" => {
+            let name = ctx.node_text(node);
+            Some(resolve_identifier_anchor(&name, scopes).unwrap_or_else(|| FlowAnchorResolution {
+                anchor: PropagationAnchor {
+                    anchor_id: Some(format!(
+                        "{}::expr:{}@{}",
+                        owner_symbol_id,
+                        name,
+                        node.start_position().row + 1
+                    )),
+                    symbol_id: None,
+                    expression_text: Some(name),
+                    anchor_kind: PropagationAnchorKind::Expression,
+                },
+                pointer_like: false,
+                risks: Vec::new(),
+            }))
+        }
+        "field_expression" => resolve_field_expression_anchor(node, ctx, owner_symbol_id),
+        _ => {
+            let text = ctx.node_text(node);
+            let pointer_like = expression_looks_pointer_heavy(node.kind(), &text);
+            Some(FlowAnchorResolution {
+                anchor: PropagationAnchor {
+                    anchor_id: Some(format!(
+                        "{}::expr:{}@{}",
+                        owner_symbol_id,
+                        sanitize_anchor_fragment(&text),
+                        node.start_position().row + 1
+                    )),
+                    symbol_id: None,
+                    expression_text: Some(text),
+                    anchor_kind: PropagationAnchorKind::Expression,
+                },
+                pointer_like,
+                risks: if pointer_like {
+                    vec![PropagationRisk::PointerHeavyFlow]
+                } else {
+                    Vec::new()
+                },
+            })
+        }
+    }
+}
+
+fn resolve_assignment_target(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &[HashMap<String, LocalBinding>],
+) -> Option<FlowAnchorResolution> {
+    match node.kind() {
+        "identifier" => {
+            let name = ctx.node_text(node);
+            resolve_identifier_anchor(&name, scopes)
+        }
+        "parenthesized_expression" => named_children(node)
+            .into_iter()
+            .next()
+            .and_then(|child| resolve_assignment_target(child, ctx, owner_symbol_id, scopes)),
+        "field_expression" => resolve_field_expression_anchor(node, ctx, owner_symbol_id),
+        _ => None,
+    }
+}
+
+fn propagation_kind_for_local_flow(
+    source_anchor: &PropagationAnchor,
+    target_anchor: &PropagationAnchor,
+    default_kind: PropagationKind,
+) -> PropagationKind {
+    if target_anchor.anchor_kind == PropagationAnchorKind::Field {
+        PropagationKind::FieldWrite
+    } else if source_anchor.anchor_kind == PropagationAnchorKind::Field {
+        PropagationKind::FieldRead
+    } else {
+        default_kind
+    }
+}
+
+fn resolve_identifier_anchor(
+    name: &str,
+    scopes: &[HashMap<String, LocalBinding>],
+) -> Option<FlowAnchorResolution> {
+    for scope in scopes.iter().rev() {
+        if let Some(binding) = scope.get(name) {
+            return Some(FlowAnchorResolution {
+                anchor: binding.anchor.clone(),
+                pointer_like: binding.pointer_like,
+                risks: if binding.pointer_like {
+                    vec![PropagationRisk::PointerHeavyFlow]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+    }
+
+    None
+}
+
+fn make_local_binding(
+    owner_symbol_id: &str,
+    name: &str,
+    line: usize,
+    declarator: Node,
+) -> LocalBinding {
+    LocalBinding {
+        anchor: PropagationAnchor {
+            anchor_id: Some(format!("{}::local:{}@{}", owner_symbol_id, name, line)),
+            symbol_id: None,
+            expression_text: Some(name.to_string()),
+            anchor_kind: PropagationAnchorKind::LocalVariable,
+        },
+        pointer_like: is_pointer_like_declarator(declarator),
+    }
+}
+
+fn combine_local_flow_risk(
+    target_pointer_like: bool,
+    source_pointer_like: bool,
+    mut source_risks: Vec<PropagationRisk>,
+) -> (RawExtractionConfidence, Vec<PropagationRisk>) {
+    if target_pointer_like || source_pointer_like || !source_risks.is_empty() {
+        if !source_risks.contains(&PropagationRisk::PointerHeavyFlow) {
+            if target_pointer_like || source_pointer_like {
+                source_risks.push(PropagationRisk::PointerHeavyFlow);
+            }
+        }
+        (RawExtractionConfidence::Partial, source_risks)
+    } else {
+        (RawExtractionConfidence::High, source_risks)
+    }
+}
+
+fn merge_propagation_risks(
+    left: Vec<PropagationRisk>,
+    right: Vec<PropagationRisk>,
+) -> Vec<PropagationRisk> {
+    let mut merged = left;
+    for risk in right {
+        if !merged.contains(&risk) {
+            merged.push(risk);
+        }
+    }
+    merged
+}
+
+fn resolve_field_expression_anchor(
+    node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+) -> Option<FlowAnchorResolution> {
+    let receiver_node = node.child_by_field_name("argument")?;
+    let field_node = node.child_by_field_name("field")?;
+    let receiver_text = ctx.node_text(receiver_node);
+    let field_name = ctx.node_text(field_node);
+    let operator = field_expr_separator(node, ctx);
+    let full_text = ctx.node_text(node);
+
+    let mut risks = Vec::new();
+    let (anchor_id, pointer_like) = if receiver_text == "this" {
+        let owner_parent = owner_symbol_id
+            .rsplit_once("::")
+            .map(|(parent, _)| parent.to_string())
+            .unwrap_or_else(|| owner_symbol_id.to_string());
+        (format!("{}::field:{}", owner_parent, field_name), false)
+    } else if operator == "->" {
+        risks.push(PropagationRisk::PointerHeavyFlow);
+        risks.push(PropagationRisk::ReceiverAmbiguity);
+        (
+            format!(
+                "{}::fieldexpr:{}_{}@{}",
+                owner_symbol_id,
+                sanitize_anchor_fragment(&receiver_text),
+                field_name,
+                node.start_position().row + 1
+            ),
+            true,
+        )
+    } else {
+        risks.push(PropagationRisk::ReceiverAmbiguity);
+        (
+            format!(
+                "{}::fieldexpr:{}_{}@{}",
+                owner_symbol_id,
+                sanitize_anchor_fragment(&receiver_text),
+                field_name,
+                node.start_position().row + 1
+            ),
+            false,
+        )
+    };
+
+    Some(FlowAnchorResolution {
+        anchor: PropagationAnchor {
+            anchor_id: Some(anchor_id),
+            symbol_id: None,
+            expression_text: Some(full_text),
+            anchor_kind: PropagationAnchorKind::Field,
+        },
+        pointer_like,
+        risks,
+    })
+}
+
+fn declaration_contains_function_declarator(node: Node) -> bool {
+    named_children(node).into_iter().any(|child| {
+        child.kind() == "function_declarator"
+            || find_descendant(child, "function_declarator").is_some()
+    })
+}
+
+fn extract_identifier_node(node: Node) -> Option<Node> {
+    if node.kind() == "identifier" {
+        return Some(node);
+    }
+
+    for child in named_children(node) {
+        if let Some(identifier) = extract_identifier_node(child) {
+            return Some(identifier);
+        }
+    }
+
+    None
+}
+
+fn is_pointer_like_declarator(node: Node) -> bool {
+    if matches!(node.kind(), "pointer_declarator" | "reference_declarator") {
+        return true;
+    }
+
+    named_children(node)
+        .into_iter()
+        .any(is_pointer_like_declarator)
+}
+
+fn expression_looks_pointer_heavy(kind: &str, text: &str) -> bool {
+    kind == "pointer_expression"
+        || kind == "reference_expression"
+        || text.contains("->")
+        || text.starts_with('&')
+        || text.starts_with('*')
+}
+
+fn sanitize_anchor_fragment(text: &str) -> String {
+    let mut sanitized = String::new();
+    for ch in text.chars() {
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            sanitized.push(ch);
+        } else if !sanitized.ends_with('_') {
+            sanitized.push('_');
+        }
+        if sanitized.len() >= 48 {
+            break;
+        }
+    }
+    if sanitized.is_empty() {
+        "expr".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<Symbol>> {
@@ -947,6 +1709,8 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
     let argument_count = call_node
         .child_by_field_name("arguments")
         .map(|args| count_arguments(args, ctx));
+    let argument_texts = extract_argument_texts(call_node, ctx);
+    let result_target = extract_call_result_target(call_node, caller_id, ctx);
 
     match func_node.kind() {
         "identifier" => Some(RawCallSite {
@@ -954,6 +1718,8 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
             called_name: ctx.node_text(func_node),
             call_kind: RawCallKind::Unqualified,
             argument_count,
+            argument_texts,
+            result_target,
             receiver: None,
             receiver_kind: None,
             qualifier: None,
@@ -977,6 +1743,8 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
                 called_name: ctx.node_text(field),
                 call_kind,
                 argument_count,
+                argument_texts,
+                result_target,
                 receiver,
                 receiver_kind,
                 qualifier: None,
@@ -1007,6 +1775,8 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
                 called_name: ctx.node_text(last),
                 call_kind: RawCallKind::Qualified,
                 argument_count,
+                argument_texts,
+                result_target,
                 receiver: None,
                 receiver_kind: None,
                 qualifier,
@@ -1015,6 +1785,76 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
                 line: call_node.start_position().row + 1,
             })
         }
+        _ => None,
+    }
+}
+
+fn extract_argument_texts(call_node: Node, ctx: &Ctx) -> Vec<String> {
+    let Some(arguments) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+
+    named_children(arguments)
+        .into_iter()
+        .map(|child| ctx.node_text(child))
+        .collect()
+}
+
+fn extract_call_result_target(
+    call_node: Node,
+    caller_id: &str,
+    ctx: &Ctx,
+) -> Option<PropagationAnchor> {
+    let parent = call_node.parent()?;
+    match parent.kind() {
+        "assignment_expression" => {
+            let left = parent.child_by_field_name("left")?;
+            anchor_from_target_expression(left, caller_id, ctx)
+        }
+        "init_declarator" => {
+            let declarator = parent.child_by_field_name("declarator")?;
+            let identifier = extract_identifier_node(declarator)?;
+            let name = ctx.node_text(identifier);
+            Some(PropagationAnchor {
+                anchor_id: Some(format!(
+                    "{}::local:{}@{}",
+                    caller_id,
+                    name,
+                    identifier.start_position().row + 1
+                )),
+                symbol_id: None,
+                expression_text: Some(name),
+                anchor_kind: PropagationAnchorKind::LocalVariable,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn anchor_from_target_expression(
+    node: Node,
+    owner_symbol_id: &str,
+    ctx: &Ctx,
+) -> Option<PropagationAnchor> {
+    match node.kind() {
+        "identifier" => {
+            let name = ctx.node_text(node);
+            Some(PropagationAnchor {
+                anchor_id: Some(format!(
+                    "{}::local:{}@{}",
+                    owner_symbol_id,
+                    name,
+                    node.start_position().row + 1
+                )),
+                symbol_id: None,
+                expression_text: Some(name),
+                anchor_kind: PropagationAnchorKind::LocalVariable,
+            })
+        }
+        "parenthesized_expression" => named_children(node)
+            .into_iter()
+            .next()
+            .and_then(|child| anchor_from_target_expression(child, owner_symbol_id, ctx)),
         _ => None,
     }
 }
@@ -1237,6 +2077,13 @@ fn find_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     result
 }
 
+fn named_children<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|child| child.is_named())
+        .collect()
+}
+
 fn find_descendant<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut stack = vec![node];
 
@@ -1330,6 +2177,224 @@ mod tests {
                 RawEventSource::TreeSitterGraph => "graph",
             }
         )
+    }
+
+    fn propagation_key(event: &PropagationEvent) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            event
+                .source_anchor
+                .anchor_id
+                .as_deref()
+                .or(event.source_anchor.expression_text.as_deref())
+                .unwrap_or_default(),
+            event
+                .target_anchor
+                .anchor_id
+                .as_deref()
+                .or(event.target_anchor.expression_text.as_deref())
+                .unwrap_or_default(),
+            match event.propagation_kind {
+                PropagationKind::Assignment => "assignment",
+                PropagationKind::InitializerBinding => "initializerBinding",
+                PropagationKind::ArgumentToParameter => "argumentToParameter",
+                PropagationKind::ReturnValue => "returnValue",
+                PropagationKind::FieldWrite => "fieldWrite",
+                PropagationKind::FieldRead => "fieldRead",
+            },
+            event.file_path,
+            event.line,
+        )
+    }
+
+    #[test]
+    fn emits_local_initializer_and_assignment_propagation_events() {
+        let source = include_str!("../../samples/propagation/src/local_flows.cpp");
+        let result = parse_cpp_file("samples/propagation/src/local_flows.cpp", source).unwrap();
+
+        let propagation_keys: Vec<_> = result
+            .propagation_events
+            .iter()
+            .map(propagation_key)
+            .collect();
+
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::param:input@2")
+                && key.contains("Game::Tick::local:first@3")
+                && key.contains("initializerBinding")
+        }));
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::local:first@3")
+                && key.contains("Game::Tick::local:second@4")
+                && key.contains("initializerBinding")
+        }));
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::param:input@2")
+                && key.contains("Game::Tick::local:second@4")
+                && key.contains("assignment")
+        }));
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::local:first@3")
+                && key.contains("Game::Tick::local:second@4")
+                && key.contains("assignment")
+        }));
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::local:third@6")
+                && key.contains("initializerBinding")
+        }));
+        assert!(propagation_keys.iter().any(|key| {
+            key.contains("Game::Tick::local:copy@7")
+                && key.contains("initializerBinding")
+        }));
+    }
+
+    #[test]
+    fn marks_pointer_heavy_local_flow_as_partial() {
+        let source = include_str!("../../samples/propagation/src/local_flows.cpp");
+        let result = parse_cpp_file("samples/propagation/src/local_flows.cpp", source).unwrap();
+
+        let pointer_heavy = result
+            .propagation_events
+            .iter()
+            .find(|event| {
+                event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:alias@9")
+                    && event.propagation_kind == PropagationKind::InitializerBinding
+            })
+            .unwrap();
+
+        assert_eq!(pointer_heavy.confidence, RawExtractionConfidence::Partial);
+        assert!(pointer_heavy
+            .risks
+            .contains(&PropagationRisk::PointerHeavyFlow));
+        assert_eq!(
+            pointer_heavy.source_anchor.expression_text.as_deref(),
+            Some("*ptr")
+        );
+    }
+
+    #[test]
+    fn keeps_shadowed_locals_distinct_in_propagation_events() {
+        let source = include_str!("../../samples/propagation/src/shadowing.cpp");
+        let result = parse_cpp_file("samples/propagation/src/shadowing.cpp", source).unwrap();
+
+        let mirror_event = result
+            .propagation_events
+            .iter()
+            .find(|event| event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:mirror@6"))
+            .unwrap();
+        let after_event = result
+            .propagation_events
+            .iter()
+            .find(|event| event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:after@8"))
+            .unwrap();
+
+        assert_eq!(
+            mirror_event.source_anchor.anchor_id.as_deref(),
+            Some("Game::Tick::local:value@5")
+        );
+        assert_eq!(
+            after_event.source_anchor.anchor_id.as_deref(),
+            Some("Game::Tick::local:value@3")
+        );
+    }
+
+    #[test]
+    fn emits_callable_flow_summaries_with_parameters_and_returns() {
+        let source = include_str!("../../samples/propagation/src/function_boundary.cpp");
+        let result = parse_cpp_file("samples/propagation/src/function_boundary.cpp", source).unwrap();
+
+        let forward = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::Forward")
+            .unwrap();
+        assert_eq!(forward.parameter_anchors.len(), 1);
+        assert_eq!(
+            forward.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::Forward::param:value@4")
+        );
+        assert_eq!(forward.return_anchors.len(), 1);
+        assert_eq!(
+            forward.return_anchors[0].anchor_id.as_deref(),
+            Some("Game::Forward::local:local@5")
+        );
+
+        let consume = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::Consume")
+            .unwrap();
+        assert_eq!(consume.parameter_anchors.len(), 1);
+        assert!(consume.return_anchors.is_empty());
+    }
+
+    #[test]
+    fn emits_member_state_field_write_and_field_read_events() {
+        let source = include_str!("../../samples/propagation/src/member_state.cpp");
+        let result = parse_cpp_file("samples/propagation/src/member_state.cpp", source).unwrap();
+
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromParam")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::SetFromParam::param:value@4")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
+                && event.confidence == RawExtractionConfidence::High
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromLocal")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::SetFromLocal::local:local@9")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:cached")
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadToLocal")
+                && event.propagation_kind == PropagationKind::FieldRead
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::ReadToLocal::local:local@14")
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadMember")
+                && event.propagation_kind == PropagationKind::FieldRead
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::field:cached")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::ReadMember::return@19")
+        }));
+    }
+
+    #[test]
+    fn marks_object_and_pointer_member_state_flows_as_partial_when_receiver_identity_is_weaker() {
+        let source = include_str!("../../samples/propagation/src/member_state.cpp");
+        let result = parse_cpp_file("samples/propagation/src/member_state.cpp", source).unwrap();
+
+        let object_write = result
+            .propagation_events
+            .iter()
+            .find(|event| {
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::CopyToPeer")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                    && event.target_anchor.expression_text.as_deref() == Some("other.shared")
+            })
+            .unwrap();
+        assert_eq!(object_write.confidence, RawExtractionConfidence::Partial);
+        assert!(object_write
+            .risks
+            .contains(&PropagationRisk::ReceiverAmbiguity));
+
+        let pointer_read = result
+            .propagation_events
+            .iter()
+            .find(|event| {
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadFromPointer")
+                    && event.propagation_kind == PropagationKind::FieldRead
+                    && event.source_anchor.expression_text.as_deref() == Some("other->shared")
+            })
+            .unwrap();
+        assert_eq!(pointer_read.confidence, RawExtractionConfidence::Partial);
+        assert!(pointer_read
+            .risks
+            .contains(&PropagationRisk::PointerHeavyFlow));
+        assert!(pointer_read
+            .risks
+            .contains(&PropagationRisk::ReceiverAmbiguity));
     }
 
     #[test]

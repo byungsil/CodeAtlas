@@ -12,6 +12,7 @@ Goal:
 - record any storage or query-surface issues exposed by this run
 - extend the validation to the Milestone 3 query surfaces after the newer indexer/schema changes
 - extend the validation to the Milestone 5 hierarchy, path, and metadata-aware query surfaces
+- extend the validation to the Milestone 6 propagation query surfaces after the propagation schema and server routes are added
 
 ## Workspace
 
@@ -37,6 +38,14 @@ Latest rerun after the current Milestone 5 changes:
 - symbols: `50526`
 - call edges: `84298`
 - elapsed time: `88896ms (88.90s)` in non-verbose full-rebuild mode
+
+Latest rerun after the current Milestone 6 changes:
+
+- files: `3695`
+- symbols: `50526`
+- call edges: `84298`
+- propagation edges: `265137`
+- elapsed time: `212545ms (212.54s)` in non-verbose full-rebuild mode with propagation persistence enabled
 
 ## Milestone 3 Query-Surface Validation
 
@@ -96,6 +105,34 @@ Validated live query surfaces:
 
 These checks show that the Milestone 5 hierarchy, override, call-path, and metadata-aware query surfaces are live against the real OpenCV workspace, not only against fixtures.
 
+## Milestone 6 Propagation Validation
+
+After rebuilding the indexer from the current workspace and regenerating `E:\Dev\opencv\.codeatlas`, the OpenCV database now includes propagation persistence for Milestone 6.
+
+Validated live query surfaces:
+
+- propagation-backed exact symbol inspection
+  - `cv::dnn::Subgraph::addNodeToMatch` resolved successfully
+  - outgoing propagation edges: `1410`
+  - incoming propagation edges: `997`
+- propagation summary query
+  - `/symbol-propagation?qualifiedName=cv::dnn::Subgraph::addNodeToMatch&limit=5`
+  - returned `200`
+  - returned bounded incoming and outgoing propagation lists
+  - returned shared `window` metadata with:
+    - `returnedCount = 10`
+    - `totalCount = 2407`
+    - `truncated = true`
+  - returned `propagationConfidence = partial`
+- bounded propagation trace query
+  - `/trace-variable-flow?qualifiedName=cv::dnn::Subgraph::addNodeToMatch&maxDepth=3&maxEdges=20`
+  - returned `200`
+  - returned `pathFound = true`
+  - returned a bounded propagation path beginning with `initializerBinding`
+  - returned `propagationConfidence = partial`
+
+These checks show that the Milestone 6 propagation surfaces are live against the real OpenCV workspace, not only against fixtures. They also confirm the intended honesty behavior: real-project propagation answers can stay useful while still reporting partial confidence and truncation on complex symbols.
+
 ## Sample Query Findings
 
 Validation queries were executed against a copied database file because the original `index.db` could not yet be reopened reliably from a fresh process.
@@ -147,6 +184,10 @@ This suggests that the Milestone 2 extraction pipeline is operational, but repre
   - override/base-method queries
   - bounded call-path tracing
   - metadata-filtered search and impact summaries
+- Milestone 6 query surfaces are operational on the real OpenCV workspace:
+  - propagation summary queries
+  - bounded variable-flow tracing
+  - explicit propagation confidence and truncation reporting
 
 ## What This Exposed
 
@@ -173,7 +214,7 @@ Recommended operating posture:
 
 ## Bottom Line
 
-Milestone 2 passed the large-project extraction check, Milestone 3 remained usable on the same real workspace, and Milestone 5 now verifies that higher-level hierarchy/path/metadata reasoning also works against real OpenCV data.
+Milestone 2 passed the large-project extraction check, Milestone 3 remained usable on the same real workspace, Milestone 5 verifies that higher-level hierarchy/path/metadata reasoning works against real OpenCV data, and Milestone 6 now confirms that bounded propagation queries also operate on the same real project.
 
 In practical terms:
 
@@ -181,4 +222,5 @@ In practical terms:
 - sampled symbol queries are already useful
 - caller/reference/impact/overview queries all respond on real OpenCV data after rebuilding with the current schema
 - hierarchy, override, call-path, and metadata-aware queries also respond on real OpenCV data after rebuilding with the current schema
+- propagation summary and bounded variable-flow queries also respond on real OpenCV data after rebuilding with the current schema
 - the database finalization path still needs follow-up before this can be treated as production-ready end-to-end behavior

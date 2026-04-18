@@ -126,6 +126,17 @@ pub enum ReferenceCategory {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum PropagationKind {
+    Assignment,
+    InitializerBinding,
+    ArgumentToParameter,
+    ReturnValue,
+    FieldWrite,
+    FieldRead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RawEventSource {
     LegacyAst,
     TreeSitterGraph,
@@ -138,12 +149,35 @@ pub enum RawExtractionConfidence {
     Partial,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PropagationAnchorKind {
+    LocalVariable,
+    Parameter,
+    ReturnValue,
+    Field,
+    Expression,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PropagationRisk {
+    AliasHeavyCode,
+    PointerHeavyFlow,
+    MacroSensitiveRegion,
+    UnresolvedOverload,
+    ReceiverAmbiguity,
+    UnsupportedFlowShape,
+}
+
 #[derive(Debug, Clone)]
 pub struct RawCallSite {
     pub caller_id: String,
     pub called_name: String,
     pub call_kind: RawCallKind,
     pub argument_count: Option<usize>,
+    pub argument_texts: Vec<String>,
+    pub result_target: Option<PropagationAnchor>,
     pub receiver: Option<String>,
     pub receiver_kind: Option<RawReceiverKind>,
     pub qualifier: Option<String>,
@@ -207,6 +241,8 @@ impl RawRelationEvent {
             called_name: self.target_name.clone()?,
             call_kind: self.call_kind.clone()?,
             argument_count: self.argument_count,
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: self.receiver.clone(),
             receiver_kind: self.receiver_kind.clone(),
             qualifier: self.qualifier.clone(),
@@ -257,10 +293,47 @@ pub struct OverrideCandidate {
     pub reasons: Vec<OverrideMatchReason>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PropagationAnchor {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_text: Option<String>,
+    pub anchor_kind: PropagationAnchorKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PropagationEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_symbol_id: Option<String>,
+    pub source_anchor: PropagationAnchor,
+    pub target_anchor: PropagationAnchor,
+    pub propagation_kind: PropagationKind,
+    pub file_path: String,
+    pub line: usize,
+    pub confidence: RawExtractionConfidence,
+    pub risks: Vec<PropagationRisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CallableFlowSummary {
+    pub callable_symbol_id: String,
+    pub parameter_anchors: Vec<PropagationAnchor>,
+    pub return_anchors: Vec<PropagationAnchor>,
+}
+
 #[derive(Debug)]
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub relation_events: Vec<RawRelationEvent>,
     pub normalized_references: Vec<NormalizedReference>,
+    #[allow(dead_code)]
+    pub propagation_events: Vec<PropagationEvent>,
+    pub callable_flow_summaries: Vec<CallableFlowSummary>,
     pub raw_calls: Vec<RawCallSite>,
 }

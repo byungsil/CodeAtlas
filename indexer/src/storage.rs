@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
-use crate::models::{Call, FileRecord, InheritanceEdge, NormalizedReference, RawExtractionConfidence, ReferenceCategory, Symbol};
+use crate::models::{
+    Call, CallableFlowSummary, FileRecord, InheritanceEdge, NormalizedReference,
+    PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind,
+    RawExtractionConfidence, ReferenceCategory, Symbol,
+};
 use crate::resolver;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role";
@@ -77,6 +81,30 @@ CREATE TABLE IF NOT EXISTS symbol_references (
     confidence  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS propagation_events (
+    owner_symbol_id TEXT,
+    source_anchor_id TEXT,
+    source_symbol_id TEXT,
+    source_expression_text TEXT,
+    source_anchor_kind TEXT NOT NULL,
+    target_anchor_id TEXT,
+    target_symbol_id TEXT,
+    target_expression_text TEXT,
+    target_anchor_kind TEXT NOT NULL,
+    propagation_kind TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    line        INTEGER NOT NULL,
+    confidence  TEXT NOT NULL,
+    risks       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS callable_flow_summaries (
+    callable_symbol_id TEXT PRIMARY KEY,
+    file_path   TEXT NOT NULL,
+    parameter_anchors_json TEXT NOT NULL,
+    return_anchors_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS files (
     path            TEXT PRIMARY KEY,
     content_hash    TEXT NOT NULL,
@@ -102,6 +130,11 @@ CREATE INDEX IF NOT EXISTS idx_references_source ON symbol_references(source_sym
 CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_category ON symbol_references(category);
 CREATE INDEX IF NOT EXISTS idx_references_file ON symbol_references(file_path);
+CREATE INDEX IF NOT EXISTS idx_propagation_owner ON propagation_events(owner_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_source_symbol ON propagation_events(source_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_target_symbol ON propagation_events(target_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_propagation_file ON propagation_events(file_path);
+CREATE INDEX IF NOT EXISTS idx_callable_flow_summaries_file ON callable_flow_summaries(file_path);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(id, name, qualified_name, tokenize='trigram');
@@ -218,7 +251,7 @@ impl Database {
 
     pub fn clear(&self) -> SqlResult<()> {
         self.conn.execute_batch(
-            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM symbol_references; DELETE FROM files; DELETE FROM symbols_fts;",
+            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM symbol_references; DELETE FROM propagation_events; DELETE FROM callable_flow_summaries; DELETE FROM files; DELETE FROM symbols_fts;",
         )
     }
 
@@ -329,6 +362,68 @@ impl Database {
         Ok(())
     }
 
+    pub fn write_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO propagation_events (
+                owner_symbol_id, source_anchor_id, source_symbol_id, source_expression_text, source_anchor_kind,
+                target_anchor_id, target_symbol_id, target_expression_text, target_anchor_kind,
+                propagation_kind, file_path, line, confidence, risks
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )?;
+        for event in events {
+            stmt.execute(params![
+                event.owner_symbol_id,
+                event.source_anchor.anchor_id,
+                event.source_anchor.symbol_id,
+                event.source_anchor.expression_text,
+                propagation_anchor_kind_key(&event.source_anchor.anchor_kind),
+                event.target_anchor.anchor_id,
+                event.target_anchor.symbol_id,
+                event.target_anchor.expression_text,
+                propagation_anchor_kind_key(&event.target_anchor.anchor_kind),
+                propagation_kind_key(&event.propagation_kind),
+                event.file_path,
+                event.line,
+                extraction_confidence_key(&event.confidence),
+                serde_json::to_string(&event.risks).unwrap_or_else(|_| "[]".to_string()),
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_callable_flow_summaries(
+        &self,
+        summaries: &[CallableFlowSummary],
+        symbols: &[Symbol],
+    ) -> SqlResult<()> {
+        if summaries.is_empty() {
+            return Ok(());
+        }
+
+        let symbol_paths: HashMap<&str, &str> = symbols
+            .iter()
+            .map(|symbol| (symbol.id.as_str(), symbol.file_path.as_str()))
+            .collect();
+
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO callable_flow_summaries (
+                callable_symbol_id, file_path, parameter_anchors_json, return_anchors_json
+            ) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for summary in summaries {
+            let Some(file_path) = symbol_paths.get(summary.callable_symbol_id.as_str()) else {
+                continue;
+            };
+            stmt.execute(params![
+                summary.callable_symbol_id,
+                *file_path,
+                serde_json::to_string(&summary.parameter_anchors).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&summary.return_anchors).unwrap_or_else(|_| "[]".to_string()),
+            ])?;
+        }
+        Ok(())
+    }
+
     pub fn write_files(&self, files: &[FileRecord]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -355,6 +450,8 @@ impl Database {
         representative_symbols: &[Symbol],
         calls: &[Call],
         references: &[NormalizedReference],
+        propagation_events: &[PropagationEvent],
+        callable_flow_summaries: &[CallableFlowSummary],
         files: &[FileRecord],
     ) -> SqlResult<()> {
         self.conn.execute_batch("BEGIN TRANSACTION;")?;
@@ -364,6 +461,8 @@ impl Database {
             self.write_symbols(representative_symbols)?;
             self.write_calls(calls)?;
             self.write_references(references)?;
+            self.write_propagation_events(propagation_events)?;
+            self.write_callable_flow_summaries(callable_flow_summaries, representative_symbols)?;
             self.write_files(files)?;
             self.rebuild_fts()?;
             Ok(())
@@ -458,6 +557,28 @@ impl Database {
         Ok(affected)
     }
 
+    pub fn cleanup_dangling_propagation(&self) -> SqlResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT file_path FROM propagation_events
+             WHERE (owner_symbol_id IS NOT NULL AND owner_symbol_id NOT IN (SELECT id FROM symbols))
+                OR (source_symbol_id IS NOT NULL AND source_symbol_id NOT IN (SELECT id FROM symbols))
+                OR (target_symbol_id IS NOT NULL AND target_symbol_id NOT IN (SELECT id FROM symbols))",
+        )?;
+        let affected: Vec<String> = stmt.query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        self.conn.execute(
+            "DELETE FROM propagation_events
+             WHERE (owner_symbol_id IS NOT NULL AND owner_symbol_id NOT IN (SELECT id FROM symbols))
+                OR (source_symbol_id IS NOT NULL AND source_symbol_id NOT IN (SELECT id FROM symbols))
+                OR (target_symbol_id IS NOT NULL AND target_symbol_id NOT IN (SELECT id FROM symbols))",
+            [],
+        )?;
+
+        Ok(affected)
+    }
+
     pub fn delete_calls_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM calls WHERE file_path = ?1", params![file_path])?;
         Ok(())
@@ -466,6 +587,47 @@ impl Database {
     pub fn delete_references_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM symbol_references WHERE file_path = ?1", params![file_path])?;
         Ok(())
+    }
+
+    pub fn delete_propagation_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM propagation_events WHERE file_path = ?1", params![file_path])?;
+        Ok(())
+    }
+
+    pub fn delete_callable_flow_summaries_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM callable_flow_summaries WHERE file_path = ?1",
+            params![file_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn read_callable_flow_summaries_for_ids(
+        &self,
+        callable_symbol_ids: &[String],
+    ) -> SqlResult<Vec<CallableFlowSummary>> {
+        if callable_symbol_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = vec!["?"; callable_symbol_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT callable_symbol_id, parameter_anchors_json, return_anchors_json
+             FROM callable_flow_summaries
+             WHERE callable_symbol_id IN ({})",
+            placeholders,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(callable_symbol_ids.iter()), |row| {
+            let parameter_json: String = row.get(1)?;
+            let return_json: String = row.get(2)?;
+            Ok(CallableFlowSummary {
+                callable_symbol_id: row.get(0)?,
+                parameter_anchors: serde_json::from_str(&parameter_json).unwrap_or_default(),
+                return_anchors: serde_json::from_str(&return_json).unwrap_or_default(),
+            })
+        })?;
+        rows.collect()
     }
 
     pub fn read_symbols_for_paths(&self, file_paths: &[String]) -> SqlResult<Vec<Symbol>> {
@@ -635,6 +797,10 @@ impl Database {
         self.conn.query_row("SELECT COUNT(*) FROM symbol_references", [], |r| r.get(0))
     }
 
+    pub fn count_propagation_events(&self) -> SqlResult<i64> {
+        self.conn.query_row("SELECT COUNT(*) FROM propagation_events", [], |r| r.get(0))
+    }
+
     pub fn count_files(&self) -> SqlResult<i64> {
         self.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
     }
@@ -726,6 +892,27 @@ fn extraction_confidence_from_key(value: &str) -> RawExtractionConfidence {
     }
 }
 
+fn propagation_kind_key(kind: &PropagationKind) -> &'static str {
+    match kind {
+        PropagationKind::Assignment => "assignment",
+        PropagationKind::InitializerBinding => "initializerBinding",
+        PropagationKind::ArgumentToParameter => "argumentToParameter",
+        PropagationKind::ReturnValue => "returnValue",
+        PropagationKind::FieldWrite => "fieldWrite",
+        PropagationKind::FieldRead => "fieldRead",
+    }
+}
+
+fn propagation_anchor_kind_key(kind: &PropagationAnchorKind) -> &'static str {
+    match kind {
+        PropagationAnchorKind::LocalVariable => "localVariable",
+        PropagationAnchorKind::Parameter => "parameter",
+        PropagationAnchorKind::ReturnValue => "returnValue",
+        PropagationAnchorKind::Field => "field",
+        PropagationAnchorKind::Expression => "expression",
+    }
+}
+
 fn normalize_dual_locations(symbol: &Symbol) -> Symbol {
     let mut normalized = symbol.clone();
 
@@ -775,6 +962,29 @@ mod tests {
         }
     }
 
+    fn make_propagation_event() -> PropagationEvent {
+        PropagationEvent {
+            owner_symbol_id: Some("Game::Worker::Tick".into()),
+            source_anchor: PropagationAnchor {
+                anchor_id: Some("Game::Worker::Tick::param:value@7".into()),
+                symbol_id: None,
+                expression_text: None,
+                anchor_kind: PropagationAnchorKind::Parameter,
+            },
+            target_anchor: PropagationAnchor {
+                anchor_id: Some("Game::Worker::Tick::field:stored".into()),
+                symbol_id: None,
+                expression_text: None,
+                anchor_kind: PropagationAnchorKind::Field,
+            },
+            propagation_kind: PropagationKind::FieldWrite,
+            file_path: "worker.cpp".into(),
+            line: 8,
+            confidence: RawExtractionConfidence::High,
+            risks: Vec::new(),
+        }
+    }
+
     #[test]
     fn creates_schema_and_writes() {
         let db = Database::open(Path::new(":memory:")).unwrap();
@@ -789,7 +999,7 @@ mod tests {
             module: None, subsystem: None, project_area: None, artifact_kind: None, header_role: None,
         }];
 
-        db.write_all(&symbols, &symbols, &calls, &[], &files).unwrap();
+        db.write_all(&symbols, &symbols, &calls, &[], &[], &[], &files).unwrap();
 
         let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 2);
@@ -797,6 +1007,8 @@ mod tests {
         assert_eq!(call_count, 1);
         let reference_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM symbol_references", [], |r| r.get(0)).unwrap();
         assert_eq!(reference_count, 0);
+        let propagation_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM propagation_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(propagation_count, 0);
         let file_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
         assert_eq!(file_count, 1);
     }
@@ -820,7 +1032,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 14);
+        assert_eq!(idx_count, 19);
     }
 
     #[test]
@@ -1067,6 +1279,42 @@ mod tests {
         assert_eq!(count, 1);
         let category: String = db.conn.query_row("SELECT category FROM symbol_references LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(category, "typeUsage");
+    }
+
+    #[test]
+    fn writes_propagation_events_and_callable_summaries() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let symbols = vec![make_sym("Game::Worker::Tick", "Tick")];
+        let propagation = vec![make_propagation_event()];
+        let summaries = vec![CallableFlowSummary {
+            callable_symbol_id: "Game::Worker::Tick".into(),
+            parameter_anchors: vec![PropagationAnchor {
+                anchor_id: Some("Game::Worker::Tick::param:value@7".into()),
+                symbol_id: None,
+                expression_text: None,
+                anchor_kind: PropagationAnchorKind::Parameter,
+            }],
+            return_anchors: vec![PropagationAnchor {
+                anchor_id: Some("Game::Worker::Tick::return@9".into()),
+                symbol_id: None,
+                expression_text: None,
+                anchor_kind: PropagationAnchorKind::ReturnValue,
+            }],
+        }];
+
+        db.write_symbols(&symbols).unwrap();
+        db.write_propagation_events(&propagation).unwrap();
+        db.write_callable_flow_summaries(&summaries, &symbols).unwrap();
+
+        let propagation_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM propagation_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(propagation_count, 1);
+        let summary_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM callable_flow_summaries", [], |r| r.get(0)).unwrap();
+        assert_eq!(summary_count, 1);
+
+        let stored = db.read_callable_flow_summaries_for_ids(&["Game::Worker::Tick".into()]).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].parameter_anchors.len(), 1);
+        assert_eq!(stored[0].return_anchors.len(), 1);
     }
 
     #[test]

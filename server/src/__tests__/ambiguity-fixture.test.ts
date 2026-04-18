@@ -10,7 +10,7 @@ import { mcpCall } from "./mcp-test-helpers";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
-import { ReferenceRecord } from "../models/responses";
+import { PropagationEventRecord, ReferenceRecord } from "../models/responses";
 
 function fixtureSymbols(): Symbol[] {
   return [
@@ -408,6 +408,59 @@ function fixtureReferences(): ReferenceRecord[] {
   ];
 }
 
+function fixturePropagationEvents(): PropagationEventRecord[] {
+  return [
+    {
+      ownerSymbolId: "Game::Worker::Update",
+      sourceAnchor: {
+        anchorId: "Game::Worker::Update::param:value@5",
+        anchorKind: "parameter",
+      },
+      targetAnchor: {
+        anchorId: "Game::Worker::Update::field:stored",
+        anchorKind: "field",
+      },
+      propagationKind: "fieldWrite",
+      filePath: "samples/ambiguity/src/split_update.cpp",
+      line: 5,
+      confidence: "high",
+      risks: [],
+    },
+    {
+      ownerSymbolId: "Game::Worker::Update",
+      sourceAnchor: {
+        anchorId: "Game::Worker::Update::field:stored",
+        anchorKind: "field",
+      },
+      targetAnchor: {
+        anchorId: "Game::Worker::Update::return@6",
+        anchorKind: "returnValue",
+      },
+      propagationKind: "fieldRead",
+      filePath: "samples/ambiguity/src/split_update.cpp",
+      line: 6,
+      confidence: "high",
+      risks: [],
+    },
+    {
+      ownerSymbolId: "Game::Dispatch",
+      sourceAnchor: {
+        anchorId: "Game::Dispatch::param:value@4",
+        anchorKind: "parameter",
+      },
+      targetAnchor: {
+        anchorId: "Game::Dispatch::return@5",
+        anchorKind: "returnValue",
+      },
+      propagationKind: "assignment",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 5,
+      confidence: "high",
+      risks: [],
+    },
+  ];
+}
+
 function writeFixtureJsonStore(): { dir: string; store: JsonStore } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codeatlas-ambiguity-json-"));
   const store = new JsonStore(dir);
@@ -415,6 +468,7 @@ function writeFixtureJsonStore(): { dir: string; store: JsonStore } {
     symbols: fixtureSymbols(),
     calls: fixtureCalls(),
     references: fixtureReferences(),
+    propagationEvents: fixturePropagationEvents(),
     files: fixtureFiles(),
   });
   return { dir, store };
@@ -466,6 +520,22 @@ function writeFixtureSqliteDb(): string {
       line INTEGER NOT NULL,
       confidence TEXT NOT NULL
     );
+    CREATE TABLE propagation_events (
+      owner_symbol_id TEXT,
+      source_anchor_id TEXT,
+      source_symbol_id TEXT,
+      source_expression_text TEXT,
+      source_anchor_kind TEXT NOT NULL,
+      target_anchor_id TEXT,
+      target_symbol_id TEXT,
+      target_expression_text TEXT,
+      target_anchor_kind TEXT NOT NULL,
+      propagation_kind TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      confidence TEXT NOT NULL,
+      risks TEXT NOT NULL
+    );
   `);
 
   const insertSymbol = db.prepare(`
@@ -490,6 +560,17 @@ function writeFixtureSqliteDb(): string {
   const insertReference = db.prepare(`
     INSERT INTO symbol_references (source_symbol_id, target_symbol_id, category, file_path, line, confidence)
     VALUES (@source_symbol_id, @target_symbol_id, @category, @file_path, @line, @confidence)
+  `);
+  const insertPropagation = db.prepare(`
+    INSERT INTO propagation_events (
+      owner_symbol_id, source_anchor_id, source_symbol_id, source_expression_text, source_anchor_kind,
+      target_anchor_id, target_symbol_id, target_expression_text, target_anchor_kind,
+      propagation_kind, file_path, line, confidence, risks
+    ) VALUES (
+      @owner_symbol_id, @source_anchor_id, @source_symbol_id, @source_expression_text, @source_anchor_kind,
+      @target_anchor_id, @target_symbol_id, @target_expression_text, @target_anchor_kind,
+      @propagation_kind, @file_path, @line, @confidence, @risks
+    )
   `);
 
   for (const symbol of fixtureSymbols()) {
@@ -537,6 +618,24 @@ function writeFixtureSqliteDb(): string {
       file_path: reference.filePath,
       line: reference.line,
       confidence: reference.confidence,
+    });
+  }
+  for (const event of fixturePropagationEvents()) {
+    insertPropagation.run({
+      owner_symbol_id: event.ownerSymbolId ?? null,
+      source_anchor_id: event.sourceAnchor.anchorId ?? null,
+      source_symbol_id: event.sourceAnchor.symbolId ?? null,
+      source_expression_text: event.sourceAnchor.expressionText ?? null,
+      source_anchor_kind: event.sourceAnchor.anchorKind,
+      target_anchor_id: event.targetAnchor.anchorId ?? null,
+      target_symbol_id: event.targetAnchor.symbolId ?? null,
+      target_expression_text: event.targetAnchor.expressionText ?? null,
+      target_anchor_kind: event.targetAnchor.anchorKind,
+      propagation_kind: event.propagationKind,
+      file_path: event.filePath,
+      line: event.line,
+      confidence: event.confidence,
+      risks: JSON.stringify(event.risks),
     });
   }
 
@@ -731,6 +830,33 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(pathTrace.body.steps).toHaveLength(2);
       expect(pathTrace.body.steps[0].callerQualifiedName).toBe("Game::Bootstrap");
       expect(pathTrace.body.steps[1].calleeQualifiedName).toBe("Game::ApplyDamage");
+
+      const propagation = await request(app)
+        .get("/symbol-propagation")
+        .query({ qualifiedName: "Game::Worker::Update", limit: 10 })
+        .expect(200);
+      expect(propagation.body.lookupMode).toBe("exact");
+      expect(propagation.body.outgoing).toHaveLength(2);
+      expect(propagation.body.incoming).toHaveLength(2);
+      expect(propagation.body.window.totalCount).toBe(4);
+      expect(propagation.body.propagationConfidence).toBe("high");
+      expect(propagation.body.riskMarkers).toEqual([]);
+      expect(propagation.body.confidenceNotes).toContain(
+        "All returned propagation hops come from supported structural patterns without additional risk markers.",
+      );
+      expect(propagation.body.outgoing[0].propagationKind).toBe("fieldWrite");
+
+      const tracedFlow = await request(app)
+        .get("/trace-variable-flow")
+        .query({ qualifiedName: "Game::Worker::Update", maxDepth: 3, maxEdges: 10 })
+        .expect(200);
+      expect(tracedFlow.body.lookupMode).toBe("exact");
+      expect(tracedFlow.body.propagationConfidence).toBe("high");
+      expect(tracedFlow.body.riskMarkers).toEqual([]);
+      expect(tracedFlow.body.pathFound).toBe(true);
+      expect(tracedFlow.body.steps).toHaveLength(2);
+      expect(tracedFlow.body.steps[0].propagationKind).toBe("fieldWrite");
+      expect(tracedFlow.body.steps[1].propagationKind).toBe("fieldRead");
 
       const metadataSearch = await request(app)
         .get("/search")
@@ -1018,6 +1144,45 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(pathTrace.steps).toHaveLength(2);
       expect(pathTrace.steps[0].callerQualifiedName).toBe("Game::Bootstrap");
       expect(pathTrace.steps[1].calleeQualifiedName).toBe("Game::ApplyDamage");
+
+      const propagationResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 18,
+          method: "tools/call",
+          params: { name: "explain_symbol_propagation", arguments: { qualifiedName: "Game::Worker::Update", limit: 10 } },
+        },
+      ], dir);
+      const propagation = JSON.parse(propagationResponses.find((r) => r.id === 18).result.content[0].text);
+      expect(propagation.lookupMode).toBe("exact");
+      expect(propagation.outgoing).toHaveLength(2);
+      expect(propagation.incoming).toHaveLength(2);
+      expect(propagation.window.totalCount).toBe(4);
+      expect(propagation.propagationConfidence).toBe("high");
+      expect(propagation.riskMarkers).toEqual([]);
+
+      const traceResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 19,
+          method: "tools/call",
+          params: {
+            name: "trace_variable_flow",
+            arguments: { qualifiedName: "Game::Worker::Update", maxDepth: 3, maxEdges: 10 },
+          },
+        },
+      ], dir);
+      const tracedFlow = JSON.parse(traceResponses.find((r) => r.id === 19).result.content[0].text);
+      expect(tracedFlow.propagationConfidence).toBe("high");
+      expect(tracedFlow.riskMarkers).toEqual([]);
+      expect(tracedFlow.pathFound).toBe(true);
+      expect(tracedFlow.steps).toHaveLength(2);
+      expect(tracedFlow.steps[0].propagationKind).toBe("fieldWrite");
+      expect(tracedFlow.steps[1].propagationKind).toBe("fieldRead");
 
       const searchResponses = await mcpCall([
         INIT,

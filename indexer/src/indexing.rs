@@ -7,14 +7,24 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::metadata::{apply_metadata_to_file_record, apply_metadata_to_symbol};
-use crate::models::{FileRecord, NormalizedReference, ParseResult, RawCallSite, Symbol};
+use crate::models::{
+    CallableFlowSummary, FileRecord, NormalizedReference, ParseResult, PropagationEvent,
+    RawCallSite, Symbol,
+};
 use crate::parser;
 
 pub fn parse_files(
     workspace_root: &Path,
     relative_paths: &[String],
     verbose: bool,
-) -> (Vec<Symbol>, Vec<RawCallSite>, Vec<NormalizedReference>, Vec<FileRecord>) {
+) -> (
+    Vec<Symbol>,
+    Vec<RawCallSite>,
+    Vec<NormalizedReference>,
+    Vec<PropagationEvent>,
+    Vec<CallableFlowSummary>,
+    Vec<FileRecord>,
+) {
     let total = relative_paths.len();
     let progress = AtomicUsize::new(0);
 
@@ -55,6 +65,8 @@ pub fn parse_files(
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut normalized_references = Vec::new();
+    let mut propagation_events = Vec::new();
+    let mut callable_flow_summaries = Vec::new();
     let mut file_records = Vec::new();
 
     for (rel_path, result, hash, _lossy) in results {
@@ -74,6 +86,8 @@ pub fn parse_files(
                 apply_metadata_to_file_record(&mut file_record);
                 file_records.push(file_record);
                 normalized_references.extend(pr.normalized_references);
+                propagation_events.extend(pr.propagation_events);
+                callable_flow_summaries.extend(pr.callable_flow_summaries);
                 let mut enriched_symbols = pr.symbols;
                 for symbol in &mut enriched_symbols {
                     apply_metadata_to_symbol(symbol);
@@ -89,7 +103,14 @@ pub fn parse_files(
         }
     }
 
-    (symbols, raw_calls, normalized_references, file_records)
+    (
+        symbols,
+        raw_calls,
+        normalized_references,
+        propagation_events,
+        callable_flow_summaries,
+        file_records,
+    )
 }
 
 pub fn parse_file_strict(workspace_root: &Path, rel_path: &str) -> Result<(ParseResult, String, bool), String> {
@@ -109,10 +130,19 @@ pub fn parse_files_strict(
     workspace_root: &Path,
     relative_paths: &[String],
     verbose: bool,
-) -> Result<(Vec<Symbol>, Vec<RawCallSite>, Vec<NormalizedReference>, Vec<FileRecord>), String> {
+) -> Result<(
+    Vec<Symbol>,
+    Vec<RawCallSite>,
+    Vec<NormalizedReference>,
+    Vec<PropagationEvent>,
+    Vec<CallableFlowSummary>,
+    Vec<FileRecord>,
+), String> {
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut normalized_references = Vec::new();
+    let mut propagation_events = Vec::new();
+    let mut callable_flow_summaries = Vec::new();
     let mut file_records = Vec::new();
     let total = relative_paths.len();
 
@@ -150,11 +180,20 @@ pub fn parse_files_strict(
         apply_metadata_to_file_record(&mut file_record);
         file_records.push(file_record);
         normalized_references.extend(result.normalized_references);
+        propagation_events.extend(result.propagation_events);
+        callable_flow_summaries.extend(result.callable_flow_summaries);
         symbols.extend(result.symbols);
         raw_calls.extend(result.raw_calls);
     }
 
-    Ok((symbols, raw_calls, normalized_references, file_records))
+    Ok((
+        symbols,
+        raw_calls,
+        normalized_references,
+        propagation_events,
+        callable_flow_summaries,
+        file_records,
+    ))
 }
 
 fn read_source_file(path: &Path) -> Result<(String, String, bool), std::io::Error> {

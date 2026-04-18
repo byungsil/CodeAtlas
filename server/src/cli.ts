@@ -224,7 +224,7 @@ function main(): void {
   const localTypes = buildLocalTypeMap(fileContents, symbols);
   const calls = resolveCallSites(rawCalls, symbols, localTypes);
 
-  const data: IndexData = { symbols, calls, files: fileRecords };
+    const data: IndexData = { symbols, calls, references: [], propagationEvents: [], files: fileRecords };
   store.save(data);
 
   const elapsed = Date.now() - startTime;

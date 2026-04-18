@@ -8,6 +8,10 @@ import {
   BaseMethodRecord,
   MatchReason,
   OverrideRecord,
+  PropagationAnchor,
+  PropagationEventRecord,
+  PropagationKind,
+  PropagationRisk,
   ReferenceCategory,
   ReferenceRecord,
   TypeHierarchyNode,
@@ -270,6 +274,14 @@ export class SqliteStore {
     return rows.map(toReference);
   }
 
+  getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
+    return this.getPropagation(symbolId, "incoming", propagationKinds, filePath);
+  }
+
+  getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
+    return this.getPropagation(symbolId, "outgoing", propagationKinds, filePath);
+  }
+
   private hasReferencesTable(): boolean {
     try {
       const row = this.db
@@ -288,6 +300,71 @@ export class SqliteStore {
     } catch {
       return false;
     }
+  }
+
+  private hasPropagationTable(): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='propagation_events'")
+        .get() as { cnt: number };
+      return row.cnt > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private getPropagation(
+    symbolId: string,
+    direction: "incoming" | "outgoing",
+    propagationKinds?: PropagationKind[],
+    filePath?: string,
+  ): PropagationEventRecord[] {
+    if (!this.hasPropagationTable()) {
+      return [];
+    }
+
+    const anchorPrefix = `${symbolId}::%`;
+    const filters: string[] = [];
+    const values: Array<string> = [];
+
+    if (direction === "incoming") {
+      filters.push("(target_symbol_id = ? OR target_anchor_id LIKE ? OR (owner_symbol_id = ? AND propagation_kind = 'argumentToParameter'))");
+      values.push(symbolId, anchorPrefix, symbolId);
+    } else {
+      filters.push("(source_symbol_id = ? OR source_anchor_id LIKE ? OR owner_symbol_id = ?)");
+      values.push(symbolId, anchorPrefix, symbolId);
+    }
+
+    if (propagationKinds && propagationKinds.length > 0) {
+      filters.push(`propagation_kind IN (${propagationKinds.map(() => "?").join(", ")})`);
+      values.push(...propagationKinds);
+    }
+    if (filePath) {
+      filters.push("file_path = ?");
+      values.push(filePath);
+    }
+
+    const sql = `
+      SELECT
+        owner_symbol_id,
+        source_anchor_id,
+        source_symbol_id,
+        source_expression_text,
+        source_anchor_kind,
+        target_anchor_id,
+        target_symbol_id,
+        target_expression_text,
+        target_anchor_kind,
+        propagation_kind,
+        file_path,
+        line,
+        confidence,
+        risks
+      FROM propagation_events
+      WHERE ${filters.join(" AND ")}
+      ORDER BY file_path, line, propagation_kind, source_anchor_id, target_anchor_id
+    `;
+    return (this.db.prepare(sql).all(...values) as RawPropagationRow[]).map(toPropagationEvent);
   }
 
   close(): void {
@@ -395,6 +472,23 @@ interface RawReferenceRow {
   confidence: "high" | "partial";
 }
 
+interface RawPropagationRow {
+  owner_symbol_id: string | null;
+  source_anchor_id: string | null;
+  source_symbol_id: string | null;
+  source_expression_text: string | null;
+  source_anchor_kind: PropagationAnchor["anchorKind"];
+  target_anchor_id: string | null;
+  target_symbol_id: string | null;
+  target_expression_text: string | null;
+  target_anchor_kind: PropagationAnchor["anchorKind"];
+  propagation_kind: PropagationKind;
+  file_path: string;
+  line: number;
+  confidence: "high" | "partial";
+  risks: string;
+}
+
 function toSymbol(row: RawRow): Symbol {
   return {
     id: row.id,
@@ -442,6 +536,38 @@ function toReference(row: RawReferenceRow): ReferenceRecord {
     line: row.line,
     confidence: row.confidence,
   };
+}
+
+function toPropagationEvent(row: RawPropagationRow): PropagationEventRecord {
+  return {
+    ...(row.owner_symbol_id ? { ownerSymbolId: row.owner_symbol_id } : {}),
+    sourceAnchor: {
+      ...(row.source_anchor_id ? { anchorId: row.source_anchor_id } : {}),
+      ...(row.source_symbol_id ? { symbolId: row.source_symbol_id } : {}),
+      ...(row.source_expression_text ? { expressionText: row.source_expression_text } : {}),
+      anchorKind: row.source_anchor_kind,
+    },
+    targetAnchor: {
+      ...(row.target_anchor_id ? { anchorId: row.target_anchor_id } : {}),
+      ...(row.target_symbol_id ? { symbolId: row.target_symbol_id } : {}),
+      ...(row.target_expression_text ? { expressionText: row.target_expression_text } : {}),
+      anchorKind: row.target_anchor_kind,
+    },
+    propagationKind: row.propagation_kind,
+    filePath: row.file_path,
+    line: row.line,
+    confidence: row.confidence,
+    risks: parseRisks(row.risks),
+  };
+}
+
+function parseRisks(raw: string): PropagationRisk[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as PropagationRisk[] : [];
+  } catch {
+    return [];
+  }
 }
 
 function toHierarchyNode(symbol: Symbol): TypeHierarchyNode {

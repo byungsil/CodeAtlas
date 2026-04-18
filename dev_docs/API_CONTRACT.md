@@ -118,6 +118,80 @@ Modeling decisions for Milestone 3:
 - `typeUsage` and `inheritanceMention` will be promoted from normalized extraction events into persisted references in later Milestone 3 steps
 - `classInstantiation` is part of the first-release vocabulary now so extraction and query code can grow into it without renaming the contract later
 
+### First-Release Propagation Model
+
+This is the Milestone 6 normalized contract for bounded value-propagation analysis. It is intentionally narrower than compiler-grade data-flow analysis and is designed to be explainable to AI agents.
+
+Supported first-release propagation kinds:
+
+- `assignment`
+  - direct local or member assignment such as `a = b`
+- `initializerBinding`
+  - declaration-time binding such as `T x = y` or `auto x = y`
+- `argumentToParameter`
+  - value movement from a caller-side argument anchor into a callee parameter anchor on supported resolved calls
+- `returnValue`
+  - value movement from a callee return anchor into a caller-side assignment or initializer anchor on supported resolved calls
+- `fieldWrite`
+  - value movement into object state such as `this->member = value` or `obj.member = value`
+- `fieldRead`
+  - value movement out of object state such as `local = this->member` or `return member`
+
+Explicit first-release non-goals:
+
+- full alias analysis
+- compiler-grade template instantiation semantics
+- exact macro-expanded data flow
+- whole-program pointer analysis
+- pretending that propagation confidence is stronger than the underlying call or symbol resolution confidence
+
+Normalized propagation payload:
+
+| Field            | Type   | Description |
+|------------------|--------|-------------|
+| ownerSymbolId    | string? | Canonical symbol ID for the callable or scope that owns this propagation event |
+| sourceAnchor     | object | Source propagation anchor |
+| targetAnchor     | object | Target propagation anchor |
+| propagationKind  | string | One of: `assignment`, `initializerBinding`, `argumentToParameter`, `returnValue`, `fieldWrite`, `fieldRead` |
+| filePath         | string | Relative file path |
+| line             | number | 1-based source line |
+| confidence       | string | Structural extraction confidence: `high` or `partial` |
+| risks            | array  | Zero or more bounded risk markers |
+
+Propagation anchor shape:
+
+| Field          | Type   | Description |
+|----------------|--------|-------------|
+| anchorId       | string? | Stable local anchor identity for scoped locals, parameters, or expression-backed propagation nodes when available |
+| symbolId       | string? | Canonical symbol ID when the anchor resolves to a known symbol or field |
+| expressionText | string? | Normalized source text when only an expression anchor is available |
+| anchorKind     | string | One of: `localVariable`, `parameter`, `returnValue`, `field`, `expression` |
+
+Propagation risk vocabulary:
+
+- `aliasHeavyCode`
+- `pointerHeavyFlow`
+- `macroSensitiveRegion`
+- `unresolvedOverload`
+- `receiverAmbiguity`
+- `unsupportedFlowShape`
+
+Modeling decisions for Milestone 6:
+
+- propagation is a dedicated analysis surface and does not overload `calls` or generalized `references`
+- propagation edges may use either symbol anchors or expression anchors because many useful first-release flows are expression-shaped rather than declaration-shaped
+- local and parameter anchors may carry a scoped `anchorId` even when they are not first-class global symbols
+- function-boundary propagation depends on two internal layers:
+  - callable flow summaries for parameter and return anchors
+  - resolved call edges with recoverable caller-side argument and result-target anchors
+- member-state propagation uses receiver-form-sensitive field anchors:
+  - `this->member` is the strongest first-release field shape
+  - `obj.member` is emitted as a weaker field anchor with receiver ambiguity
+  - `ptr->member` is emitted only with explicit pointer-heavy risk signaling
+- first release favors structurally inspectable events over broad but noisy inference
+- unsupported cases should degrade into absent events or explicit risk markers, not guessed propagation paths
+- agent-facing propagation queries should prefer compact summaries and bounded traversals rather than full raw graphs
+
 ---
 
 ## Endpoints
@@ -663,6 +737,81 @@ Retrieve direct members for one exact class or struct qualified name.
 - accepts optional `limit`
 - returns `summary` plus shared `window` metadata before the member list
 
+### GET /symbol-propagation
+
+Summarize bounded incoming and outgoing propagation events for one exact symbol identity.
+
+**Parameters:**
+
+- `id` (query, optional)
+- `qualifiedName` (query, optional)
+- `filePath` (query, optional)
+- `limit` (query, optional)
+- `propagationKinds` (query, optional, comma-separated)
+
+**Response 200:**
+
+```json
+  {
+    "lookupMode": "exact",
+    "symbol": { "qualifiedName": "Game::Worker::Update" },
+    "window": {
+    "returnedCount": 4,
+    "totalCount": 4,
+      "truncated": false,
+      "limitApplied": 50
+    },
+    "propagationConfidence": "high",
+    "incoming": [PropagationEventRecord],
+    "outgoing": [PropagationEventRecord],
+    "riskMarkers": [],
+    "confidenceNotes": [
+      "All returned propagation hops come from supported structural patterns without additional risk markers."
+    ],
+    "summary": ["incoming: 2 event(s)", "outgoing: 2 event(s)"]
+  }
+  ```
+
+### GET /trace-variable-flow
+
+Trace one bounded propagation path for one exact symbol identity.
+
+**Parameters:**
+
+- `id` (query, optional)
+- `qualifiedName` (query, optional)
+- `filePath` (query, optional)
+- `maxDepth` (query, optional)
+- `maxEdges` (query, optional)
+- `propagationKinds` (query, optional, comma-separated)
+
+**Response 200:**
+
+```json
+  {
+    "lookupMode": "exact",
+    "symbol": { "qualifiedName": "Game::Worker::Update" },
+    "window": {
+    "returnedCount": 2,
+    "totalCount": 2,
+      "truncated": false,
+      "limitApplied": 50
+    },
+    "propagationConfidence": "high",
+    "riskMarkers": [],
+    "confidenceNotes": [
+      "All returned propagation hops come from supported structural patterns without additional risk markers."
+    ],
+    "pathFound": true,
+    "truncated": false,
+    "maxDepth": 3,
+  "maxEdges": 50,
+  "steps": [PropagationPathStep],
+  "suggestedFollowUpQueries": [
+    "explain_symbol_propagation qualifiedName=Game::Worker::Update"
+  ]
+}
+
 ---
 
 ## Project Metadata Direction
@@ -690,6 +839,30 @@ Metadata-aware query behavior:
 - caller and reference responses may include compact grouped summaries such as `groupedBySubsystem` and `groupedByModule`
 - impact-analysis responses may include `affectedSubsystems` and `affectedModules` summaries
 - when metadata filters are requested against an older SQLite snapshot that does not expose metadata columns, filtered search returns an empty result set rather than silently ignoring the filter
+
+## Propagation Confidence Direction
+
+Milestone 6 extends structural confidence into propagation-specific guidance.
+
+Interpretation rules:
+
+- `high`
+  - the propagation step is supported by an intentionally modeled structural pattern with no immediate ambiguity marker
+- `partial`
+  - the propagation step is structurally plausible but bounded by weaker evidence, unsupported adjacent syntax, or inherited uncertainty from call resolution
+
+Propagation confidence should be read together with risk markers:
+
+- a `high` propagation step is still not compiler-grade proof
+- a `partial` propagation step should guide the agent toward focused follow-up queries rather than broad conclusions
+- risk markers exist to explain why a propagation answer is limited, not merely to decorate the payload
+
+Response-level propagation guidance:
+
+- exact symbol lookup still uses `confidence = exact`; this only means the symbol target is exact
+- propagation-specific strength is carried separately as `propagationConfidence`
+- `propagationConfidence = high` means every returned hop is high-confidence and no aggregate risk markers were raised
+- `propagationConfidence = partial` means at least one returned hop is partial, the answer was truncated, or aggregate risk markers indicate weaker evidence
 
 ---
 
@@ -722,3 +895,21 @@ Milestone 3 contract direction:
 | NOT_FOUND      | 404         | Symbol not found          |
 | BAD_REQUEST    | 400         | Invalid query parameters  |
 | INTERNAL_ERROR | 500         | Server-side failure       |
+### Tool: `trace_variable_flow`
+
+Current behavior:
+
+- uses exact symbol targeting
+- returns one deterministic bounded propagation path instead of a raw full graph
+- supports `maxDepth`, `maxEdges`, optional `propagationKinds`, and optional `filePath`
+- each hop carries propagation kind, confidence, and risk markers
+- response-level `propagationConfidence`, `riskMarkers`, and `confidenceNotes` summarize whether the returned path should be treated as strong or weak guidance
+
+### Tool: `explain_symbol_propagation`
+
+Current behavior:
+
+- summarizes incoming and outgoing propagation events for one exact symbol identity
+- surfaces aggregate risk markers together with compact summary lines
+- supports `limit`, optional `propagationKinds`, and optional `filePath`
+- response-level `propagationConfidence` and `confidenceNotes` explain whether the propagation answer is structurally strong, partial, or limited by bounds

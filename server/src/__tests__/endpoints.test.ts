@@ -197,6 +197,12 @@ describe("Heuristic ambiguity metadata", () => {
       getOverrides() {
         return [];
       },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
     };
 
     const ambiguousApp = createApp(ambiguousStore);

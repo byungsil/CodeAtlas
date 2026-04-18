@@ -26,11 +26,16 @@ import {
   MetadataGroupSummary,
   NamespaceSymbolsResponse,
   OverrideQueryResponse,
+  ExplainSymbolPropagationResponse,
+  PropagationEventRecord,
+  PropagationKind,
+  PropagationPathStep,
   ReferenceCategory,
   ReferenceQueryResponse,
   ResolvedReference,
   StructureOverviewSummary,
   SymbolLookupResponse,
+  TraceVariableFlowResponse,
   TraceCallPathResponse,
   TypeHierarchyResponse,
 } from "./models/responses";
@@ -187,6 +192,260 @@ export function createApp(store: Store): express.Express {
       results: references.slice(0, limit),
       totalCount: references.length,
       truncated: references.length > limit,
+    };
+  }
+
+  function parsePropagationKinds(source: Record<string, unknown>): PropagationKind[] | undefined {
+    const raw = source.propagationKinds;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      return undefined;
+    }
+    return raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value): value is PropagationKind => value.length > 0);
+  }
+
+  function anchorKey(anchor: PropagationEventRecord["sourceAnchor"]): string | null {
+    if (anchor.anchorId) return `anchor:${anchor.anchorId}`;
+    if (anchor.symbolId) return `symbol:${anchor.symbolId}`;
+    if (anchor.expressionText) return `expr:${anchor.anchorKind}:${anchor.expressionText}`;
+    return null;
+  }
+
+  function buildPropagationSummary(events: PropagationEventRecord[]): string[] {
+    if (events.length === 0) {
+      return ["No supported propagation events found for the exact symbol scope."];
+    }
+
+    const byKind = new Map<PropagationKind, number>();
+    for (const event of events) {
+      byKind.set(event.propagationKind, (byKind.get(event.propagationKind) ?? 0) + 1);
+    }
+
+    return Array.from(byKind.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([kind, count]) => `${kind}: ${count} event(s)`);
+  }
+
+  function buildPropagationAssessment(
+    events: PropagationEventRecord[],
+    truncated: boolean,
+  ): {
+    propagationConfidence: "high" | "partial";
+    riskMarkers: PropagationEventRecord["risks"];
+    confidenceNotes: string[];
+  } {
+    const riskMarkers = Array.from(new Set(events.flatMap((event) => event.risks))).sort();
+    const hasPartialEvent = events.some((event) => event.confidence === "partial");
+    const propagationConfidence = truncated || hasPartialEvent || riskMarkers.length > 0 ? "partial" : "high";
+
+    const confidenceNotes: string[] = [];
+    if (events.length === 0) {
+      confidenceNotes.push("No supported propagation events were available for the requested exact symbol scope.");
+    }
+    if (hasPartialEvent) {
+      confidenceNotes.push("At least one propagation hop is structurally partial rather than high-confidence.");
+    }
+    if (truncated) {
+      confidenceNotes.push("Traversal or response bounds truncated the propagation answer before all reachable hops were explored.");
+    }
+    if (riskMarkers.includes("pointerHeavyFlow")) {
+      confidenceNotes.push("Pointer-heavy flow is present, so alias-sensitive propagation may be incomplete.");
+    }
+    if (riskMarkers.includes("receiverAmbiguity")) {
+      confidenceNotes.push("Receiver identity is structurally weaker on at least one hop, so object-state ownership may be approximate.");
+    }
+    if (riskMarkers.includes("unresolvedOverload")) {
+      confidenceNotes.push("At least one propagation hop depends on a weaker callable match and may need follow-up lookup.");
+    }
+    if (riskMarkers.includes("unsupportedFlowShape")) {
+      confidenceNotes.push("Some nearby flow shapes are outside the first-release supported propagation model.");
+    }
+    if (riskMarkers.length === 0 && !truncated && !hasPartialEvent && events.length > 0) {
+      confidenceNotes.push("All returned propagation hops come from supported structural patterns without additional risk markers.");
+    }
+
+    return { propagationConfidence, riskMarkers, confidenceNotes };
+  }
+
+  function buildPropagationFollowUpQueries(
+    symbol: CodeSymbol,
+    riskMarkers: PropagationEventRecord["risks"],
+  ): string[] {
+    const queries = [
+      `find_references qualifiedName=${symbol.qualifiedName}`,
+      `lookup_symbol qualifiedName=${symbol.qualifiedName}`,
+    ];
+
+    if (riskMarkers.includes("receiverAmbiguity") && symbol.parentId) {
+      queries.unshift(`list_class_members qualifiedName=${symbol.parentId}`);
+    }
+    if (riskMarkers.includes("unresolvedOverload")) {
+      queries.unshift(`find_overrides qualifiedName=${symbol.qualifiedName}`);
+    }
+    if (riskMarkers.includes("pointerHeavyFlow")) {
+      queries.push(`trace_variable_flow qualifiedName=${symbol.qualifiedName} maxDepth=1`);
+    }
+
+    return Array.from(new Set(queries));
+  }
+
+  function buildExplainPropagation(
+    symbol: CodeSymbol,
+    matchedBy: "id" | "qualifiedName" | "both",
+    limit: number,
+    propagationKinds?: PropagationKind[],
+    filePath?: string,
+  ): ExplainSymbolPropagationResponse {
+    const incomingAll = store.getIncomingPropagation(symbol.id, propagationKinds, filePath);
+    const outgoingAll = store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
+    const incoming = applyLimit(incomingAll, limit);
+    const outgoing = applyLimit(outgoingAll, limit);
+    const returnedCount = incoming.results.length + outgoing.results.length;
+    const totalCount = incoming.totalCount + outgoing.totalCount;
+    const assessment = buildPropagationAssessment(
+      [...incoming.results, ...outgoing.results],
+      incoming.truncated || outgoing.truncated,
+    );
+
+    return {
+      ...buildExactLookupResponse({ symbol, matchedBy }),
+      window: buildResultWindow(returnedCount, totalCount, incoming.truncated || outgoing.truncated, limit),
+      propagationConfidence: assessment.propagationConfidence,
+      incoming: incoming.results,
+      outgoing: outgoing.results,
+      riskMarkers: assessment.riskMarkers,
+      confidenceNotes: assessment.confidenceNotes,
+      summary: [
+        `incoming: ${incoming.totalCount} event(s)`,
+        `outgoing: ${outgoing.totalCount} event(s)`,
+        ...buildPropagationSummary([...incoming.results, ...outgoing.results]),
+      ],
+      suggestedFollowUpQueries: buildPropagationFollowUpQueries(symbol, assessment.riskMarkers),
+    };
+  }
+
+  function traceVariableFlow(
+    symbol: CodeSymbol,
+    matchedBy: "id" | "qualifiedName" | "both",
+    maxDepth: number,
+    maxEdges: number,
+    propagationKinds?: PropagationKind[],
+    filePath?: string,
+  ): TraceVariableFlowResponse {
+    const outgoing = store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
+    const adjacency = new Map<string, PropagationEventRecord[]>();
+    for (const event of outgoing) {
+      const key = anchorKey(event.sourceAnchor);
+      if (!key) continue;
+      const bucket = adjacency.get(key) ?? [];
+      bucket.push(event);
+      adjacency.set(key, bucket);
+    }
+    for (const bucket of adjacency.values()) {
+      bucket.sort((a, b) =>
+        a.filePath.localeCompare(b.filePath)
+        || a.line - b.line
+        || a.propagationKind.localeCompare(b.propagationKind),
+      );
+    }
+
+    const targetedAnchorKeys = new Set(
+      outgoing
+        .map((event) => anchorKey(event.targetAnchor))
+        .filter((key): key is string => key !== null),
+    );
+    const seeds = (outgoing.filter((event) => {
+      const key = anchorKey(event.sourceAnchor);
+      return key ? !targetedAnchorKeys.has(key) : true;
+    }).length > 0
+      ? outgoing.filter((event) => {
+        const key = anchorKey(event.sourceAnchor);
+        return key ? !targetedAnchorKeys.has(key) : true;
+      })
+      : outgoing
+    ).slice().sort((a, b) =>
+      a.filePath.localeCompare(b.filePath)
+      || a.line - b.line
+      || a.propagationKind.localeCompare(b.propagationKind),
+    );
+    const queue: Array<{ event: PropagationEventRecord; path: PropagationPathStep[]; depth: number }> = seeds.map((event) => ({
+      event,
+      path: [{ ...event, hop: 1 }],
+      depth: 1,
+    }));
+    const visited = new Set<string>();
+    let bestPath: PropagationPathStep[] = [];
+    let truncated = false;
+    let exploredEdges = 0;
+
+    while (queue.length > 0 && exploredEdges < maxEdges) {
+      const current = queue.shift()!;
+      exploredEdges += 1;
+      const eventKey = `${current.event.filePath}:${current.event.line}:${current.event.propagationKind}:${anchorKey(current.event.sourceAnchor)}:${anchorKey(current.event.targetAnchor)}`;
+      if (visited.has(eventKey)) {
+        continue;
+      }
+      visited.add(eventKey);
+
+      if (
+        current.path.length > bestPath.length
+        || (current.path.length === bestPath.length
+          && current.path[0]
+          && bestPath[0]
+          && current.path[0].line < bestPath[0].line)
+      ) {
+        bestPath = current.path;
+      }
+
+      if (current.depth >= maxDepth) {
+        const nextKey = anchorKey(current.event.targetAnchor);
+        if (nextKey && (adjacency.get(nextKey)?.length ?? 0) > 0) {
+          truncated = true;
+        }
+        continue;
+      }
+
+      const nextKey = anchorKey(current.event.targetAnchor);
+      if (!nextKey) {
+        continue;
+      }
+      const nextEvents = adjacency.get(nextKey) ?? [];
+      if (nextEvents.length > 0 && exploredEdges + nextEvents.length > maxEdges) {
+        truncated = true;
+      }
+      for (const next of nextEvents) {
+        queue.push({
+          event: next,
+          depth: current.depth + 1,
+          path: current.path.concat({ ...next, hop: current.path.length + 1 }),
+        });
+      }
+    }
+
+    if (queue.length > 0) {
+      truncated = true;
+    }
+
+    const assessment = buildPropagationAssessment(bestPath, truncated);
+
+    return {
+      ...buildExactLookupResponse({ symbol, matchedBy }),
+      window: buildResultWindow(bestPath.length, bestPath.length, truncated, maxEdges),
+      propagationConfidence: assessment.propagationConfidence,
+      riskMarkers: assessment.riskMarkers,
+      confidenceNotes: assessment.confidenceNotes,
+      pathFound: bestPath.length > 0,
+      truncated,
+      maxDepth,
+      maxEdges,
+      ...(propagationKinds && propagationKinds.length > 0 ? { propagationKinds } : {}),
+      steps: bestPath,
+      suggestedFollowUpQueries: [
+        `explain_symbol_propagation qualifiedName=${symbol.qualifiedName}`,
+        ...buildPropagationFollowUpQueries(symbol, assessment.riskMarkers),
+      ],
     };
   }
 
@@ -605,6 +864,80 @@ export function createApp(store: Store): express.Express {
       groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
     };
     return res.json(response);
+  });
+
+  app.get("/symbol-propagation", (req, res) => {
+    const id = typeof req.query.id === "string" ? req.query.id : undefined;
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
+    const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const propagationKinds = parsePropagationKinds(req.query as Record<string, unknown>);
+
+    if (!id && !qualifiedName) {
+      return badRequest(res);
+    }
+
+    const byId = id ? store.getSymbolById(id) : undefined;
+    const byQualifiedName = qualifiedName ? store.getSymbolByQualifiedName(qualifiedName) : undefined;
+    if (id && qualifiedName) {
+      if (!byId || !byQualifiedName) {
+        return notFound(res);
+      }
+      if (byId.id !== byQualifiedName.id) {
+        return badRequest(res);
+      }
+    }
+
+    const symbol = byId ?? byQualifiedName;
+    if (!symbol) {
+      return notFound(res);
+    }
+
+    return res.json(buildExplainPropagation(
+      symbol,
+      id && qualifiedName ? "both" : id ? "id" : "qualifiedName",
+      limit,
+      propagationKinds,
+      filePath,
+    ));
+  });
+
+  app.get("/trace-variable-flow", (req, res) => {
+    const id = typeof req.query.id === "string" ? req.query.id : undefined;
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
+    const maxDepth = Math.min(parseInt((req.query.maxDepth as string) || "3", 10), CALLGRAPH_MAX_DEPTH);
+    const maxEdges = Math.min(parseInt((req.query.maxEdges as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const propagationKinds = parsePropagationKinds(req.query as Record<string, unknown>);
+
+    if (!id && !qualifiedName) {
+      return badRequest(res);
+    }
+
+    const byId = id ? store.getSymbolById(id) : undefined;
+    const byQualifiedName = qualifiedName ? store.getSymbolByQualifiedName(qualifiedName) : undefined;
+    if (id && qualifiedName) {
+      if (!byId || !byQualifiedName) {
+        return notFound(res);
+      }
+      if (byId.id !== byQualifiedName.id) {
+        return badRequest(res);
+      }
+    }
+
+    const symbol = byId ?? byQualifiedName;
+    if (!symbol) {
+      return notFound(res);
+    }
+
+    return res.json(traceVariableFlow(
+      symbol,
+      id && qualifiedName ? "both" : id ? "id" : "qualifiedName",
+      maxDepth,
+      maxEdges,
+      propagationKinds,
+      filePath,
+    ));
   });
 
   app.get("/impact", (req, res) => {

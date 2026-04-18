@@ -7,6 +7,8 @@ import {
   BaseMethodRecord,
   MatchReason,
   OverrideRecord,
+  PropagationEventRecord,
+  PropagationKind,
   ReferenceCategory,
   ReferenceRecord,
   TypeHierarchyNode,
@@ -18,6 +20,7 @@ export interface IndexData {
   symbols: Symbol[];
   calls: Call[];
   references: ReferenceRecord[];
+  propagationEvents: PropagationEventRecord[];
   files: FileRecord[];
 }
 
@@ -35,6 +38,7 @@ export class JsonStore {
     fs.writeFileSync(this.symbolsPath(), JSON.stringify(data.symbols, null, 2));
     fs.writeFileSync(this.callsPath(), JSON.stringify(data.calls, null, 2));
     fs.writeFileSync(this.referencesPath(), JSON.stringify(data.references, null, 2));
+    fs.writeFileSync(this.propagationPath(), JSON.stringify(data.propagationEvents, null, 2));
     fs.writeFileSync(this.filesPath(), JSON.stringify(data.files, null, 2));
   }
 
@@ -43,6 +47,7 @@ export class JsonStore {
       symbols: this.readJson(this.symbolsPath(), []),
       calls: this.readJson(this.callsPath(), []),
       references: this.readJson(this.referencesPath(), []),
+      propagationEvents: this.readJson(this.propagationPath(), []),
       files: this.readJson(this.filesPath(), []),
     };
   }
@@ -196,6 +201,22 @@ export class JsonStore {
       && (!filePath || reference.filePath === filePath));
   }
 
+  getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
+    return this.load().propagationEvents
+      .filter((event) => matchesPropagationDirection(event, symbolId, "incoming"))
+      .filter((event) => !propagationKinds || propagationKinds.includes(event.propagationKind))
+      .filter((event) => !filePath || event.filePath === filePath)
+      .sort(comparePropagationEvents);
+  }
+
+  getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
+    return this.load().propagationEvents
+      .filter((event) => matchesPropagationDirection(event, symbolId, "outgoing"))
+      .filter((event) => !propagationKinds || propagationKinds.includes(event.propagationKind))
+      .filter((event) => !filePath || event.filePath === filePath)
+      .sort(comparePropagationEvents);
+  }
+
   private symbolsPath(): string {
     return path.join(this.dataDir, "symbols.json");
   }
@@ -210,6 +231,10 @@ export class JsonStore {
 
   private referencesPath(): string {
     return path.join(this.dataDir, "references.json");
+  }
+
+  private propagationPath(): string {
+    return path.join(this.dataDir, "propagation.json");
   }
 
   private readJson<T>(filePath: string, fallback: T): T {
@@ -284,4 +309,33 @@ function inferSignatureArity(signature?: string): number | undefined {
   const params = signature.slice(start + 1, end).trim();
   if (!params || params === "void") return 0;
   return params.split(",").length;
+}
+
+function matchesPropagationDirection(
+  event: PropagationEventRecord,
+  symbolId: string,
+  direction: "incoming" | "outgoing",
+): boolean {
+  const ownedAnchorPrefix = `${symbolId}::`;
+  if (direction === "incoming") {
+    return event.targetAnchor.symbolId === symbolId
+      || event.targetAnchor.anchorId?.startsWith(ownedAnchorPrefix)
+      || event.ownerSymbolId === symbolId && event.propagationKind === "argumentToParameter";
+  }
+
+  return event.sourceAnchor.symbolId === symbolId
+    || event.sourceAnchor.anchorId?.startsWith(ownedAnchorPrefix)
+    || event.ownerSymbolId === symbolId;
+}
+
+function comparePropagationEvents(left: PropagationEventRecord, right: PropagationEventRecord): number {
+  return left.filePath.localeCompare(right.filePath)
+    || left.line - right.line
+    || left.propagationKind.localeCompare(right.propagationKind)
+    || (left.sourceAnchor.anchorId ?? left.sourceAnchor.expressionText ?? "").localeCompare(
+      right.sourceAnchor.anchorId ?? right.sourceAnchor.expressionText ?? "",
+    )
+    || (left.targetAnchor.anchorId ?? left.targetAnchor.expressionText ?? "").localeCompare(
+      right.targetAnchor.anchorId ?? right.targetAnchor.expressionText ?? "",
+    );
 }

@@ -290,6 +290,82 @@ export interface OverrideQueryResponse extends ConfidenceMetadata {
   overrides: OverrideRecord[];
 }
 
+export type PropagationKind =
+  | "assignment"
+  | "initializerBinding"
+  | "argumentToParameter"
+  | "returnValue"
+  | "fieldWrite"
+  | "fieldRead";
+
+export type PropagationAnchorKind =
+  | "localVariable"
+  | "parameter"
+  | "returnValue"
+  | "field"
+  | "expression";
+
+export type PropagationConfidence = "high" | "partial";
+
+export type PropagationRisk =
+  | "aliasHeavyCode"
+  | "pointerHeavyFlow"
+  | "macroSensitiveRegion"
+  | "unresolvedOverload"
+  | "receiverAmbiguity"
+  | "unsupportedFlowShape";
+
+export interface PropagationAnchor {
+  anchorId?: string;
+  symbolId?: string;
+  expressionText?: string;
+  anchorKind: PropagationAnchorKind;
+}
+
+export interface PropagationEventRecord {
+  ownerSymbolId?: string;
+  sourceAnchor: PropagationAnchor;
+  targetAnchor: PropagationAnchor;
+  propagationKind: PropagationKind;
+  filePath: string;
+  line: number;
+  confidence: PropagationConfidence;
+  risks: PropagationRisk[];
+}
+
+export interface PropagationPathStep extends PropagationEventRecord {
+  hop: number;
+}
+
+export interface TraceVariableFlowResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  propagationConfidence: PropagationConfidence;
+  riskMarkers: PropagationRisk[];
+  confidenceNotes: string[];
+  pathFound: boolean;
+  truncated: boolean;
+  maxDepth: number;
+  maxEdges: number;
+  propagationKinds?: PropagationKind[];
+  steps: PropagationPathStep[];
+  suggestedFollowUpQueries: string[];
+}
+
+export interface ExplainSymbolPropagationResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  propagationConfidence: PropagationConfidence;
+  incoming: PropagationEventRecord[];
+  outgoing: PropagationEventRecord[];
+  riskMarkers: PropagationRisk[];
+  confidenceNotes: string[];
+  summary: string[];
+  suggestedFollowUpQueries: string[];
+}
+
 export interface CallPathStep {
   callerId: string;
   callerQualifiedName: string;

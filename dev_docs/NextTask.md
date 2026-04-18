@@ -8,7 +8,8 @@ Current status:
 - Milestone 3 (`Real Impact Navigation`) is complete.
 - Milestone 4 (`Production-Grade Incremental Operation`) is complete.
 - Milestone 5 (`Large-Project Intelligence`) is complete.
-- The next planned execution target is Milestone 6 (`Variable and Data-Flow Propagation`).
+- Milestone 6 (`Variable and Data-Flow Propagation`) is complete.
+- The next planned execution target is Milestone 7 (`Performance Proof`).
 
 ## 1. Goal
 
@@ -83,7 +84,9 @@ Execution status:
 - Step 3 is complete through Milestone 3.
 - Step 4 is complete through Milestone 4.
 - Step 5 is complete through Milestone 5.
-- Step 6 is the next active milestone track.
+- Step 6 is complete through Milestone 5.
+- Step 7 is complete through Milestone 6.
+- Step 8 is the next active milestone track through Milestone 7.
 
 ---
 

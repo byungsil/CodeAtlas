@@ -3,6 +3,8 @@ import { Call } from "../models/call";
 import {
   BaseMethodRecord,
   OverrideRecord,
+  PropagationEventRecord,
+  PropagationKind,
   ReferenceCategory,
   ReferenceRecord,
 } from "../models/responses";
@@ -29,4 +31,6 @@ export interface Store {
   getDirectDerived(symbolId: string): Symbol[];
   getBaseMethods(symbolId: string): BaseMethodRecord[];
   getOverrides(symbolId: string): OverrideRecord[];
+  getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
+  getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
 }

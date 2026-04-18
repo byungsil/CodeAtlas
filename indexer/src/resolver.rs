@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{
-    Call, InheritanceEdge, OverrideCandidate, OverrideMatchReason, RawCallKind, RawCallSite,
-    RawExtractionConfidence, RawQualifierKind, Symbol,
+    Call, CallableFlowSummary, InheritanceEdge, OverrideCandidate, OverrideMatchReason,
+    PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
+    RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind, Symbol,
 };
 use crate::storage::Database;
 
@@ -582,6 +583,163 @@ pub fn find_override_candidates(
     candidates
 }
 
+pub fn derive_function_boundary_propagation_events(
+    raw_calls: &[RawCallSite],
+    calls: &[Call],
+    callable_summaries: &[CallableFlowSummary],
+    symbols: &[Symbol],
+) -> Vec<PropagationEvent> {
+    let summary_by_callable: HashMap<&str, &CallableFlowSummary> = callable_summaries
+        .iter()
+        .map(|summary| (summary.callable_symbol_id.as_str(), summary))
+        .collect();
+    let symbol_by_id: HashMap<&str, &Symbol> = symbols
+        .iter()
+        .map(|symbol| (symbol.id.as_str(), symbol))
+        .collect();
+
+    let mut events = Vec::new();
+
+    for call in calls {
+        let Some(raw_call) = raw_calls.iter().find(|raw| {
+            raw.caller_id == call.caller_id
+                && raw.file_path == call.file_path
+                && raw.line == call.line
+        }) else {
+            continue;
+        };
+        let Some(summary) = summary_by_callable.get(call.callee_id.as_str()) else {
+            continue;
+        };
+
+        for (index, parameter_anchor) in summary.parameter_anchors.iter().enumerate() {
+            let Some(argument_text) = raw_call.argument_texts.get(index) else {
+                continue;
+            };
+            let source_anchor = PropagationAnchor {
+                anchor_id: Some(format!(
+                    "{}::arg{}@{}",
+                    raw_call.caller_id,
+                    index,
+                    raw_call.line
+                )),
+                symbol_id: None,
+                expression_text: Some(argument_text.clone()),
+                anchor_kind: PropagationAnchorKind::Expression,
+            };
+            let (confidence, risks) = propagation_confidence_for_text(argument_text);
+            events.push(PropagationEvent {
+                owner_symbol_id: Some(call.callee_id.clone()),
+                source_anchor,
+                target_anchor: parameter_anchor.clone(),
+                propagation_kind: PropagationKind::ArgumentToParameter,
+                file_path: call.file_path.clone(),
+                line: call.line,
+                confidence,
+                risks,
+            });
+        }
+
+        if let Some(result_target) = raw_call.result_target.clone() {
+            for return_anchor in &summary.return_anchors {
+                let (confidence, risks) = propagation_confidence_for_anchor(return_anchor);
+                events.push(PropagationEvent {
+                    owner_symbol_id: Some(call.callee_id.clone()),
+                    source_anchor: return_anchor.clone(),
+                    target_anchor: result_target.clone(),
+                    propagation_kind: PropagationKind::ReturnValue,
+                    file_path: call.file_path.clone(),
+                    line: call.line,
+                    confidence,
+                    risks,
+                });
+            }
+        } else if symbol_by_id.contains_key(call.callee_id.as_str()) {
+            continue;
+        }
+    }
+
+    dedupe_propagation_events(events)
+}
+
+pub fn merge_propagation_events(
+    local_events: &[PropagationEvent],
+    boundary_events: &[PropagationEvent],
+) -> Vec<PropagationEvent> {
+    let mut combined = Vec::with_capacity(local_events.len() + boundary_events.len());
+    combined.extend(local_events.iter().cloned());
+    combined.extend(boundary_events.iter().cloned());
+    dedupe_propagation_events(combined)
+}
+
+fn propagation_confidence_for_text(text: &str) -> (RawExtractionConfidence, Vec<PropagationRisk>) {
+    if text.contains("->") || text.starts_with('&') || text.starts_with('*') {
+        (
+            RawExtractionConfidence::Partial,
+            vec![PropagationRisk::PointerHeavyFlow],
+        )
+    } else {
+        (RawExtractionConfidence::High, Vec::new())
+    }
+}
+
+fn propagation_confidence_for_anchor(
+    anchor: &PropagationAnchor,
+) -> (RawExtractionConfidence, Vec<PropagationRisk>) {
+    if anchor
+        .expression_text
+        .as_deref()
+        .map(|text| text.contains("->") || text.starts_with('&') || text.starts_with('*'))
+        .unwrap_or(false)
+    {
+        (
+            RawExtractionConfidence::Partial,
+            vec![PropagationRisk::PointerHeavyFlow],
+        )
+    } else {
+        (RawExtractionConfidence::High, Vec::new())
+    }
+}
+
+fn dedupe_propagation_events(events: Vec<PropagationEvent>) -> Vec<PropagationEvent> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+
+    for event in events {
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}",
+            event.owner_symbol_id.as_deref().unwrap_or_default(),
+            event
+                .source_anchor
+                .anchor_id
+                .as_deref()
+                .or(event.source_anchor.expression_text.as_deref())
+                .unwrap_or_default(),
+            event
+                .target_anchor
+                .anchor_id
+                .as_deref()
+                .or(event.target_anchor.expression_text.as_deref())
+                .unwrap_or_default(),
+            match event.propagation_kind {
+                PropagationKind::Assignment => "assignment",
+                PropagationKind::InitializerBinding => "initializerBinding",
+                PropagationKind::ArgumentToParameter => "argumentToParameter",
+                PropagationKind::ReturnValue => "returnValue",
+                PropagationKind::FieldWrite => "fieldWrite",
+                PropagationKind::FieldRead => "fieldRead",
+            },
+            event.file_path,
+            event.line,
+        );
+        if seen.insert(key) {
+            deduped.push(event);
+        }
+    }
+
+    deduped
+}
+
 fn build_methods_by_parent<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
     let mut methods_by_parent: HashMap<&str, Vec<&Symbol>> = HashMap::new();
     for symbol in symbols {
@@ -658,6 +816,8 @@ mod tests {
             called_name: called_name.to_string(),
             call_kind: RawCallKind::Unqualified,
             argument_count: None,
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: None,
@@ -673,6 +833,8 @@ mod tests {
             called_name: called_name.to_string(),
             call_kind,
             argument_count: None,
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: Some("this".to_string()),
             receiver_kind: None,
             qualifier: None,
@@ -686,6 +848,38 @@ mod tests {
         let parsed = parse_cpp_file(path, source).unwrap();
         let calls = resolve_calls(&parsed.raw_calls, &parsed.symbols);
         (parsed.symbols, parsed.raw_calls, calls)
+    }
+
+    #[test]
+    fn derives_argument_and_return_boundary_propagation_events() {
+        let source = include_str!("../../samples/propagation/src/function_boundary.cpp");
+        let parsed = parse_cpp_file("samples/propagation/src/function_boundary.cpp", source).unwrap();
+        let calls = resolve_calls(&parsed.raw_calls, &parsed.symbols);
+        let events = derive_function_boundary_propagation_events(
+            &parsed.raw_calls,
+            &calls,
+            &parsed.callable_flow_summaries,
+            &parsed.symbols,
+        );
+
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::Consume")
+                && event.source_anchor.expression_text.as_deref() == Some("current")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Consume::param:value@2")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::Forward")
+                && event.source_anchor.expression_text.as_deref() == Some("current")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Forward::param:value@4")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::Forward")
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Forward::local:local@5")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:out@12")
+        }));
     }
 
     fn resolve_fixture_decision<'a>(
@@ -1049,6 +1243,8 @@ mod tests {
             called_name: "Update".to_string(),
             call_kind: RawCallKind::MemberAccess,
             argument_count: Some(0),
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: Some("actor".to_string()),
             receiver_kind: None,
             qualifier: None,
@@ -1081,6 +1277,8 @@ mod tests {
             called_name: "Update".to_string(),
             call_kind: RawCallKind::Qualified,
             argument_count: Some(0),
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: Some("Worker".to_string()),
@@ -1113,6 +1311,8 @@ mod tests {
             called_name: "Update".to_string(),
             call_kind: RawCallKind::Qualified,
             argument_count: Some(0),
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: Some("Gameplay".to_string()),
@@ -1145,6 +1345,8 @@ mod tests {
             called_name: "Update".to_string(),
             call_kind: RawCallKind::Qualified,
             argument_count: Some(0),
+            argument_texts: Vec::new(),
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: Some("Gameplay".to_string()),
@@ -1177,6 +1379,8 @@ mod tests {
             called_name: "Blend".to_string(),
             call_kind: RawCallKind::Unqualified,
             argument_count: Some(2),
+            argument_texts: vec!["a".to_string(), "b".to_string()],
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: None,
@@ -1217,6 +1421,8 @@ mod tests {
             called_name: "Blend".to_string(),
             call_kind: RawCallKind::Unqualified,
             argument_count: Some(2),
+            argument_texts: vec!["a".to_string(), "b".to_string()],
+            result_target: None,
             receiver: None,
             receiver_kind: None,
             qualifier: None,

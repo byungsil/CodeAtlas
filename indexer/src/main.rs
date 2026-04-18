@@ -342,22 +342,54 @@ fn run_full(
     verbose: bool,
     data_dir: &Path,
 ) {
-    let (raw_symbols, raw_calls, normalized_references, file_records) = parse_files(workspace_root, all_relative, verbose);
+    let (
+        raw_symbols,
+        raw_calls,
+        normalized_references,
+        local_propagation_events,
+        callable_flow_summaries,
+        file_records,
+    ) = parse_files(workspace_root, all_relative, verbose);
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
+    let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
+        &raw_calls,
+        &calls,
+        &callable_flow_summaries,
+        &symbols,
+    );
+    let propagation_events = resolver::merge_propagation_events(
+        &local_propagation_events,
+        &boundary_propagation_events,
+    );
 
     let raw_count: usize = all_relative.len();
-    db.write_all(&raw_symbols, &symbols, &calls, &normalized_references, &file_records)
+    db.write_all(
+        &raw_symbols,
+        &symbols,
+        &calls,
+        &normalized_references,
+        &propagation_events,
+        &callable_flow_summaries,
+        &file_records,
+    )
         .expect("Failed to write to SQLite");
 
     if json_mode {
         write_json(&data_dir.join("symbols.json"), &symbols);
         write_json(&data_dir.join("calls.json"), &calls);
         write_json(&data_dir.join("references.json"), &normalized_references);
+        write_json(&data_dir.join("propagation.json"), &propagation_events);
         write_json(&data_dir.join("files.json"), &file_records);
     }
 
-    println!("  Symbols: {} | Calls: {} | Files: {}", symbols.len(), calls.len(), raw_count);
+    println!(
+        "  Symbols: {} | Calls: {} | Propagation: {} | Files: {}",
+        symbols.len(),
+        calls.len(),
+        propagation_events.len(),
+        raw_count
+    );
 }
 
 fn run_incremental(
@@ -366,10 +398,24 @@ fn run_incremental(
     plan: &incremental::IncrementalPlan,
     verbose: bool,
 ) -> Result<(), String> {
-    let (parsed_symbols, new_raw_calls, new_references, new_files) = if !plan.to_index.is_empty() {
+    let (
+        parsed_symbols,
+        new_raw_calls,
+        new_references,
+        new_local_propagation,
+        new_callable_summaries,
+        new_files,
+    ) = if !plan.to_index.is_empty() {
         parse_files_strict(workspace_root, &plan.to_index, verbose)?
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     };
 
     let mut replaced_paths = plan.to_delete.clone();
@@ -396,6 +442,10 @@ fn run_incremental(
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
             db.delete_references_for_file(path)
                 .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
+            db.delete_propagation_for_file(path)
+                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
+            db.delete_callable_flow_summaries_for_file(path)
+                .map_err(|e| format!("Failed to delete callable summaries for {}: {}", path, e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
             db.delete_file_record(path)
@@ -406,6 +456,10 @@ fn run_incremental(
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
             db.delete_references_for_file(path)
                 .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
+            db.delete_propagation_for_file(path)
+                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
+            db.delete_callable_flow_summaries_for_file(path)
+                .map_err(|e| format!("Failed to delete callable summaries for {}: {}", path, e))?;
             db.delete_raw_symbols_for_file(path)
                 .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
             db.delete_file_record(path)
@@ -432,11 +486,21 @@ fn run_incremental(
 
         let mut all_calls = new_raw_calls;
         let mut all_references = new_references;
+        let mut all_local_propagation = new_local_propagation;
+        let mut all_callable_summaries = new_callable_summaries;
         let plan_to_index_set: HashSet<&str> = plan.to_index.iter().map(|p| p.as_str()).collect();
         let mut files_to_reresolve: Vec<String> = plan.to_index.clone();
 
         let mut affected = affected_calls;
         for path in affected_references {
+            if !affected.contains(&path) {
+                affected.push(path);
+            }
+        }
+        let affected_propagation = db
+            .cleanup_dangling_propagation()
+            .map_err(|e| format!("Failed to cleanup dangling propagation: {}", e))?;
+        for path in affected_propagation {
             if !affected.contains(&path) {
                 affected.push(path);
             }
@@ -458,11 +522,28 @@ fn run_incremental(
                 .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
             db.delete_references_for_file(path)
                 .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
+            db.delete_propagation_for_file(path)
+                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
             all_calls.extend(result.raw_calls);
             all_references.extend(result.normalized_references);
+            all_local_propagation.extend(result.propagation_events);
+            all_callable_summaries.extend(result.callable_flow_summaries);
         }
 
         let resolved = resolver::resolve_calls_with_db(&all_calls, &refreshed_symbols, db);
+        let callable_summaries = merge_callable_summaries(
+            &all_callable_summaries,
+            &load_missing_callable_summaries(db, &resolved, &all_callable_summaries)
+                .map_err(|e| format!("Failed to read callable summaries: {}", e))?,
+        );
+        let boundary_propagation = resolver::derive_function_boundary_propagation_events(
+            &all_calls,
+            &resolved,
+            &callable_summaries,
+            &refreshed_symbols,
+        );
+        let propagation_events =
+            resolver::merge_propagation_events(&all_local_propagation, &boundary_propagation);
         if !resolved.is_empty() {
             db.write_calls(&resolved)
                 .map_err(|e| format!("Failed to write calls: {}", e))?;
@@ -470,6 +551,14 @@ fn run_incremental(
         if !all_references.is_empty() {
             db.write_references(&all_references)
                 .map_err(|e| format!("Failed to write references: {}", e))?;
+        }
+        if !propagation_events.is_empty() {
+            db.write_propagation_events(&propagation_events)
+                .map_err(|e| format!("Failed to write propagation: {}", e))?;
+        }
+        if !all_callable_summaries.is_empty() {
+            db.write_callable_flow_summaries(&all_callable_summaries, &refreshed_symbols)
+                .map_err(|e| format!("Failed to write callable summaries: {}", e))?;
         }
 
         if !new_files.is_empty() {
@@ -483,10 +572,11 @@ fn run_incremental(
         let total_syms: i64 = db.count_symbols().unwrap_or(0);
         let total_calls: i64 = db.count_calls().unwrap_or(0);
         let total_references: i64 = db.count_references().unwrap_or(0);
+        let total_propagation: i64 = db.count_propagation_events().unwrap_or(0);
         let total_files: i64 = db.count_files().unwrap_or(0);
         println!(
-            "  Symbols: {} | Calls: {} | References: {} | Files: {} | Re-resolved: {} file(s)",
-            total_syms, total_calls, total_references, total_files, files_to_reresolve.len(),
+            "  Symbols: {} | Calls: {} | References: {} | Propagation: {} | Files: {} | Re-resolved: {} file(s)",
+            total_syms, total_calls, total_references, total_propagation, total_files, files_to_reresolve.len(),
         );
         Ok(())
     })();
@@ -508,6 +598,42 @@ fn run_incremental(
 fn write_json<T: serde::Serialize>(path: &Path, data: &T) {
     let json = serde_json::to_string_pretty(data).expect("Failed to serialize JSON");
     fs::write(path, json).expect("Failed to write JSON file");
+}
+
+fn load_missing_callable_summaries(
+    db: &storage::Database,
+    calls: &[models::Call],
+    in_memory: &[models::CallableFlowSummary],
+) -> rusqlite::Result<Vec<models::CallableFlowSummary>> {
+    let existing: HashSet<&str> = in_memory
+        .iter()
+        .map(|summary| summary.callable_symbol_id.as_str())
+        .collect();
+    let mut missing: Vec<String> = calls
+        .iter()
+        .map(|call| call.callee_id.clone())
+        .filter(|callee_id| !existing.contains(callee_id.as_str()))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    db.read_callable_flow_summaries_for_ids(&missing)
+}
+
+fn merge_callable_summaries(
+    primary: &[models::CallableFlowSummary],
+    secondary: &[models::CallableFlowSummary],
+) -> Vec<models::CallableFlowSummary> {
+    let mut merged = primary.to_vec();
+    let mut seen: HashSet<String> = merged
+        .iter()
+        .map(|summary| summary.callable_symbol_id.clone())
+        .collect();
+    for summary in secondary {
+        if seen.insert(summary.callable_symbol_id.clone()) {
+            merged.push(summary.clone());
+        }
+    }
+    merged
 }
 
 fn log_incremental_plan(plan: &incremental::IncrementalPlan, verbose: bool) {
