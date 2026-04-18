@@ -185,6 +185,18 @@ describe("Heuristic ambiguity metadata", () => {
       getMembers() {
         return [];
       },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
     };
 
     const ambiguousApp = createApp(ambiguousStore);

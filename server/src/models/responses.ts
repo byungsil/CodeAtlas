@@ -20,6 +20,10 @@ export type MatchReason =
   | "qualified_namespace_match"
   | "parameter_count_match"
   | "signature_arity_hint"
+  | "override_inheritance_match"
+  | "override_name_match"
+  | "override_parameter_count_match"
+  | "override_signature_arity_match"
   | "ambiguous_top_score"
   | "no_viable_candidate";
 
@@ -61,6 +65,12 @@ export interface CallerQueryResponse {
   callers: CallReference[];
   totalCount: number;
   truncated: boolean;
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  groupedBySubsystem?: MetadataGroupSummary[];
+  groupedByModule?: MetadataGroupSummary[];
 }
 
 export interface ClassResponse {
@@ -78,6 +88,10 @@ export interface SearchResponse {
   results: Symbol[];
   totalCount: number;
   truncated: boolean;
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
 }
 
 export interface CallGraphNode {
@@ -133,6 +147,11 @@ export interface ResolvedReference extends ReferenceRecord {
   sourceQualifiedName: string;
 }
 
+export interface MetadataGroupSummary {
+  key: string;
+  count: number;
+}
+
 export interface ReferenceQueryResponse extends ConfidenceMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
@@ -142,6 +161,12 @@ export interface ReferenceQueryResponse extends ConfidenceMetadata {
   truncated: boolean;
   category?: ReferenceCategory;
   filePath?: string;
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  groupedBySubsystem?: MetadataGroupSummary[];
+  groupedByModule?: MetadataGroupSummary[];
 }
 
 export interface ImpactedSymbolSummary {
@@ -171,6 +196,12 @@ export interface ImpactAnalysisResponse extends ConfidenceMetadata {
   topAffectedFiles: ImpactedFileSummary[];
   suggestedFollowUpQueries: string[];
   truncated: boolean;
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  affectedSubsystems?: MetadataGroupSummary[];
+  affectedModules?: MetadataGroupSummary[];
 }
 
 export interface StructureOverviewSummary {
@@ -206,6 +237,75 @@ export interface ClassMembersOverviewResponse extends ConfidenceMetadata {
   summary: StructureOverviewSummary;
   window: ResultWindow;
   members: Symbol[];
+}
+
+export interface OverrideCandidateRecord {
+  derivedMethodId: string;
+  baseMethodId: string;
+  confidence: "high" | "partial";
+  matchReasons: MatchReason[];
+}
+
+export interface TypeHierarchyNode {
+  symbolId: string;
+  qualifiedName: string;
+  type: Symbol["type"];
+  filePath: string;
+  line: number;
+}
+
+export interface TypeHierarchyResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  directBases: TypeHierarchyNode[];
+  directDerived: TypeHierarchyNode[];
+  window: ResultWindow;
+}
+
+export interface BaseMethodRecord {
+  method: Symbol;
+  owner: TypeHierarchyNode;
+  confidence: "high" | "partial";
+  matchReasons: MatchReason[];
+}
+
+export interface BaseMethodsResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  baseMethods: BaseMethodRecord[];
+}
+
+export interface OverrideRecord {
+  method: Symbol;
+  owner: TypeHierarchyNode;
+  confidence: "high" | "partial";
+  matchReasons: MatchReason[];
+}
+
+export interface OverrideQueryResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  overrides: OverrideRecord[];
+}
+
+export interface CallPathStep {
+  callerId: string;
+  callerQualifiedName: string;
+  calleeId: string;
+  calleeQualifiedName: string;
+  filePath: string;
+  line: number;
+}
+
+export interface TraceCallPathResponse {
+  source: Symbol;
+  target: Symbol;
+  maxDepth: number;
+  pathFound: boolean;
+  truncated: boolean;
+  steps: CallPathStep[];
 }
 
 export interface ErrorResponse {

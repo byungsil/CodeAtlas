@@ -4,6 +4,7 @@ mod graph_rules;
 mod ignore;
 mod incremental;
 mod indexing;
+mod metadata;
 mod models;
 mod parser;
 mod resolver;

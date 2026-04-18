@@ -35,6 +35,16 @@ pub struct Symbol {
     pub definition_end_line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_area: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +63,16 @@ pub struct FileRecord {
     pub content_hash: String,
     pub last_indexed: String,
     pub symbol_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subsystem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_area: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +227,34 @@ pub struct NormalizedReference {
     pub file_path: String,
     pub line: usize,
     pub confidence: RawExtractionConfidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InheritanceEdge {
+    pub derived_symbol_id: String,
+    pub base_symbol_id: String,
+    pub file_path: String,
+    pub line: usize,
+    pub confidence: RawExtractionConfidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OverrideMatchReason {
+    InheritanceEdge,
+    MatchingMethodName,
+    ParameterCountMatch,
+    SignatureArityMatch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideCandidate {
+    pub derived_method_id: String,
+    pub base_method_id: String,
+    pub confidence: RawExtractionConfidence,
+    pub reasons: Vec<OverrideMatchReason>,
 }
 
 #[derive(Debug)]

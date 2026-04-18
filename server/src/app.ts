@@ -2,6 +2,7 @@ import * as path from "path";
 import express from "express";
 import { Symbol as CodeSymbol } from "./models/symbol";
 import { Store } from "./storage/store";
+import { MetadataFilters } from "./storage/store";
 import {
   SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
   CALLERS_DEFAULT_LIMIT, CALLERS_MAX_LIMIT,
@@ -16,17 +17,22 @@ import {
   CallGraphEdge,
   CallReference,
   ClassMembersOverviewResponse,
+  BaseMethodsResponse,
   ErrorResponse,
   FileSymbolsResponse,
   ImpactAnalysisResponse,
   ImpactedFileSummary,
   ImpactedSymbolSummary,
+  MetadataGroupSummary,
   NamespaceSymbolsResponse,
+  OverrideQueryResponse,
   ReferenceCategory,
   ReferenceQueryResponse,
   ResolvedReference,
   StructureOverviewSummary,
   SymbolLookupResponse,
+  TraceCallPathResponse,
+  TypeHierarchyResponse,
 } from "./models/responses";
 import {
   buildClassResponse,
@@ -63,6 +69,52 @@ export function createApp(store: Store): express.Express {
     });
   }
 
+  function parseMetadataFilters(source: Record<string, unknown>): MetadataFilters | undefined {
+    const subsystem = typeof source.subsystem === "string" ? source.subsystem : undefined;
+    const module = typeof source.module === "string" ? source.module : undefined;
+    const projectArea = typeof source.projectArea === "string" ? source.projectArea : undefined;
+    const artifactKind = typeof source.artifactKind === "string"
+      ? source.artifactKind as MetadataFilters["artifactKind"]
+      : undefined;
+
+    if (!subsystem && !module && !projectArea && !artifactKind) {
+      return undefined;
+    }
+
+    return { subsystem, module, projectArea, artifactKind };
+  }
+
+  function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
+    return filters ?? {};
+  }
+
+  function matchesMetadataFilters(symbol: CodeSymbol | undefined, filters?: MetadataFilters): boolean {
+    if (!filters) return true;
+    if (!symbol) return false;
+    if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
+    if (filters.module && symbol.module !== filters.module) return false;
+    if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
+    if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
+    return true;
+  }
+
+  function buildMetadataGroupSummary(
+    symbolIds: Iterable<string>,
+    keySelector: (symbol: CodeSymbol) => string | undefined,
+  ): MetadataGroupSummary[] {
+    const counts = new Map<string, number>();
+    for (const symbolId of symbolIds) {
+      const symbol = store.getSymbolById(symbolId);
+      if (!symbol) continue;
+      const key = keySelector(symbol);
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  }
+
   function buildCallRefs(calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[], targetField: "callerId" | "calleeId"): CallReference[] {
     return calls
       .map((c) => makeCallRef(c, targetField))
@@ -73,8 +125,10 @@ export function createApp(store: Store): express.Express {
     calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
     targetField: "callerId" | "calleeId",
     limit: number,
+    metadataFilters?: MetadataFilters,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
     const refs = buildCallRefs(calls, targetField)
+      .filter((ref) => matchesMetadataFilters(store.getSymbolById(ref.symbolId), metadataFilters))
       .sort((a, b) => {
         if (a.qualifiedName !== b.qualifiedName) return a.qualifiedName.localeCompare(b.qualifiedName);
         if (a.filePath !== b.filePath) return a.filePath.localeCompare(b.filePath);
@@ -110,11 +164,12 @@ export function createApp(store: Store): express.Express {
     category?: ReferenceCategory,
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
+    metadataFilters?: MetadataFilters,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
     const references = store.getReferences(targetSymbolId, category, filePath)
       .map((reference) => {
         const sourceSymbol = store.getSymbolById(reference.sourceSymbolId);
-        if (!sourceSymbol) return null;
+        if (!sourceSymbol || !matchesMetadataFilters(sourceSymbol, metadataFilters)) return null;
         return {
           ...reference,
           sourceSymbolName: sourceSymbol.name,
@@ -139,10 +194,11 @@ export function createApp(store: Store): express.Express {
     symbol: CodeSymbol,
     maxDepth: number,
     limit: number,
+    metadataFilters?: MetadataFilters,
   ): ImpactAnalysisResponse {
-    const directCallers = buildUniqueCallRefs(store.getCallers(symbol.id), "callerId", limit);
-    const directCallees = buildUniqueCallRefs(store.getCallees(symbol.id), "calleeId", limit);
-    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit);
+    const directCallers = buildUniqueCallRefs(store.getCallers(symbol.id), "callerId", limit, metadataFilters);
+    const directCallees = buildUniqueCallRefs(store.getCallees(symbol.id), "calleeId", limit, metadataFilters);
+    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit, metadataFilters);
 
     const impactedSymbolCounts = new Map<string, number>();
     const impactedFileCounts = new Map<string, number>();
@@ -155,7 +211,7 @@ export function createApp(store: Store): express.Express {
       if (symbolId === symbol.id) return;
       impactedSymbolCounts.set(symbolId, (impactedSymbolCounts.get(symbolId) ?? 0) + 1);
       const affectedSymbol = store.getSymbolById(symbolId);
-      if (affectedSymbol) {
+      if (matchesMetadataFilters(affectedSymbol, metadataFilters) && affectedSymbol) {
         impactedFileCounts.set(affectedSymbol.filePath, (impactedFileCounts.get(affectedSymbol.filePath) ?? 0) + 1);
       }
     };
@@ -167,7 +223,7 @@ export function createApp(store: Store): express.Express {
         seenCallerSymbols.add(current.symbolId);
         bumpSymbol(current.symbolId);
         if (current.depth === maxDepth) continue;
-        const nextCallers = buildUniqueCallRefs(store.getCallers(current.symbolId), "callerId", limit).results;
+        const nextCallers = buildUniqueCallRefs(store.getCallers(current.symbolId), "callerId", limit, metadataFilters).results;
         for (const next of nextCallers) {
           queue.push({ symbolId: next.symbolId, depth: current.depth + 1 });
         }
@@ -181,7 +237,7 @@ export function createApp(store: Store): express.Express {
         seenCalleeSymbols.add(current.symbolId);
         bumpSymbol(current.symbolId);
         if (current.depth === maxDepth) continue;
-        const nextCallees = buildUniqueCallRefs(store.getCallees(current.symbolId), "calleeId", limit).results;
+        const nextCallees = buildUniqueCallRefs(store.getCallees(current.symbolId), "calleeId", limit, metadataFilters).results;
         for (const next of nextCallees) {
           queue.push({ symbolId: next.symbolId, depth: current.depth + 1 });
         }
@@ -199,7 +255,7 @@ export function createApp(store: Store): express.Express {
     const topAffectedSymbols: ImpactedSymbolSummary[] = Array.from(impactedSymbolCounts.entries())
       .map(([symbolId, count]) => {
         const impacted = store.getSymbolById(symbolId);
-        if (!impacted) return null;
+        if (!impacted || !matchesMetadataFilters(impacted, metadataFilters)) return null;
         return {
           symbolId,
           symbolName: impacted.name,
@@ -223,6 +279,7 @@ export function createApp(store: Store): express.Express {
       `get_callgraph name=${symbol.name} depth=${Math.min(maxDepth + 1, CALLGRAPH_MAX_DEPTH)}`,
       `find_references qualifiedName=${symbol.qualifiedName}`,
     ];
+    const affectedSymbolIds = Array.from(impactedSymbolCounts.keys());
 
     return {
       ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
@@ -235,6 +292,9 @@ export function createApp(store: Store): express.Express {
       topAffectedSymbols,
       topAffectedFiles,
       suggestedFollowUpQueries,
+      ...metadataFilterEcho(metadataFilters),
+      affectedSubsystems: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.subsystem),
+      affectedModules: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.module),
       truncated:
         directCallers.truncated
         || directCallees.truncated
@@ -253,6 +313,116 @@ export function createApp(store: Store): express.Express {
     return {
       totalCount: symbols.length,
       typeCounts,
+    };
+  }
+
+  function buildHierarchyResponse(
+    symbol: CodeSymbol,
+    limit: number,
+  ): TypeHierarchyResponse {
+    const directBases = store.getDirectBases(symbol.id)
+      .map((candidate) => ({
+        symbolId: candidate.id,
+        qualifiedName: candidate.qualifiedName,
+        type: candidate.type,
+        filePath: candidate.filePath,
+        line: candidate.line,
+      }))
+      .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
+    const directDerived = store.getDirectDerived(symbol.id)
+      .map((candidate) => ({
+        symbolId: candidate.id,
+        qualifiedName: candidate.qualifiedName,
+        type: candidate.type,
+        filePath: candidate.filePath,
+        line: candidate.line,
+      }))
+      .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
+    const totalCount = directBases.length + directDerived.length;
+
+    return {
+      ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+      directBases: directBases.slice(0, limit),
+      directDerived: directDerived.slice(0, Math.max(0, limit - Math.min(limit, directBases.length))),
+      window: buildResultWindow(
+        Math.min(limit, totalCount),
+        totalCount,
+        totalCount > limit,
+        limit,
+      ),
+    };
+  }
+
+  function traceShortestCallPath(
+    source: CodeSymbol,
+    target: CodeSymbol,
+    maxDepth: number,
+  ): TraceCallPathResponse {
+    type QueueItem = { symbolId: string; depth: number; steps: TraceCallPathResponse["steps"] };
+    const visited = new Set<string>([source.id]);
+    const queue: QueueItem[] = [{ symbolId: source.id, depth: 0, steps: [] }];
+    let truncated = false;
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.depth >= maxDepth) {
+        if (current.symbolId !== target.id && store.getCallees(current.symbolId).length > 0) {
+          truncated = true;
+        }
+        continue;
+      }
+
+      const outgoing = store.getCallees(current.symbolId)
+        .slice()
+        .sort((a, b) => a.line - b.line || a.calleeId.localeCompare(b.calleeId));
+
+      for (const call of outgoing) {
+        const caller = store.getSymbolById(call.callerId);
+        const callee = store.getSymbolById(call.calleeId);
+        if (!caller || !callee) {
+          continue;
+        }
+
+        const nextSteps = current.steps.concat({
+          callerId: caller.id,
+          callerQualifiedName: caller.qualifiedName,
+          calleeId: callee.id,
+          calleeQualifiedName: callee.qualifiedName,
+          filePath: call.filePath,
+          line: call.line,
+        });
+
+        if (callee.id === target.id) {
+          return {
+            source,
+            target,
+            maxDepth,
+            pathFound: true,
+            truncated,
+            steps: nextSteps,
+          };
+        }
+
+        if (visited.has(callee.id)) {
+          continue;
+        }
+
+        visited.add(callee.id);
+        queue.push({
+          symbolId: callee.id,
+          depth: current.depth + 1,
+          steps: nextSteps,
+        });
+      }
+    }
+
+    return {
+      source,
+      target,
+      maxDepth,
+      pathFound: false,
+      truncated,
+      steps: [],
     };
   }
 
@@ -348,13 +518,14 @@ export function createApp(store: Store): express.Express {
   app.get("/callers/:name", (req, res) => {
     const { name } = req.params;
     const limit = Math.min(parseInt((req.query.limit as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
+    const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
     const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
 
     if (!sym) {
       return notFound(res);
     }
 
-    const callers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit);
+    const callers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit, metadataFilters);
     const response: CallerQueryResponse = buildCallerQueryResponse({
       symbol: sym,
       candidateCount,
@@ -362,6 +533,11 @@ export function createApp(store: Store): express.Express {
       totalCount: callers.totalCount,
       truncated: callers.truncated,
       limitApplied: limit,
+    });
+    const callerIds = callers.results.map((caller) => caller.symbolId);
+    Object.assign(response, metadataFilterEcho(metadataFilters), {
+      groupedBySubsystem: buildMetadataGroupSummary(callerIds, (caller) => caller.subsystem),
+      groupedByModule: buildMetadataGroupSummary(callerIds, (caller) => caller.module),
     });
     return res.json(response);
   });
@@ -390,6 +566,7 @@ export function createApp(store: Store): express.Express {
     const category = typeof req.query.category === "string" ? req.query.category as ReferenceCategory : undefined;
     const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
     if (!id && !qualifiedName) {
       return badRequest(res);
@@ -411,7 +588,7 @@ export function createApp(store: Store): express.Express {
       return notFound(res);
     }
 
-    const references = buildResolvedReferences(symbol.id, category, filePath, limit);
+    const references = buildResolvedReferences(symbol.id, category, filePath, limit, metadataFilters);
     const response: ReferenceQueryResponse = {
       ...buildExactLookupResponse({
         symbol,
@@ -423,6 +600,9 @@ export function createApp(store: Store): express.Express {
       truncated: references.truncated,
       ...(category ? { category } : {}),
       ...(filePath ? { filePath } : {}),
+      ...metadataFilterEcho(metadataFilters),
+      groupedBySubsystem: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.subsystem),
+      groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
     };
     return res.json(response);
   });
@@ -432,6 +612,7 @@ export function createApp(store: Store): express.Express {
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
     const maxDepth = Math.min(parseInt((req.query.depth as string) || "2", 10), CALLGRAPH_MAX_DEPTH);
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
     if (!id && !qualifiedName) {
       return badRequest(res);
@@ -453,7 +634,7 @@ export function createApp(store: Store): express.Express {
       return notFound(res);
     }
 
-    return res.json(buildImpactAnalysis(symbol, maxDepth, limit));
+    return res.json(buildImpactAnalysis(symbol, maxDepth, limit, metadataFilters));
   });
 
   app.get("/file-symbols", (req, res) => {
@@ -522,24 +703,106 @@ export function createApp(store: Store): express.Express {
     return res.json(response);
   });
 
+  app.get("/type-hierarchy", (req, res) => {
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    if (!qualifiedName) {
+      return badRequest(res);
+    }
+
+    const symbol = store.getSymbolByQualifiedName(qualifiedName);
+    if (!symbol || (symbol.type !== "class" && symbol.type !== "struct")) {
+      return notFound(res);
+    }
+
+    return res.json(buildHierarchyResponse(symbol, limit));
+  });
+
+  app.get("/base-methods", (req, res) => {
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    if (!qualifiedName) {
+      return badRequest(res);
+    }
+
+    const symbol = store.getSymbolByQualifiedName(qualifiedName);
+    if (!symbol || symbol.type !== "method") {
+      return notFound(res);
+    }
+
+    const baseMethods = store.getBaseMethods(symbol.id);
+    const windowed = applyLimit(baseMethods, limit);
+    const response: BaseMethodsResponse = {
+      ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+      window: buildResultWindow(windowed.results.length, windowed.totalCount, windowed.truncated, limit),
+      baseMethods: windowed.results,
+    };
+    return res.json(response);
+  });
+
+  app.get("/overrides", (req, res) => {
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    if (!qualifiedName) {
+      return badRequest(res);
+    }
+
+    const symbol = store.getSymbolByQualifiedName(qualifiedName);
+    if (!symbol || symbol.type !== "method") {
+      return notFound(res);
+    }
+
+    const overrides = store.getOverrides(symbol.id);
+    const windowed = applyLimit(overrides, limit);
+    const response: OverrideQueryResponse = {
+      ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+      window: buildResultWindow(windowed.results.length, windowed.totalCount, windowed.truncated, limit),
+      overrides: windowed.results,
+    };
+    return res.json(response);
+  });
+
   app.get("/search", (req, res) => {
     const q = (req.query.q as string) || "";
     const type = req.query.type as string | undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
     if (!q) {
       return res.status(400).json({ error: "Missing query parameter 'q'", code: "BAD_REQUEST" } as ErrorResponse);
     }
 
-    const { results, totalCount } = store.searchSymbols(q, type, limit);
+    const { results, totalCount } = store.searchSymbols(q, type, limit, metadataFilters);
     const response: SearchResponse = {
       query: q,
       window: buildResultWindow(results.length, totalCount, totalCount > limit, limit),
       results,
       totalCount,
       truncated: totalCount > limit,
+      ...metadataFilterEcho(metadataFilters),
     };
     return res.json(response);
+  });
+
+  app.get("/trace-call-path", (req, res) => {
+    const sourceQualifiedName = typeof req.query.sourceQualifiedName === "string" ? req.query.sourceQualifiedName : undefined;
+    const targetQualifiedName = typeof req.query.targetQualifiedName === "string" ? req.query.targetQualifiedName : undefined;
+    const maxDepth = Math.min(parseInt((req.query.maxDepth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
+
+    if (!sourceQualifiedName || !targetQualifiedName) {
+      return badRequest(res);
+    }
+
+    const source = store.getSymbolByQualifiedName(sourceQualifiedName);
+    const target = store.getSymbolByQualifiedName(targetQualifiedName);
+    if (!source || !target) {
+      return notFound(res);
+    }
+    if ((source.type !== "function" && source.type !== "method") || (target.type !== "function" && target.type !== "method")) {
+      return notFound(res);
+    }
+
+    return res.json(traceShortestCallPath(source, target, maxDepth));
   });
 
   function expandCallees(symbolId: string, currentDepth: number, maxDepth: number, visited: Set<string>): { edges: CallGraphEdge[]; truncated: boolean } {

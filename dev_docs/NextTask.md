@@ -7,7 +7,8 @@ Current status:
 - Milestone 2 (`Tree-Sitter Graph Integration`) is complete.
 - Milestone 3 (`Real Impact Navigation`) is complete.
 - Milestone 4 (`Production-Grade Incremental Operation`) is complete.
-- The next planned execution target is Milestone 5 (`Large-Project Intelligence`).
+- Milestone 5 (`Large-Project Intelligence`) is complete.
+- The next planned execution target is Milestone 6 (`Variable and Data-Flow Propagation`).
 
 ## 1. Goal
 
@@ -81,7 +82,8 @@ Execution status:
 - Step 2 is complete through Milestone 2.
 - Step 3 is complete through Milestone 3.
 - Step 4 is complete through Milestone 4.
-- Step 5 is the next active milestone track.
+- Step 5 is complete through Milestone 5.
+- Step 6 is the next active milestone track.
 
 ---
 

@@ -547,6 +547,11 @@ fn enter_class<'a>(node: Node<'a>, ctx: &mut Ctx, kind: &str, stack: &mut Vec<Wa
         definition_line: None,
         definition_end_line: None,
         parent_id: None,
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 
     let body = match node.child_by_field_name("body") {
@@ -619,6 +624,11 @@ fn visit_field_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         definition_line: None,
         definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 }
 
@@ -659,6 +669,11 @@ fn visit_member_declaration(node: Node, ctx: &mut Ctx, parent_id: &str) {
         definition_line: None,
         definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 }
 
@@ -696,6 +711,11 @@ fn visit_inline_method(node: Node, ctx: &mut Ctx, parent_id: &str) {
         definition_line: None,
         definition_end_line: None,
         parent_id: Some(parent_id.to_string()),
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 
     if let Some(body) = node.child_by_field_name("body") {
@@ -731,6 +751,11 @@ fn visit_enum(node: Node, ctx: &mut Ctx) {
         definition_line: None,
         definition_end_line: None,
         parent_id: None,
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 }
 
@@ -799,6 +824,11 @@ fn visit_function_definition(node: Node, ctx: &mut Ctx) {
         definition_line: None,
         definition_end_line: None,
         parent_id,
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 
     if let Some(body) = node.child_by_field_name("body") {
@@ -846,6 +876,11 @@ fn visit_declaration(node: Node, ctx: &mut Ctx) {
         definition_line: None,
         definition_end_line: None,
         parent_id: None,
+        module: None,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
     });
 }
 
@@ -1512,6 +1547,47 @@ class Player : public Actor {};
                 confidence: RawExtractionConfidence::Partial,
             }
         );
+    }
+
+    #[test]
+    fn emits_multiple_inheritance_references_for_interfaces_and_abstract_bases() {
+        let src = r#"
+namespace Game {
+class ISystem {
+public:
+    virtual void Tick() = 0;
+};
+
+class Actor {
+public:
+    virtual void Update() = 0;
+};
+
+class SystemAdapter : public ISystem {};
+class Player : public Actor {};
+class Enemy : public Actor {};
+}
+"#;
+        let result = parse_cpp_file("hierarchy.cpp", src).unwrap();
+        let inheritance_refs: Vec<_> = result
+            .normalized_references
+            .iter()
+            .filter(|reference| reference.category == ReferenceCategory::InheritanceMention)
+            .collect();
+
+        assert_eq!(inheritance_refs.len(), 3);
+        assert!(inheritance_refs.iter().any(|reference| {
+            reference.source_symbol_id == "Game::SystemAdapter"
+                && reference.target_symbol_id == "Game::ISystem"
+        }));
+        assert!(inheritance_refs.iter().any(|reference| {
+            reference.source_symbol_id == "Game::Player"
+                && reference.target_symbol_id == "Game::Actor"
+        }));
+        assert!(inheritance_refs.iter().any(|reference| {
+            reference.source_symbol_id == "Game::Enemy"
+                && reference.target_symbol_id == "Game::Actor"
+        }));
     }
 
     #[test]

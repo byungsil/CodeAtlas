@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
-use crate::models::{Call, FileRecord, NormalizedReference, RawExtractionConfidence, ReferenceCategory, Symbol};
+use crate::models::{Call, FileRecord, InheritanceEdge, NormalizedReference, RawExtractionConfidence, ReferenceCategory, Symbol};
 use crate::resolver;
+
+const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS symbols_raw (
@@ -24,7 +26,12 @@ CREATE TABLE IF NOT EXISTS symbols_raw (
     definition_file_path TEXT,
     definition_line INTEGER,
     definition_end_line INTEGER,
-    parent_id   TEXT
+    parent_id   TEXT,
+    module      TEXT,
+    subsystem   TEXT,
+    project_area TEXT,
+    artifact_kind TEXT,
+    header_role TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -46,7 +53,12 @@ CREATE TABLE IF NOT EXISTS symbols (
     definition_file_path TEXT,
     definition_line INTEGER,
     definition_end_line INTEGER,
-    parent_id   TEXT
+    parent_id   TEXT,
+    module      TEXT,
+    subsystem   TEXT,
+    project_area TEXT,
+    artifact_kind TEXT,
+    header_role TEXT
 );
 
 CREATE TABLE IF NOT EXISTS calls (
@@ -69,7 +81,12 @@ CREATE TABLE IF NOT EXISTS files (
     path            TEXT PRIMARY KEY,
     content_hash    TEXT NOT NULL,
     last_indexed    TEXT NOT NULL,
-    symbol_count    INTEGER NOT NULL
+    symbol_count    INTEGER NOT NULL,
+    module          TEXT,
+    subsystem       TEXT,
+    project_area    TEXT,
+    artifact_kind   TEXT,
+    header_role     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_id ON symbols_raw(id);
@@ -130,6 +147,11 @@ impl Database {
         Self::ensure_column(conn, "symbols_raw", "definition_file_path", "TEXT")?;
         Self::ensure_column(conn, "symbols_raw", "definition_line", "INTEGER")?;
         Self::ensure_column(conn, "symbols_raw", "definition_end_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols_raw", "module", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "subsystem", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "project_area", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "artifact_kind", "TEXT")?;
+        Self::ensure_column(conn, "symbols_raw", "header_role", "TEXT")?;
 
         Self::ensure_column(conn, "symbols", "parameter_count", "INTEGER")?;
         Self::ensure_column(conn, "symbols", "scope_qualified_name", "TEXT")?;
@@ -141,6 +163,17 @@ impl Database {
         Self::ensure_column(conn, "symbols", "definition_file_path", "TEXT")?;
         Self::ensure_column(conn, "symbols", "definition_line", "INTEGER")?;
         Self::ensure_column(conn, "symbols", "definition_end_line", "INTEGER")?;
+        Self::ensure_column(conn, "symbols", "module", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "subsystem", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "project_area", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "artifact_kind", "TEXT")?;
+        Self::ensure_column(conn, "symbols", "header_role", "TEXT")?;
+
+        Self::ensure_column(conn, "files", "module", "TEXT")?;
+        Self::ensure_column(conn, "files", "subsystem", "TEXT")?;
+        Self::ensure_column(conn, "files", "project_area", "TEXT")?;
+        Self::ensure_column(conn, "files", "artifact_kind", "TEXT")?;
+        Self::ensure_column(conn, "files", "header_role", "TEXT")?;
 
         Ok(())
     }
@@ -197,8 +230,8 @@ impl Database {
 
     pub fn write_raw_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            "INSERT INTO symbols_raw (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         )?;
         for s in symbols {
             let normalized = normalize_dual_locations(s);
@@ -222,6 +255,11 @@ impl Database {
                 normalized.definition_line,
                 normalized.definition_end_line,
                 normalized.parent_id,
+                normalized.module,
+                normalized.subsystem,
+                normalized.project_area,
+                normalized.artifact_kind,
+                normalized.header_role,
             ])?;
         }
         Ok(())
@@ -229,8 +267,8 @@ impl Database {
 
     pub fn write_symbols(&self, symbols: &[Symbol]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            "INSERT OR REPLACE INTO symbols (id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         )?;
         for s in symbols {
             let normalized = normalize_dual_locations(s);
@@ -254,6 +292,11 @@ impl Database {
                 normalized.definition_line,
                 normalized.definition_end_line,
                 normalized.parent_id,
+                normalized.module,
+                normalized.subsystem,
+                normalized.project_area,
+                normalized.artifact_kind,
+                normalized.header_role,
             ])?;
         }
         Ok(())
@@ -288,10 +331,20 @@ impl Database {
 
     pub fn write_files(&self, files: &[FileRecord]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         for f in files {
-            stmt.execute(params![f.path, f.content_hash, f.last_indexed, f.symbol_count])?;
+            stmt.execute(params![
+                f.path,
+                f.content_hash,
+                f.last_indexed,
+                f.symbol_count,
+                f.module,
+                f.subsystem,
+                f.project_area,
+                f.artifact_kind,
+                f.header_role
+            ])?;
         }
         Ok(())
     }
@@ -341,7 +394,7 @@ impl Database {
 
     pub fn read_file_records(&self) -> SqlResult<Vec<FileRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT path, content_hash, last_indexed, symbol_count FROM files",
+            "SELECT path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role FROM files",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(FileRecord {
@@ -349,6 +402,11 @@ impl Database {
                 content_hash: row.get(1)?,
                 last_indexed: row.get(2)?,
                 symbol_count: row.get(3)?,
+                module: row.get(4)?,
+                subsystem: row.get(5)?,
+                project_area: row.get(6)?,
+                artifact_kind: row.get(7)?,
+                header_role: row.get(8)?,
             })
         })?;
         rows.collect()
@@ -417,34 +475,12 @@ impl Database {
 
         let placeholders = vec!["?"; file_paths.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
+            "SELECT {}
              FROM symbols_raw WHERE file_path IN ({})",
-            placeholders,
+            SYMBOL_SELECT_COLUMNS, placeholders,
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(file_paths.iter()), |row| {
-            Ok(Symbol {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualified_name: row.get(2)?,
-                symbol_type: row.get(3)?,
-                file_path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                signature: row.get(7)?,
-                parameter_count: row.get(8)?,
-                scope_qualified_name: row.get(9)?,
-                scope_kind: row.get(10)?,
-                symbol_role: row.get(11)?,
-                declaration_file_path: row.get(12)?,
-                declaration_line: row.get(13)?,
-                declaration_end_line: row.get(14)?,
-                definition_file_path: row.get(15)?,
-                definition_line: row.get(16)?,
-                definition_end_line: row.get(17)?,
-                parent_id: row.get(18)?,
-            })
-        })?;
+        let rows = stmt.query_map(params_from_iter(file_paths.iter()), row_to_symbol)?;
         rows.collect()
     }
 
@@ -455,64 +491,22 @@ impl Database {
 
         let placeholders = vec!["?"; symbol_ids.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
+            "SELECT {}
              FROM symbols_raw WHERE id IN ({})",
-            placeholders,
+            SYMBOL_SELECT_COLUMNS, placeholders,
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), |row| {
-            Ok(Symbol {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualified_name: row.get(2)?,
-                symbol_type: row.get(3)?,
-                file_path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                signature: row.get(7)?,
-                parameter_count: row.get(8)?,
-                scope_qualified_name: row.get(9)?,
-                scope_kind: row.get(10)?,
-                symbol_role: row.get(11)?,
-                declaration_file_path: row.get(12)?,
-                declaration_line: row.get(13)?,
-                declaration_end_line: row.get(14)?,
-                definition_file_path: row.get(15)?,
-                definition_line: row.get(16)?,
-                definition_end_line: row.get(17)?,
-                parent_id: row.get(18)?,
-            })
-        })?;
+        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), row_to_symbol)?;
         rows.collect()
     }
 
     pub fn find_symbols_by_name(&self, name: &str) -> SqlResult<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id FROM symbols WHERE name = ?1 AND (type = 'function' OR type = 'method')",
-        )?;
-        let rows = stmt.query_map(params![name], |row| {
-            Ok(Symbol {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualified_name: row.get(2)?,
-                symbol_type: row.get(3)?,
-                file_path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                signature: row.get(7)?,
-                parameter_count: row.get(8)?,
-                scope_qualified_name: row.get(9)?,
-                scope_kind: row.get(10)?,
-                symbol_role: row.get(11)?,
-                declaration_file_path: row.get(12)?,
-                declaration_line: row.get(13)?,
-                declaration_end_line: row.get(14)?,
-                definition_file_path: row.get(15)?,
-                definition_line: row.get(16)?,
-                definition_end_line: row.get(17)?,
-                parent_id: row.get(18)?,
-            })
-        })?;
+        let sql = format!(
+            "SELECT {} FROM symbols WHERE name = ?1 AND (type = 'function' OR type = 'method')",
+            SYMBOL_SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![name], row_to_symbol)?;
         rows.collect()
     }
 
@@ -547,32 +541,48 @@ impl Database {
 
         let placeholders = vec!["?"; symbol_ids.len()].join(", ");
         let sql = format!(
-            "SELECT id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id
+            "SELECT {}
              FROM symbols WHERE id IN ({})",
-            placeholders,
+            SYMBOL_SELECT_COLUMNS, placeholders,
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), |row| {
-            Ok(Symbol {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualified_name: row.get(2)?,
-                symbol_type: row.get(3)?,
-                file_path: row.get(4)?,
-                line: row.get(5)?,
-                end_line: row.get(6)?,
-                signature: row.get(7)?,
-                parameter_count: row.get(8)?,
-                scope_qualified_name: row.get(9)?,
-                scope_kind: row.get(10)?,
-                symbol_role: row.get(11)?,
-                declaration_file_path: row.get(12)?,
-                declaration_line: row.get(13)?,
-                declaration_end_line: row.get(14)?,
-                definition_file_path: row.get(15)?,
-                definition_line: row.get(16)?,
-                definition_end_line: row.get(17)?,
-                parent_id: row.get(18)?,
+        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), row_to_symbol)?;
+        rows.collect()
+    }
+
+    pub fn get_direct_base_edges(&self, derived_symbol_id: &str) -> SqlResult<Vec<InheritanceEdge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_symbol_id, target_symbol_id, file_path, line, confidence
+             FROM symbol_references
+             WHERE category = 'inheritanceMention' AND source_symbol_id = ?1
+             ORDER BY line ASC, target_symbol_id ASC",
+        )?;
+        let rows = stmt.query_map(params![derived_symbol_id], |row| {
+            Ok(InheritanceEdge {
+                derived_symbol_id: row.get(0)?,
+                base_symbol_id: row.get(1)?,
+                file_path: row.get(2)?,
+                line: row.get(3)?,
+                confidence: extraction_confidence_from_key(&row.get::<_, String>(4)?),
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_direct_derived_edges(&self, base_symbol_id: &str) -> SqlResult<Vec<InheritanceEdge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_symbol_id, target_symbol_id, file_path, line, confidence
+             FROM symbol_references
+             WHERE category = 'inheritanceMention' AND target_symbol_id = ?1
+             ORDER BY line ASC, source_symbol_id ASC",
+        )?;
+        let rows = stmt.query_map(params![base_symbol_id], |row| {
+            Ok(InheritanceEdge {
+                derived_symbol_id: row.get(0)?,
+                base_symbol_id: row.get(1)?,
+                file_path: row.get(2)?,
+                line: row.get(3)?,
+                confidence: extraction_confidence_from_key(&row.get::<_, String>(4)?),
             })
         })?;
         rows.collect()
@@ -663,6 +673,35 @@ pub fn validate_existing_database(path: &Path) -> Result<(), String> {
     }
 }
 
+fn row_to_symbol(row: &rusqlite::Row<'_>) -> SqlResult<Symbol> {
+    Ok(Symbol {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        qualified_name: row.get(2)?,
+        symbol_type: row.get(3)?,
+        file_path: row.get(4)?,
+        line: row.get(5)?,
+        end_line: row.get(6)?,
+        signature: row.get(7)?,
+        parameter_count: row.get(8)?,
+        scope_qualified_name: row.get(9)?,
+        scope_kind: row.get(10)?,
+        symbol_role: row.get(11)?,
+        declaration_file_path: row.get(12)?,
+        declaration_line: row.get(13)?,
+        declaration_end_line: row.get(14)?,
+        definition_file_path: row.get(15)?,
+        definition_line: row.get(16)?,
+        definition_end_line: row.get(17)?,
+        parent_id: row.get(18)?,
+        module: row.get(19)?,
+        subsystem: row.get(20)?,
+        project_area: row.get(21)?,
+        artifact_kind: row.get(22)?,
+        header_role: row.get(23)?,
+    })
+}
+
 fn reference_category_key(category: &ReferenceCategory) -> &'static str {
     match category {
         ReferenceCategory::FunctionCall => "functionCall",
@@ -677,6 +716,13 @@ fn extraction_confidence_key(confidence: &RawExtractionConfidence) -> &'static s
     match confidence {
         RawExtractionConfidence::High => "high",
         RawExtractionConfidence::Partial => "partial",
+    }
+}
+
+fn extraction_confidence_from_key(value: &str) -> RawExtractionConfidence {
+    match value {
+        "partial" => RawExtractionConfidence::Partial,
+        _ => RawExtractionConfidence::High,
     }
 }
 
@@ -725,6 +771,7 @@ mod tests {
             declaration_file_path: None, declaration_line: None, declaration_end_line: None,
             definition_file_path: None, definition_line: None, definition_end_line: None,
             parent_id: None,
+            module: None, subsystem: None, project_area: None, artifact_kind: None, header_role: None,
         }
     }
 
@@ -739,6 +786,7 @@ mod tests {
         let files = vec![FileRecord {
             path: "test.cpp".into(), content_hash: "abc".into(),
             last_indexed: "2026-01-01T00:00:00Z".into(), symbol_count: 2,
+            module: None, subsystem: None, project_area: None, artifact_kind: None, header_role: None,
         }];
 
         db.write_all(&symbols, &symbols, &calls, &[], &files).unwrap();
@@ -798,6 +846,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
         let source = Symbol {
             id: "Foo::Bar".into(),
@@ -819,6 +872,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         db.write_raw_symbols(&[header.clone(), source]).unwrap();
@@ -860,6 +918,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         let definition = Symbol {
@@ -882,6 +945,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         db.write_raw_symbols(&[declaration]).unwrap();
@@ -921,6 +989,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
         let definition = Symbol {
             id: "Foo::Bar".into(),
@@ -942,6 +1015,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Foo".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         db.write_raw_symbols(&[caller.clone(), declaration.clone(), definition]).unwrap();
@@ -989,6 +1067,115 @@ mod tests {
         assert_eq!(count, 1);
         let category: String = db.conn.query_row("SELECT category FROM symbol_references LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(category, "typeUsage");
+    }
+
+    #[test]
+    fn persists_symbol_and_file_metadata_fields() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let symbol = Symbol {
+            id: "Game::UI::Panel".into(),
+            name: "Panel".into(),
+            qualified_name: "Game::UI::Panel".into(),
+            symbol_type: "class".into(),
+            file_path: "src/ui/public/panel.h".into(),
+            line: 3,
+            end_line: 20,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: Some("ui".into()),
+            subsystem: Some("runtime".into()),
+            project_area: Some("ui".into()),
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("public".into()),
+        };
+        let file = FileRecord {
+            path: "src/ui/public/panel.h".into(),
+            content_hash: "abc".into(),
+            last_indexed: "2026-01-01T00:00:00Z".into(),
+            symbol_count: 1,
+            module: Some("ui".into()),
+            subsystem: Some("runtime".into()),
+            project_area: Some("ui".into()),
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("public".into()),
+        };
+
+        db.write_symbols(&[symbol]).unwrap();
+        db.write_files(&[file]).unwrap();
+
+        let stored_symbols = db.find_symbols_by_ids(&["Game::UI::Panel".into()]).unwrap();
+        assert_eq!(stored_symbols.len(), 1);
+        assert_eq!(stored_symbols[0].module.as_deref(), Some("ui"));
+        assert_eq!(stored_symbols[0].subsystem.as_deref(), Some("runtime"));
+        assert_eq!(stored_symbols[0].project_area.as_deref(), Some("ui"));
+        assert_eq!(stored_symbols[0].artifact_kind.as_deref(), Some("runtime"));
+        assert_eq!(stored_symbols[0].header_role.as_deref(), Some("public"));
+
+        let stored_files = db.read_file_records().unwrap();
+        assert_eq!(stored_files.len(), 1);
+        assert_eq!(stored_files[0].module.as_deref(), Some("ui"));
+        assert_eq!(stored_files[0].subsystem.as_deref(), Some("runtime"));
+        assert_eq!(stored_files[0].project_area.as_deref(), Some("ui"));
+        assert_eq!(stored_files[0].artifact_kind.as_deref(), Some("runtime"));
+        assert_eq!(stored_files[0].header_role.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn reads_direct_inheritance_edges_for_base_and_derived_queries() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let references = vec![
+            NormalizedReference {
+                source_symbol_id: "Game::Player".into(),
+                target_symbol_id: "Game::Actor".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "player.h".into(),
+                line: 12,
+                confidence: RawExtractionConfidence::Partial,
+            },
+            NormalizedReference {
+                source_symbol_id: "Game::Enemy".into(),
+                target_symbol_id: "Game::Actor".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "enemy.h".into(),
+                line: 18,
+                confidence: RawExtractionConfidence::Partial,
+            },
+            NormalizedReference {
+                source_symbol_id: "Game::Enemy".into(),
+                target_symbol_id: "Game::ISerializable".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "enemy.h".into(),
+                line: 18,
+                confidence: RawExtractionConfidence::High,
+            },
+        ];
+
+        db.write_references(&references).unwrap();
+
+        let player_bases = db.get_direct_base_edges("Game::Player").unwrap();
+        assert_eq!(player_bases.len(), 1);
+        assert_eq!(player_bases[0].base_symbol_id, "Game::Actor");
+        assert_eq!(player_bases[0].confidence, RawExtractionConfidence::Partial);
+
+        let actor_derived = db.get_direct_derived_edges("Game::Actor").unwrap();
+        assert_eq!(actor_derived.len(), 2);
+        assert_eq!(actor_derived[0].derived_symbol_id, "Game::Player");
+        assert_eq!(actor_derived[1].derived_symbol_id, "Game::Enemy");
+
+        let serializable_derived = db.get_direct_derived_edges("Game::ISerializable").unwrap();
+        assert_eq!(serializable_derived.len(), 1);
+        assert_eq!(serializable_derived[0].derived_symbol_id, "Game::Enemy");
+        assert_eq!(serializable_derived[0].confidence, RawExtractionConfidence::High);
     }
 
     #[test]

@@ -445,6 +445,11 @@ mod tests {
             content_hash: hash.into(),
             last_indexed: "2026-01-01T00:00:00Z".into(),
             symbol_count: 1,
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         }
     }
 

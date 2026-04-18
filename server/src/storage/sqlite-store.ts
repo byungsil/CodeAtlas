@@ -4,8 +4,16 @@ import * as path from "path";
 import Database from "better-sqlite3";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
-import { ReferenceCategory, ReferenceRecord } from "../models/responses";
+import {
+  BaseMethodRecord,
+  MatchReason,
+  OverrideRecord,
+  ReferenceCategory,
+  ReferenceRecord,
+  TypeHierarchyNode,
+} from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
+import { MetadataFilters } from "./store";
 
 export class SqliteStore {
   private db: Database.Database;
@@ -38,15 +46,19 @@ export class SqliteStore {
     return row ? toSymbol(row) : undefined;
   }
 
-  searchSymbols(query: string, type?: string, limit = SEARCH_DEFAULT_LIMIT): { results: Symbol[]; totalCount: number } {
+  searchSymbols(query: string, type?: string, limit = SEARCH_DEFAULT_LIMIT, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
     if (query.length < SEARCH_MIN_QUERY_LENGTH) {
       return { results: [], totalCount: 0 };
     }
 
-    if (query.length >= 3 && this.hasFts()) {
-      return this.searchWithFts(query, type, limit);
+    if (metadataFilters && !this.hasMetadataColumns()) {
+      return { results: [], totalCount: 0 };
     }
-    return this.searchWithLike(query, type, limit);
+
+    if (query.length >= 3 && this.hasFts()) {
+      return this.searchWithFts(query, type, limit, metadataFilters);
+    }
+    return this.searchWithLike(query, type, limit, metadataFilters);
   }
 
   getFileSymbols(filePath: string): Symbol[] {
@@ -84,50 +96,45 @@ export class SqliteStore {
     }
   }
 
-  private searchWithFts(query: string, type: string | undefined, limit: number): { results: Symbol[]; totalCount: number } {
+  private searchWithFts(query: string, type: string | undefined, limit: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
     const ftsQuery = `"${query.replace(/"/g, '""')}"`;
-
+    const whereClauses = ["symbols_fts MATCH ?"];
+    const values: Array<string | number> = [ftsQuery];
+    if (type) {
+      whereClauses.push("s.type = ?");
+      values.push(type);
+    }
+    appendMetadataFilters(whereClauses, values, metadataFilters, "s");
     let totalCount: number;
     let rows: RawRow[];
-    if (type) {
-      totalCount = (this.db
-        .prepare("SELECT COUNT(*) as cnt FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE symbols_fts MATCH ? AND s.type = ?")
-        .get(ftsQuery, type) as { cnt: number }).cnt;
-      rows = this.db
-        .prepare("SELECT s.* FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE symbols_fts MATCH ? AND s.type = ? LIMIT ?")
-        .all(ftsQuery, type, limit) as RawRow[];
-    } else {
-      totalCount = (this.db
-        .prepare("SELECT COUNT(*) as cnt FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE symbols_fts MATCH ?")
-        .get(ftsQuery) as { cnt: number }).cnt;
-      rows = this.db
-        .prepare("SELECT s.* FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE symbols_fts MATCH ? LIMIT ?")
-        .all(ftsQuery, limit) as RawRow[];
-    }
+    totalCount = (this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE ${whereClauses.join(" AND ")}`)
+      .get(...values) as { cnt: number }).cnt;
+    rows = this.db
+      .prepare(`SELECT s.* FROM symbols s JOIN symbols_fts f ON s.id = f.id WHERE ${whereClauses.join(" AND ")} LIMIT ?`)
+      .all(...values, limit) as RawRow[];
 
     return { results: rows.map(toSymbol), totalCount };
   }
 
-  private searchWithLike(query: string, type: string | undefined, limit: number): { results: Symbol[]; totalCount: number } {
+  private searchWithLike(query: string, type: string | undefined, limit: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
     const pattern = `%${query}%`;
+    const whereClauses = ["(name LIKE ? OR qualified_name LIKE ?)"];
+    const values: Array<string | number> = [pattern, pattern];
+    if (type) {
+      whereClauses.push("type = ?");
+      values.push(type);
+    }
+    appendMetadataFilters(whereClauses, values, metadataFilters);
 
     let totalCount: number;
     let rows: RawRow[];
-    if (type) {
-      totalCount = (this.db
-        .prepare("SELECT COUNT(*) as cnt FROM symbols WHERE (name LIKE ? OR qualified_name LIKE ?) AND type = ?")
-        .get(pattern, pattern, type) as { cnt: number }).cnt;
-      rows = this.db
-        .prepare("SELECT * FROM symbols WHERE (name LIKE ? OR qualified_name LIKE ?) AND type = ? LIMIT ?")
-        .all(pattern, pattern, type, limit) as RawRow[];
-    } else {
-      totalCount = (this.db
-        .prepare("SELECT COUNT(*) as cnt FROM symbols WHERE (name LIKE ? OR qualified_name LIKE ?)")
-        .get(pattern, pattern) as { cnt: number }).cnt;
-      rows = this.db
-        .prepare("SELECT * FROM symbols WHERE (name LIKE ? OR qualified_name LIKE ?) LIMIT ?")
-        .all(pattern, pattern, limit) as RawRow[];
-    }
+    totalCount = (this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM symbols WHERE ${whereClauses.join(" AND ")}`)
+      .get(...values) as { cnt: number }).cnt;
+    rows = this.db
+      .prepare(`SELECT * FROM symbols WHERE ${whereClauses.join(" AND ")} LIMIT ?`)
+      .all(...values, limit) as RawRow[];
 
     return { results: rows.map(toSymbol), totalCount };
   }
@@ -151,6 +158,90 @@ export class SqliteStore {
       .prepare("SELECT * FROM symbols WHERE parent_id = ?")
       .all(parentId) as RawRow[];
     return rows.map(toSymbol);
+  }
+
+  getDirectBases(symbolId: string): Symbol[] {
+    if (!this.hasReferencesTable()) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(`
+        SELECT s.*
+        FROM symbol_references r
+        JOIN symbols s ON s.id = r.target_symbol_id
+        WHERE r.category = 'inheritanceMention' AND r.source_symbol_id = ?
+        ORDER BY r.line, s.qualified_name
+      `)
+      .all(symbolId) as RawRow[];
+    return rows.map(toSymbol);
+  }
+
+  getDirectDerived(symbolId: string): Symbol[] {
+    if (!this.hasReferencesTable()) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(`
+        SELECT s.*
+        FROM symbol_references r
+        JOIN symbols s ON s.id = r.source_symbol_id
+        WHERE r.category = 'inheritanceMention' AND r.target_symbol_id = ?
+        ORDER BY r.line, s.qualified_name
+      `)
+      .all(symbolId) as RawRow[];
+    return rows.map(toSymbol);
+  }
+
+  getBaseMethods(symbolId: string): BaseMethodRecord[] {
+    const method = this.getSymbolById(symbolId);
+    if (!method || method.type !== "method" || !method.parentId) {
+      return [];
+    }
+
+    const results: BaseMethodRecord[] = [];
+    for (const base of this.getDirectBases(method.parentId)) {
+      for (const candidate of this.getMembers(base.id)) {
+        if (candidate.type !== "method" || candidate.name !== method.name) {
+          continue;
+        }
+        const inferred = inferOverrideConfidence(method, candidate);
+        results.push({
+          method: candidate,
+          owner: toHierarchyNode(base),
+          confidence: inferred.confidence,
+          matchReasons: inferred.matchReasons,
+        });
+      }
+    }
+
+    return results.sort(compareOverrideRecords);
+  }
+
+  getOverrides(symbolId: string): OverrideRecord[] {
+    const method = this.getSymbolById(symbolId);
+    if (!method || method.type !== "method" || !method.parentId) {
+      return [];
+    }
+
+    const results: OverrideRecord[] = [];
+    for (const derived of this.getDirectDerived(method.parentId)) {
+      for (const candidate of this.getMembers(derived.id)) {
+        if (candidate.type !== "method" || candidate.name !== method.name) {
+          continue;
+        }
+        const inferred = inferOverrideConfidence(candidate, method);
+        results.push({
+          method: candidate,
+          owner: toHierarchyNode(derived),
+          confidence: inferred.confidence,
+          matchReasons: inferred.matchReasons,
+        });
+      }
+    }
+
+    return results.sort(compareOverrideRecords);
   }
 
   getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[] {
@@ -185,6 +276,15 @@ export class SqliteStore {
         .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='symbol_references'")
         .get() as { cnt: number };
       return row.cnt > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private hasMetadataColumns(): boolean {
+    try {
+      this.db.prepare("SELECT module, subsystem, project_area, artifact_kind FROM symbols LIMIT 0").get();
+      return true;
     } catch {
       return false;
     }
@@ -272,6 +372,11 @@ interface RawRow {
   definition_line: number | null;
   definition_end_line: number | null;
   parent_id: string | null;
+  module: string | null;
+  subsystem: string | null;
+  project_area: string | null;
+  artifact_kind: "runtime" | "editor" | "tool" | "test" | "generated" | null;
+  header_role: "public" | "private" | "internal" | null;
 }
 
 interface RawCallRow {
@@ -311,6 +416,11 @@ function toSymbol(row: RawRow): Symbol {
     ...(row.definition_line !== null ? { definitionLine: row.definition_line } : {}),
     ...(row.definition_end_line !== null ? { definitionEndLine: row.definition_end_line } : {}),
     ...(row.parent_id ? { parentId: row.parent_id } : {}),
+    ...(row.module ? { module: row.module } : {}),
+    ...(row.subsystem ? { subsystem: row.subsystem } : {}),
+    ...(row.project_area ? { projectArea: row.project_area } : {}),
+    ...(row.artifact_kind ? { artifactKind: row.artifact_kind } : {}),
+    ...(row.header_role ? { headerRole: row.header_role } : {}),
   };
 }
 
@@ -332,4 +442,86 @@ function toReference(row: RawReferenceRow): ReferenceRecord {
     line: row.line,
     confidence: row.confidence,
   };
+}
+
+function toHierarchyNode(symbol: Symbol): TypeHierarchyNode {
+  return {
+    symbolId: symbol.id,
+    qualifiedName: symbol.qualifiedName,
+    type: symbol.type,
+    filePath: symbol.filePath,
+    line: symbol.line,
+  };
+}
+
+function compareOverrideRecords(left: BaseMethodRecord | OverrideRecord, right: BaseMethodRecord | OverrideRecord): number {
+  return left.owner.qualifiedName.localeCompare(right.owner.qualifiedName)
+    || left.method.qualifiedName.localeCompare(right.method.qualifiedName);
+}
+
+function inferOverrideConfidence(
+  derivedMethod: Symbol,
+  baseMethod: Symbol,
+): { confidence: "high" | "partial"; matchReasons: MatchReason[] } {
+  const matchReasons: MatchReason[] = [
+    "override_inheritance_match",
+    "override_name_match",
+  ];
+
+  if (
+    derivedMethod.parameterCount !== undefined
+    && baseMethod.parameterCount !== undefined
+    && derivedMethod.parameterCount === baseMethod.parameterCount
+  ) {
+    matchReasons.push("override_parameter_count_match");
+    return { confidence: "high", matchReasons };
+  }
+
+  const derivedArity = inferSignatureArity(derivedMethod.signature);
+  const baseArity = inferSignatureArity(baseMethod.signature);
+  if (derivedArity !== undefined && derivedArity === baseArity) {
+    matchReasons.push("override_signature_arity_match");
+    return { confidence: "high", matchReasons };
+  }
+
+  return { confidence: "partial", matchReasons };
+}
+
+function inferSignatureArity(signature?: string): number | undefined {
+  if (!signature) return undefined;
+  const start = signature.indexOf("(");
+  const end = signature.lastIndexOf(")");
+  if (start < 0 || end <= start) return undefined;
+  const params = signature.slice(start + 1, end).trim();
+  if (!params || params === "void") return 0;
+  return params.split(",").length;
+}
+
+function appendMetadataFilters(
+  whereClauses: string[],
+  values: Array<string | number>,
+  metadataFilters?: MetadataFilters,
+  alias?: string,
+): void {
+  if (!metadataFilters) {
+    return;
+  }
+
+  const prefix = alias ? `${alias}.` : "";
+  if (metadataFilters.subsystem) {
+    whereClauses.push(`${prefix}subsystem = ?`);
+    values.push(metadataFilters.subsystem);
+  }
+  if (metadataFilters.module) {
+    whereClauses.push(`${prefix}module = ?`);
+    values.push(metadataFilters.module);
+  }
+  if (metadataFilters.projectArea) {
+    whereClauses.push(`${prefix}project_area = ?`);
+    values.push(metadataFilters.projectArea);
+  }
+  if (metadataFilters.artifactKind) {
+    whereClauses.push(`${prefix}artifact_kind = ?`);
+    values.push(metadataFilters.artifactKind);
+  }
 }

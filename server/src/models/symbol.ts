@@ -28,4 +28,9 @@ export interface Symbol {
   definitionLine?: number;
   definitionEndLine?: number;
   parentId?: string;
+  module?: string;
+  subsystem?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  headerRole?: "public" | "private" | "internal";
 }

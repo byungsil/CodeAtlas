@@ -6,6 +6,7 @@ use chrono::Utc;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
+use crate::metadata::{apply_metadata_to_file_record, apply_metadata_to_symbol};
 use crate::models::{FileRecord, NormalizedReference, ParseResult, RawCallSite, Symbol};
 use crate::parser;
 
@@ -59,14 +60,25 @@ pub fn parse_files(
     for (rel_path, result, hash, _lossy) in results {
         match result {
             Ok(pr) => {
-                file_records.push(FileRecord {
+                let mut file_record = FileRecord {
                     path: rel_path,
                     content_hash: hash,
                     last_indexed: Utc::now().to_rfc3339(),
                     symbol_count: pr.symbols.len(),
-                });
+                    module: None,
+                    subsystem: None,
+                    project_area: None,
+                    artifact_kind: None,
+                    header_role: None,
+                };
+                apply_metadata_to_file_record(&mut file_record);
+                file_records.push(file_record);
                 normalized_references.extend(pr.normalized_references);
-                symbols.extend(pr.symbols);
+                let mut enriched_symbols = pr.symbols;
+                for symbol in &mut enriched_symbols {
+                    apply_metadata_to_symbol(symbol);
+                }
+                symbols.extend(enriched_symbols);
                 raw_calls.extend(pr.raw_calls);
             }
             Err(e) => {
@@ -86,6 +98,10 @@ pub fn parse_file_strict(workspace_root: &Path, rel_path: &str) -> Result<(Parse
         .map_err(|e| format!("Read error for {}: {}", rel_path, e))?;
     let result = parser::parse_cpp_file(rel_path, &content)
         .map_err(|e| format!("Parse error for {}: {}", rel_path, e))?;
+    let mut result = result;
+    for symbol in &mut result.symbols {
+        apply_metadata_to_symbol(symbol);
+    }
     Ok((result, hash, lossy))
 }
 
@@ -120,12 +136,19 @@ pub fn parse_files_strict(
                 result.raw_calls.len()
             );
         }
-        file_records.push(FileRecord {
+        let mut file_record = FileRecord {
             path: rel_path.clone(),
             content_hash: hash,
             last_indexed: Utc::now().to_rfc3339(),
             symbol_count: result.symbols.len(),
-        });
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+        };
+        apply_metadata_to_file_record(&mut file_record);
+        file_records.push(file_record);
         normalized_references.extend(result.normalized_references);
         symbols.extend(result.symbols);
         raw_calls.extend(result.raw_calls);

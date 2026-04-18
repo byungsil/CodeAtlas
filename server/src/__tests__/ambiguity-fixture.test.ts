@@ -24,6 +24,10 @@ function fixtureSymbols(): Symbol[] {
       endLine: 4,
       scopeQualifiedName: "Gameplay",
       scopeKind: "namespace",
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       id: "UI::Update",
@@ -35,6 +39,10 @@ function fixtureSymbols(): Symbol[] {
       endLine: 8,
       scopeQualifiedName: "UI",
       scopeKind: "namespace",
+      module: "ui",
+      subsystem: "runtime",
+      projectArea: "ui",
+      artifactKind: "runtime",
     },
     {
       id: "Gameplay",
@@ -44,6 +52,10 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/namespace_dupes.h",
       line: 1,
       endLine: 5,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       id: "UI",
@@ -53,6 +65,10 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/namespace_dupes.h",
       line: 6,
       endLine: 9,
+      module: "ui",
+      subsystem: "runtime",
+      projectArea: "ui",
+      artifactKind: "runtime",
     },
     {
       id: "AI::Controller",
@@ -62,6 +78,10 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/namespace_dupes.h",
       line: 12,
       endLine: 15,
+      module: "ai",
+      subsystem: "runtime",
+      projectArea: "ai",
+      artifactKind: "runtime",
     },
     {
       id: "AI::Controller::Update",
@@ -72,6 +92,10 @@ function fixtureSymbols(): Symbol[] {
       line: 11,
       endLine: 14,
       parentId: "AI::Controller",
+      module: "ai",
+      subsystem: "runtime",
+      projectArea: "ai",
+      artifactKind: "runtime",
     },
     {
       id: "Game::Worker",
@@ -81,6 +105,10 @@ function fixtureSymbols(): Symbol[] {
       filePath: "samples/ambiguity/src/split_update.h",
       line: 5,
       endLine: 9,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       id: "Game::Worker::Update",
@@ -91,6 +119,10 @@ function fixtureSymbols(): Symbol[] {
       line: 5,
       endLine: 5,
       parentId: "Game::Worker",
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       id: "Game::Worker::Tick",
@@ -101,6 +133,136 @@ function fixtureSymbols(): Symbol[] {
       line: 7,
       endLine: 10,
       parentId: "Game::Worker",
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Actor",
+      name: "Actor",
+      qualifiedName: "Game::Actor",
+      type: "class",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 1,
+      endLine: 6,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Player",
+      name: "Player",
+      qualifiedName: "Game::Player",
+      type: "class",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 8,
+      endLine: 12,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Enemy",
+      name: "Enemy",
+      qualifiedName: "Game::Enemy",
+      type: "class",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 14,
+      endLine: 18,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Actor::Tick",
+      name: "Tick",
+      qualifiedName: "Game::Actor::Tick",
+      type: "method",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 4,
+      endLine: 4,
+      parentId: "Game::Actor",
+      signature: "virtual void Tick(float dt)",
+      parameterCount: 1,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Player::Tick",
+      name: "Tick",
+      qualifiedName: "Game::Player::Tick",
+      type: "method",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 10,
+      endLine: 10,
+      parentId: "Game::Player",
+      signature: "void Tick(float dt)",
+      parameterCount: 1,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Enemy::Tick",
+      name: "Tick",
+      qualifiedName: "Game::Enemy::Tick",
+      type: "method",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 16,
+      endLine: 16,
+      parentId: "Game::Enemy",
+      signature: "void Tick(float dt)",
+      parameterCount: 1,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Bootstrap",
+      name: "Bootstrap",
+      qualifiedName: "Game::Bootstrap",
+      type: "function",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 1,
+      endLine: 2,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::Dispatch",
+      name: "Dispatch",
+      qualifiedName: "Game::Dispatch",
+      type: "function",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 4,
+      endLine: 5,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      id: "Game::ApplyDamage",
+      name: "ApplyDamage",
+      qualifiedName: "Game::ApplyDamage",
+      type: "function",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 7,
+      endLine: 8,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
   ];
 }
@@ -131,6 +293,18 @@ function fixtureCalls(): Call[] {
       filePath: "samples/ambiguity/src/split_update.cpp",
       line: 9,
     },
+    {
+      callerId: "Game::Bootstrap",
+      calleeId: "Game::Dispatch",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 2,
+    },
+    {
+      callerId: "Game::Dispatch",
+      calleeId: "Game::ApplyDamage",
+      filePath: "samples/ambiguity/src/path_trace.cpp",
+      line: 5,
+    },
   ];
 }
 
@@ -141,24 +315,50 @@ function fixtureFiles(): FileRecord[] {
       contentHash: "fixture-namespace-dupes-h",
       lastIndexed: "2026-04-18T00:00:00Z",
       symbolCount: 4,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       path: "samples/ambiguity/src/namespace_dupes.cpp",
       contentHash: "fixture-namespace-dupes-cpp",
       lastIndexed: "2026-04-18T00:00:00Z",
       symbolCount: 3,
+      module: "ai",
+      subsystem: "runtime",
+      projectArea: "ai",
+      artifactKind: "runtime",
     },
     {
       path: "samples/ambiguity/src/split_update.h",
       contentHash: "fixture-split-update-h",
       lastIndexed: "2026-04-18T00:00:00Z",
       symbolCount: 3,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
     {
       path: "samples/ambiguity/src/split_update.cpp",
       contentHash: "fixture-split-update-cpp",
       lastIndexed: "2026-04-18T00:00:00Z",
       symbolCount: 2,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
+    },
+    {
+      path: "samples/ambiguity/src/path_trace.cpp",
+      contentHash: "fixture-path-trace-cpp",
+      lastIndexed: "2026-04-18T00:00:00Z",
+      symbolCount: 3,
+      module: "gameplay",
+      subsystem: "runtime",
+      projectArea: "gameplay",
+      artifactKind: "runtime",
     },
   ];
 }
@@ -188,6 +388,22 @@ function fixtureReferences(): ReferenceRecord[] {
       filePath: "samples/ambiguity/src/split_update.cpp",
       line: 9,
       confidence: "high",
+    },
+    {
+      sourceSymbolId: "Game::Player",
+      targetSymbolId: "Game::Actor",
+      category: "inheritanceMention",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 8,
+      confidence: "partial",
+    },
+    {
+      sourceSymbolId: "Game::Enemy",
+      targetSymbolId: "Game::Actor",
+      category: "inheritanceMention",
+      filePath: "samples/ambiguity/src/hierarchy.h",
+      line: 14,
+      confidence: "partial",
     },
   ];
 }
@@ -229,7 +445,12 @@ function writeFixtureSqliteDb(): string {
       definition_file_path TEXT,
       definition_line INTEGER,
       definition_end_line INTEGER,
-      parent_id TEXT
+      parent_id TEXT,
+      module TEXT,
+      subsystem TEXT,
+      project_area TEXT,
+      artifact_kind TEXT,
+      header_role TEXT
     );
     CREATE TABLE calls (
       caller_id TEXT NOT NULL,
@@ -252,12 +473,14 @@ function writeFixtureSqliteDb(): string {
       id, name, qualified_name, type, file_path, line, end_line, signature,
       parameter_count, scope_qualified_name, scope_kind, symbol_role,
       declaration_file_path, declaration_line, declaration_end_line,
-      definition_file_path, definition_line, definition_end_line, parent_id
+      definition_file_path, definition_line, definition_end_line, parent_id,
+      module, subsystem, project_area, artifact_kind, header_role
     ) VALUES (
       @id, @name, @qualified_name, @type, @file_path, @line, @end_line, @signature,
       @parameter_count, @scope_qualified_name, @scope_kind, @symbol_role,
       @declaration_file_path, @declaration_line, @declaration_end_line,
-      @definition_file_path, @definition_line, @definition_end_line, @parent_id
+      @definition_file_path, @definition_line, @definition_end_line, @parent_id,
+      @module, @subsystem, @project_area, @artifact_kind, @header_role
     )
   `);
   const insertCall = db.prepare(`
@@ -290,6 +513,11 @@ function writeFixtureSqliteDb(): string {
       definition_line: symbol.definitionLine ?? null,
       definition_end_line: symbol.definitionEndLine ?? null,
       parent_id: symbol.parentId ?? null,
+      module: symbol.module ?? null,
+      subsystem: symbol.subsystem ?? null,
+      project_area: symbol.projectArea ?? null,
+      artifact_kind: symbol.artifactKind ?? null,
+      header_role: symbol.headerRole ?? null,
     });
   }
 
@@ -382,6 +610,15 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(callers.body.window.returnedCount).toBe(1);
       expect(callers.body.callers).toHaveLength(1);
       expect(callers.body.callers[0].qualifiedName).toBe("AI::Controller::Update");
+      expect(callers.body.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
+      const filteredCallers = await request(app)
+        .get("/callers/Update")
+        .query({ module: "ai", limit: 10 })
+        .expect(200);
+      expect(filteredCallers.body.module).toBe("ai");
+      expect(filteredCallers.body.callers).toHaveLength(1);
+      expect(filteredCallers.body.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
 
       const references = await request(app)
         .get("/references")
@@ -395,6 +632,14 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(references.body.references[0].sourceQualifiedName).toBe("Game::Worker::Tick");
       expect(references.body.references[0].category).toBe("methodCall");
 
+      const filteredReferences = await request(app)
+        .get("/references")
+        .query({ qualifiedName: "Gameplay::Update", category: "functionCall", module: "ai" })
+        .expect(200);
+      expect(filteredReferences.body.module).toBe("ai");
+      expect(filteredReferences.body.references).toHaveLength(1);
+      expect(filteredReferences.body.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
       const impact = await request(app)
         .get("/impact")
         .query({ qualifiedName: "Game::Worker::Update", depth: 2, limit: 10 })
@@ -405,6 +650,14 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(impact.body.totalAffectedSymbols).toBeGreaterThanOrEqual(1);
       expect(impact.body.topAffectedSymbols[0].qualifiedName).toBe("Game::Worker::Tick");
       expect(impact.body.suggestedFollowUpQueries).toContain("find_references qualifiedName=Game::Worker::Update");
+
+      const filteredImpact = await request(app)
+        .get("/impact")
+        .query({ qualifiedName: "Gameplay::Update", depth: 2, limit: 10, module: "ai" })
+        .expect(200);
+      expect(filteredImpact.body.module).toBe("ai");
+      expect(filteredImpact.body.directCallers).toHaveLength(1);
+      expect(filteredImpact.body.affectedModules).toEqual([{ key: "ai", count: 1 }]);
 
       const fileSymbols = await request(app)
         .get("/file-symbols")
@@ -434,6 +687,58 @@ describe("ambiguity fixture storage and API contracts", () => {
         "Game::Worker::Update",
         "Game::Worker::Tick",
       ]);
+
+      const hierarchy = await request(app)
+        .get("/type-hierarchy")
+        .query({ qualifiedName: "Game::Actor" })
+        .expect(200);
+      expect(hierarchy.body.lookupMode).toBe("exact");
+      expect(hierarchy.body.directBases).toHaveLength(0);
+      expect(hierarchy.body.directDerived.map((item: any) => item.qualifiedName)).toEqual([
+        "Game::Enemy",
+        "Game::Player",
+      ]);
+
+      const baseMethods = await request(app)
+        .get("/base-methods")
+        .query({ qualifiedName: "Game::Player::Tick" })
+        .expect(200);
+      expect(baseMethods.body.lookupMode).toBe("exact");
+      expect(baseMethods.body.baseMethods).toHaveLength(1);
+      expect(baseMethods.body.baseMethods[0].method.qualifiedName).toBe("Game::Actor::Tick");
+      expect(baseMethods.body.baseMethods[0].confidence).toBe("high");
+
+      const overrides = await request(app)
+        .get("/overrides")
+        .query({ qualifiedName: "Game::Actor::Tick" })
+        .expect(200);
+      expect(overrides.body.lookupMode).toBe("exact");
+      expect(overrides.body.overrides).toHaveLength(2);
+      expect(overrides.body.overrides.map((item: any) => item.method.qualifiedName)).toEqual([
+        "Game::Enemy::Tick",
+        "Game::Player::Tick",
+      ]);
+
+      const pathTrace = await request(app)
+        .get("/trace-call-path")
+        .query({
+          sourceQualifiedName: "Game::Bootstrap",
+          targetQualifiedName: "Game::ApplyDamage",
+          maxDepth: 3,
+        })
+        .expect(200);
+      expect(pathTrace.body.pathFound).toBe(true);
+      expect(pathTrace.body.steps).toHaveLength(2);
+      expect(pathTrace.body.steps[0].callerQualifiedName).toBe("Game::Bootstrap");
+      expect(pathTrace.body.steps[1].calleeQualifiedName).toBe("Game::ApplyDamage");
+
+      const metadataSearch = await request(app)
+        .get("/search")
+        .query({ q: "Update", module: "ui" })
+        .expect(200);
+      expect(metadataSearch.body.module).toBe("ui");
+      expect(metadataSearch.body.results).toHaveLength(1);
+      expect(metadataSearch.body.results[0].qualifiedName).toBe("UI::Update");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -495,6 +800,23 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(callers.window.returnedCount).toBe(1);
       expect(callers.callers).toHaveLength(1);
       expect(callers.callers[0].qualifiedName).toBe("AI::Controller::Update");
+      expect(callers.module).toBeUndefined();
+      expect(callers.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
+      const filteredCallerResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 14,
+          method: "tools/call",
+          params: { name: "find_callers", arguments: { name: "Update", limit: 10, module: "ai" } },
+        },
+      ], dir);
+      const filteredCallers = JSON.parse(filteredCallerResponses.find((r) => r.id === 14).result.content[0].text);
+      expect(filteredCallers.module).toBe("ai");
+      expect(filteredCallers.callers).toHaveLength(1);
+      expect(filteredCallers.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
 
       const referenceResponses = await mcpCall([
         INIT,
@@ -518,6 +840,24 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(references.references[0].sourceQualifiedName).toBe("AI::Controller::Update");
       expect(references.references[0].category).toBe("functionCall");
 
+      const filteredReferenceResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 15,
+          method: "tools/call",
+          params: {
+            name: "find_references",
+            arguments: { qualifiedName: "Gameplay::Update", category: "functionCall", module: "ai", limit: 10 },
+          },
+        },
+      ], dir);
+      const filteredReferences = JSON.parse(filteredReferenceResponses.find((r) => r.id === 15).result.content[0].text);
+      expect(filteredReferences.module).toBe("ai");
+      expect(filteredReferences.references).toHaveLength(1);
+      expect(filteredReferences.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
       const impactResponses = await mcpCall([
         INIT,
         INITIALIZED,
@@ -538,6 +878,24 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(impact.totalAffectedSymbols).toBeGreaterThanOrEqual(1);
       expect(impact.topAffectedSymbols[0].qualifiedName).toBe("AI::Controller::Update");
       expect(impact.suggestedFollowUpQueries).toContain("find_callers qualifiedName=Gameplay::Update");
+
+      const filteredImpactResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 16,
+          method: "tools/call",
+          params: {
+            name: "impact_analysis",
+            arguments: { qualifiedName: "Gameplay::Update", depth: 2, limit: 10, module: "ai" },
+          },
+        },
+      ], dir);
+      const filteredImpact = JSON.parse(filteredImpactResponses.find((r) => r.id === 16).result.content[0].text);
+      expect(filteredImpact.module).toBe("ai");
+      expect(filteredImpact.directCallers).toHaveLength(1);
+      expect(filteredImpact.affectedModules).toEqual([{ key: "ai", count: 1 }]);
 
       const fileResponses = await mcpCall([
         INIT,
@@ -588,6 +946,93 @@ describe("ambiguity fixture storage and API contracts", () => {
         "Game::Worker::Update",
         "Game::Worker::Tick",
       ]);
+
+      const hierarchyResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 10,
+          method: "tools/call",
+          params: { name: "get_type_hierarchy", arguments: { qualifiedName: "Game::Actor" } },
+        },
+      ], dir);
+      const hierarchy = JSON.parse(hierarchyResponses.find((r) => r.id === 10).result.content[0].text);
+      expect(hierarchy.lookupMode).toBe("exact");
+      expect(hierarchy.directDerived.map((item: any) => item.qualifiedName)).toEqual([
+        "Game::Enemy",
+        "Game::Player",
+      ]);
+
+      const baseMethodResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 11,
+          method: "tools/call",
+          params: { name: "find_base_methods", arguments: { qualifiedName: "Game::Player::Tick" } },
+        },
+      ], dir);
+      const baseMethods = JSON.parse(baseMethodResponses.find((r) => r.id === 11).result.content[0].text);
+      expect(baseMethods.baseMethods).toHaveLength(1);
+      expect(baseMethods.baseMethods[0].method.qualifiedName).toBe("Game::Actor::Tick");
+      expect(baseMethods.baseMethods[0].confidence).toBe("high");
+
+      const overrideResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 12,
+          method: "tools/call",
+          params: { name: "find_overrides", arguments: { qualifiedName: "Game::Actor::Tick" } },
+        },
+      ], dir);
+      const overrides = JSON.parse(overrideResponses.find((r) => r.id === 12).result.content[0].text);
+      expect(overrides.overrides).toHaveLength(2);
+      expect(overrides.overrides.map((item: any) => item.method.qualifiedName)).toEqual([
+        "Game::Enemy::Tick",
+        "Game::Player::Tick",
+      ]);
+
+      const pathResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 13,
+          method: "tools/call",
+          params: {
+            name: "trace_call_path",
+            arguments: {
+              sourceQualifiedName: "Game::Bootstrap",
+              targetQualifiedName: "Game::ApplyDamage",
+              maxDepth: 3,
+            },
+          },
+        },
+      ], dir);
+      const pathTrace = JSON.parse(pathResponses.find((r) => r.id === 13).result.content[0].text);
+      expect(pathTrace.pathFound).toBe(true);
+      expect(pathTrace.steps).toHaveLength(2);
+      expect(pathTrace.steps[0].callerQualifiedName).toBe("Game::Bootstrap");
+      expect(pathTrace.steps[1].calleeQualifiedName).toBe("Game::ApplyDamage");
+
+      const searchResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 17,
+          method: "tools/call",
+          params: { name: "search_symbols", arguments: { query: "Update", module: "ui", limit: 10 } },
+        },
+      ], dir);
+      const metadataSearch = JSON.parse(searchResponses.find((r) => r.id === 17).result.content[0].text);
+      expect(metadataSearch.module).toBe("ui");
+      expect(metadataSearch.results).toHaveLength(1);
+      expect(metadataSearch.results[0].qualifiedName).toBe("UI::Update");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

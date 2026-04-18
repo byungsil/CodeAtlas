@@ -10,9 +10,11 @@ import {
   DATA_DIR_NAME, DB_FILENAME,
 } from "./constants";
 import { Store } from "./storage/store";
+import { MetadataFilters } from "./storage/store";
 import { SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
 import {
+  BaseMethodsResponse,
   ClassMembersOverviewResponse,
   CallReference,
   CallGraphEdge,
@@ -21,12 +23,16 @@ import {
   ImpactAnalysisResponse,
   ImpactedFileSummary,
   ImpactedSymbolSummary,
+  MetadataGroupSummary,
   NamespaceSymbolsResponse,
+  OverrideQueryResponse,
   ReferenceCategory,
   ReferenceQueryResponse,
   ResolvedReference,
   StructureOverviewSummary,
   SymbolLookupResponse,
+  TraceCallPathResponse,
+  TypeHierarchyResponse,
 } from "./models/responses";
 import {
   buildClassResponse,
@@ -77,12 +83,45 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       .filter((r): r is CallReference => r !== null);
   }
 
+  function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
+    return filters ?? {};
+  }
+
+  function matchesMetadataFilters(symbol: ReturnType<Store["getSymbolById"]>, filters?: MetadataFilters): boolean {
+    if (!filters) return true;
+    if (!symbol) return false;
+    if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
+    if (filters.module && symbol.module !== filters.module) return false;
+    if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
+    if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
+    return true;
+  }
+
+  function buildMetadataGroupSummary(
+    symbolIds: Iterable<string>,
+    keySelector: (symbol: NonNullable<ReturnType<Store["getSymbolById"]>>) => string | undefined,
+  ): MetadataGroupSummary[] {
+    const counts = new Map<string, number>();
+    for (const symbolId of symbolIds) {
+      const symbol = store.getSymbolById(symbolId);
+      if (!symbol) continue;
+      const key = keySelector(symbol);
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  }
+
   function buildUniqueCallReferences(
     calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
     targetField: "callerId" | "calleeId",
     limit: number,
+    metadataFilters?: MetadataFilters,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
     const refs = buildCallReferences(calls, targetField)
+      .filter((ref) => matchesMetadataFilters(store.getSymbolById(ref.symbolId), metadataFilters))
       .sort((a, b) => {
         if (a.qualifiedName !== b.qualifiedName) return a.qualifiedName.localeCompare(b.qualifiedName);
         if (a.filePath !== b.filePath) return a.filePath.localeCompare(b.filePath);
@@ -155,11 +194,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     category?: ReferenceCategory,
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
+    metadataFilters?: MetadataFilters,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
     const references = store.getReferences(targetSymbolId, category, filePath)
       .map((reference) => {
         const sourceSymbol = store.getSymbolById(reference.sourceSymbolId);
-        if (!sourceSymbol) return null;
+        if (!sourceSymbol || !matchesMetadataFilters(sourceSymbol, metadataFilters)) return null;
         return {
           ...reference,
           sourceSymbolName: sourceSymbol.name,
@@ -184,10 +224,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
     maxDepth: number,
     limit: number,
+    metadataFilters?: MetadataFilters,
   ): ImpactAnalysisResponse {
-    const directCallers = buildUniqueCallReferences(store.getCallers(symbol.id), "callerId", limit);
-    const directCallees = buildUniqueCallReferences(store.getCallees(symbol.id), "calleeId", limit);
-    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit);
+    const directCallers = buildUniqueCallReferences(store.getCallers(symbol.id), "callerId", limit, metadataFilters);
+    const directCallees = buildUniqueCallReferences(store.getCallees(symbol.id), "calleeId", limit, metadataFilters);
+    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit, metadataFilters);
 
     const impactedSymbolCounts = new Map<string, number>();
     const impactedFileCounts = new Map<string, number>();
@@ -200,7 +241,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       if (symbolId === symbol.id) return;
       impactedSymbolCounts.set(symbolId, (impactedSymbolCounts.get(symbolId) ?? 0) + 1);
       const affectedSymbol = store.getSymbolById(symbolId);
-      if (affectedSymbol) {
+      if (matchesMetadataFilters(affectedSymbol, metadataFilters) && affectedSymbol) {
         impactedFileCounts.set(affectedSymbol.filePath, (impactedFileCounts.get(affectedSymbol.filePath) ?? 0) + 1);
       }
     };
@@ -211,7 +252,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       seenCallerSymbols.add(current.symbolId);
       bumpSymbol(current.symbolId);
       if (current.depth === maxDepth) continue;
-      const nextCallers = buildUniqueCallReferences(store.getCallers(current.symbolId), "callerId", limit).results;
+      const nextCallers = buildUniqueCallReferences(store.getCallers(current.symbolId), "callerId", limit, metadataFilters).results;
       for (const next of nextCallers) {
         callerQueue.push({ symbolId: next.symbolId, depth: current.depth + 1 });
       }
@@ -223,7 +264,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       seenCalleeSymbols.add(current.symbolId);
       bumpSymbol(current.symbolId);
       if (current.depth === maxDepth) continue;
-      const nextCallees = buildUniqueCallReferences(store.getCallees(current.symbolId), "calleeId", limit).results;
+      const nextCallees = buildUniqueCallReferences(store.getCallees(current.symbolId), "calleeId", limit, metadataFilters).results;
       for (const next of nextCallees) {
         calleeQueue.push({ symbolId: next.symbolId, depth: current.depth + 1 });
       }
@@ -237,7 +278,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     const topAffectedSymbols: ImpactedSymbolSummary[] = Array.from(impactedSymbolCounts.entries())
       .map(([symbolId, count]) => {
         const impacted = store.getSymbolById(symbolId);
-        if (!impacted) return null;
+        if (!impacted || !matchesMetadataFilters(impacted, metadataFilters)) return null;
         return {
           symbolId,
           symbolName: impacted.name,
@@ -256,6 +297,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       .sort((a, b) => b.count - a.count || a.filePath.localeCompare(b.filePath))
       .slice(0, limit);
 
+    const affectedSymbolIds = Array.from(impactedSymbolCounts.keys());
     return {
       ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
       maxDepth,
@@ -266,6 +308,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       totalAffectedFiles: impactedFileCounts.size,
       topAffectedSymbols,
       topAffectedFiles,
+      ...metadataFilterEcho(metadataFilters),
+      affectedSubsystems: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.subsystem),
+      affectedModules: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.module),
       suggestedFollowUpQueries: [
         `find_callers qualifiedName=${symbol.qualifiedName}`,
         `get_callgraph name=${symbol.name} depth=${Math.min(maxDepth + 1, CALLGRAPH_MAX_DEPTH)}`,
@@ -289,6 +334,116 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     return {
       totalCount: symbols.length,
       typeCounts,
+    };
+  }
+
+  function buildHierarchyPayload(
+    symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    limit: number,
+  ): TypeHierarchyResponse {
+    const directBases = store.getDirectBases(symbol.id)
+      .map((candidate) => ({
+        symbolId: candidate.id,
+        qualifiedName: candidate.qualifiedName,
+        type: candidate.type,
+        filePath: candidate.filePath,
+        line: candidate.line,
+      }))
+      .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
+    const directDerived = store.getDirectDerived(symbol.id)
+      .map((candidate) => ({
+        symbolId: candidate.id,
+        qualifiedName: candidate.qualifiedName,
+        type: candidate.type,
+        filePath: candidate.filePath,
+        line: candidate.line,
+      }))
+      .sort((a, b) => a.qualifiedName.localeCompare(b.qualifiedName));
+    const totalCount = directBases.length + directDerived.length;
+
+    return {
+      ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+      directBases: directBases.slice(0, limit),
+      directDerived: directDerived.slice(0, Math.max(0, limit - Math.min(limit, directBases.length))),
+      window: buildResultWindow(
+        Math.min(limit, totalCount),
+        totalCount,
+        totalCount > limit,
+        limit,
+      ),
+    };
+  }
+
+  function traceShortestCallPath(
+    source: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    target: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    maxDepth: number,
+  ): TraceCallPathResponse {
+    type QueueItem = { symbolId: string; depth: number; steps: TraceCallPathResponse["steps"] };
+    const visited = new Set<string>([source.id]);
+    const queue: QueueItem[] = [{ symbolId: source.id, depth: 0, steps: [] }];
+    let truncated = false;
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.depth >= maxDepth) {
+        if (current.symbolId !== target.id && store.getCallees(current.symbolId).length > 0) {
+          truncated = true;
+        }
+        continue;
+      }
+
+      const outgoing = store.getCallees(current.symbolId)
+        .slice()
+        .sort((a, b) => a.line - b.line || a.calleeId.localeCompare(b.calleeId));
+
+      for (const call of outgoing) {
+        const caller = store.getSymbolById(call.callerId);
+        const callee = store.getSymbolById(call.calleeId);
+        if (!caller || !callee) {
+          continue;
+        }
+
+        const nextSteps = current.steps.concat({
+          callerId: caller.id,
+          callerQualifiedName: caller.qualifiedName,
+          calleeId: callee.id,
+          calleeQualifiedName: callee.qualifiedName,
+          filePath: call.filePath,
+          line: call.line,
+        });
+
+        if (callee.id === target.id) {
+          return {
+            source,
+            target,
+            maxDepth,
+            pathFound: true,
+            truncated,
+            steps: nextSteps,
+          };
+        }
+
+        if (visited.has(callee.id)) {
+          continue;
+        }
+
+        visited.add(callee.id);
+        queue.push({
+          symbolId: callee.id,
+          depth: current.depth + 1,
+          steps: nextSteps,
+        });
+      }
+    }
+
+    return {
+      source,
+      target,
+      maxDepth,
+      pathFound: false,
+      truncated,
+      steps: [],
     };
   }
 
@@ -395,15 +550,22 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       name: z.string().describe("Function or method name to inspect"),
       limit: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Maximum deduplicated callers to return"),
+      subsystem: z.string().optional().describe("Optional subsystem filter applied to caller symbols"),
+      module: z.string().optional().describe("Optional module filter applied to caller symbols"),
+      projectArea: z.string().optional().describe("Optional project-area filter applied to caller symbols"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to caller symbols"),
     },
-    async ({ name, limit }) => {
+    async ({ name, limit, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
+        ? { subsystem, module, projectArea, artifactKind }
+        : undefined;
       const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
 
       if (!sym) {
         return notFoundPayload();
       }
 
-      const callers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit);
+      const callers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters);
       const payload: CallerQueryResponse = buildCallerQueryResponse({
         symbol: sym,
         candidateCount,
@@ -411,6 +573,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         totalCount: callers.totalCount,
         truncated: callers.truncated,
         limitApplied: limit,
+      });
+      Object.assign(payload, metadataFilterEcho(metadataFilters), {
+        groupedBySubsystem: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.subsystem),
+        groupedByModule: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.module),
       });
 
       return {
@@ -456,8 +622,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       category: z.enum(["functionCall", "methodCall", "classInstantiation", "typeUsage", "inheritanceMention"]).optional().describe("Optional reference category filter"),
       filePath: z.string().optional().describe("Optional exact file path filter"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum references to return"),
+      subsystem: z.string().optional().describe("Optional subsystem filter applied to source symbols"),
+      module: z.string().optional().describe("Optional module filter applied to source symbols"),
+      projectArea: z.string().optional().describe("Optional project-area filter applied to source symbols"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to source symbols"),
     },
-    async ({ id, qualifiedName, category, filePath, limit }) => {
+    async ({ id, qualifiedName, category, filePath, limit, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
+        ? { subsystem, module, projectArea, artifactKind }
+        : undefined;
       if (!id && !qualifiedName) {
         return badRequestPayload();
       }
@@ -479,7 +652,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const references = buildResolvedReferences(symbol.id, category, filePath, limit);
+      const references = buildResolvedReferences(symbol.id, category, filePath, limit, metadataFilters);
       const payload: ReferenceQueryResponse = {
         ...buildExactLookupResponse({
           symbol,
@@ -491,6 +664,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         truncated: references.truncated,
         ...(category ? { category } : {}),
         ...(filePath ? { filePath } : {}),
+        ...metadataFilterEcho(metadataFilters),
+        groupedBySubsystem: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.subsystem),
+        groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
       };
 
       return {
@@ -507,8 +683,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(2).describe("Maximum caller/callee traversal depth"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum result items per summarized section"),
+      subsystem: z.string().optional().describe("Optional subsystem filter applied to impacted symbols"),
+      module: z.string().optional().describe("Optional module filter applied to impacted symbols"),
+      projectArea: z.string().optional().describe("Optional project-area filter applied to impacted symbols"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to impacted symbols"),
     },
-    async ({ id, qualifiedName, depth, limit }) => {
+    async ({ id, qualifiedName, depth, limit, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
+        ? { subsystem, module, projectArea, artifactKind }
+        : undefined;
       if (!id && !qualifiedName) {
         return badRequestPayload();
       }
@@ -530,7 +713,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       }
 
       return {
-        content: [{ type: "text", text: JSON.stringify(buildImpactAnalysis(symbol, depth, limit), null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(buildImpactAnalysis(symbol, depth, limit, metadataFilters), null, 2) }],
       };
     },
   );
@@ -617,15 +800,117 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   );
 
   server.tool(
+    "get_type_hierarchy",
+    "Get direct base and direct derived type relationships for one exact class or struct qualified name.",
+    {
+      qualifiedName: z.string().describe("Exact class or struct qualified name"),
+      limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum hierarchy nodes to return"),
+    },
+    async ({ qualifiedName, limit }) => {
+      const symbol = store.getSymbolByQualifiedName(qualifiedName);
+      if (!symbol || (symbol.type !== "class" && symbol.type !== "struct")) {
+        return notFoundPayload();
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(buildHierarchyPayload(symbol, limit), null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "find_base_methods",
+    "Find likely base methods for one exact method qualified name using hierarchy and structural override evidence.",
+    {
+      qualifiedName: z.string().describe("Exact method qualified name"),
+      limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum base method candidates to return"),
+    },
+    async ({ qualifiedName, limit }) => {
+      const symbol = store.getSymbolByQualifiedName(qualifiedName);
+      if (!symbol || symbol.type !== "method") {
+        return notFoundPayload();
+      }
+
+      const baseMethods = applyLimit(store.getBaseMethods(symbol.id), limit);
+      const payload: BaseMethodsResponse = {
+        ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+        window: buildResultWindow(baseMethods.results.length, baseMethods.totalCount, baseMethods.truncated, limit),
+        baseMethods: baseMethods.results,
+      };
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "find_overrides",
+    "Find likely overriding methods for one exact base method qualified name using hierarchy and structural override evidence.",
+    {
+      qualifiedName: z.string().describe("Exact base method qualified name"),
+      limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum override candidates to return"),
+    },
+    async ({ qualifiedName, limit }) => {
+      const symbol = store.getSymbolByQualifiedName(qualifiedName);
+      if (!symbol || symbol.type !== "method") {
+        return notFoundPayload();
+      }
+
+      const overrides = applyLimit(store.getOverrides(symbol.id), limit);
+      const payload: OverrideQueryResponse = {
+        ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
+        window: buildResultWindow(overrides.results.length, overrides.totalCount, overrides.truncated, limit),
+        overrides: overrides.results,
+      };
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "trace_call_path",
+    "Find one bounded shortest call path between two exact callable symbols.",
+    {
+      sourceQualifiedName: z.string().describe("Exact source function or method qualified name"),
+      targetQualifiedName: z.string().describe("Exact target function or method qualified name"),
+      maxDepth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum call-path depth to explore"),
+    },
+    async ({ sourceQualifiedName, targetQualifiedName, maxDepth }) => {
+      const source = store.getSymbolByQualifiedName(sourceQualifiedName);
+      const target = store.getSymbolByQualifiedName(targetQualifiedName);
+      if (!source || !target) {
+        return notFoundPayload();
+      }
+      if ((source.type !== "function" && source.type !== "method") || (target.type !== "function" && target.type !== "method")) {
+        return notFoundPayload();
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(traceShortestCallPath(source, target, maxDepth), null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
     "search_symbols",
     "Search symbols by name substring. Returns matching symbols with truncation indicator. Minimum query length is 3 characters.",
     {
       query: z.string().describe(`Search query (minimum ${SEARCH_MIN_QUERY_LENGTH} characters; shorter queries return an empty result set)`),
       type: z.enum(["function", "method", "class", "struct", "enum", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum results to return"),
+      subsystem: z.string().optional().describe("Optional subsystem filter applied to result symbols"),
+      module: z.string().optional().describe("Optional module filter applied to result symbols"),
+      projectArea: z.string().optional().describe("Optional project-area filter applied to result symbols"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to result symbols"),
     },
-    async ({ query, type, limit }) => {
-      const { results, totalCount } = store.searchSymbols(query, type, limit);
+    async ({ query, type, limit, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
+        ? { subsystem, module, projectArea, artifactKind }
+        : undefined;
+      const { results, totalCount } = store.searchSymbols(query, type, limit, metadataFilters);
       const truncated = totalCount > limit;
 
       return {
@@ -637,6 +922,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
             results,
             totalCount,
             truncated,
+            ...metadataFilterEcho(metadataFilters),
           }, null, 2),
         }],
       };

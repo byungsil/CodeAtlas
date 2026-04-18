@@ -11,6 +11,7 @@ Goal:
 - sample a few real symbols and relationships after indexing
 - record any storage or query-surface issues exposed by this run
 - extend the validation to the Milestone 3 query surfaces after the newer indexer/schema changes
+- extend the validation to the Milestone 5 hierarchy, path, and metadata-aware query surfaces
 
 ## Workspace
 
@@ -29,6 +30,13 @@ Full indexing completed successfully.
 - elapsed time: about `95s` in non-verbose full-rebuild mode with the current debug build
 
 This is materially larger and structurally noisier than the previous `benchmark` and `nlohmann/json` validation targets, so it is a useful scale check for the Milestone 2 extraction changes.
+
+Latest rerun after the current Milestone 5 changes:
+
+- files: `3695`
+- symbols: `50526`
+- call edges: `84298`
+- elapsed time: `88896ms (88.90s)` in non-verbose full-rebuild mode
 
 ## Milestone 3 Query-Surface Validation
 
@@ -53,6 +61,40 @@ Validated live query surfaces:
   - returned `254` total references, truncated to `5`, with `typeUsage` records and shared `window` metadata
 
 These checks show that the Milestone 3 caller, reference, impact, and overview surfaces are all live against the real OpenCV workspace, not only against fixture data.
+
+## Milestone 5 Query-Surface Validation
+
+After rebuilding the indexer from the current workspace and regenerating `E:\Dev\opencv\.codeatlas`, the higher-level Milestone 5 query surfaces were validated against the real OpenCV database.
+
+Validated live query surfaces:
+
+- type hierarchy query
+  - `/type-hierarchy?qualifiedName=calib::FrameProcessor&limit=10`
+  - returned direct derived types:
+    - `calib::CalibProcessor`
+    - `calib::ShowProcessor`
+- override query
+  - `/overrides?qualifiedName=calib::FrameProcessor::processFrame&limit=10`
+  - returned likely overrides:
+    - `calib::CalibProcessor::processFrame`
+    - `calib::ShowProcessor::processFrame`
+- base-method query
+  - `/base-methods?qualifiedName=calib::CalibProcessor::processFrame&limit=10`
+  - returned:
+    - `calib::FrameProcessor::processFrame`
+- call-path tracing
+  - `/trace-call-path?sourceQualifiedName=cv::AGAST&targetQualifiedName=cv::makeAgastOffsets&maxDepth=3`
+  - returned a bounded path with `pathFound = true`
+- metadata-filtered search
+  - `/search?q=imread&module=imgcodecs&limit=10`
+  - returned only `imgcodecs`-scoped matches, including `cv::imread`
+- metadata-filtered impact analysis
+  - `/impact?qualifiedName=cv::makeAgastOffsets&module=features2d&depth=2&limit=10`
+  - returned module-scoped impact with:
+    - `affectedModules = [{ key: "features2d", count: 8 }]`
+    - `affectedSubsystems = [{ key: "modules", count: 8 }]`
+
+These checks show that the Milestone 5 hierarchy, override, call-path, and metadata-aware query surfaces are live against the real OpenCV workspace, not only against fixtures.
 
 ## Sample Query Findings
 
@@ -100,6 +142,11 @@ This suggests that the Milestone 2 extraction pipeline is operational, but repre
   - reference queries
   - impact summaries
   - file and class overview queries
+- Milestone 5 query surfaces are operational on the real OpenCV workspace:
+  - type hierarchy queries
+  - override/base-method queries
+  - bounded call-path tracing
+  - metadata-filtered search and impact summaries
 
 ## What This Exposed
 
@@ -126,11 +173,12 @@ Recommended operating posture:
 
 ## Bottom Line
 
-Milestone 2 passed the large-project extraction check, and the current Milestone 3 query surface is also usable on the same real workspace.
+Milestone 2 passed the large-project extraction check, Milestone 3 remained usable on the same real workspace, and Milestone 5 now verifies that higher-level hierarchy/path/metadata reasoning also works against real OpenCV data.
 
 In practical terms:
 
 - parsing and relationship extraction scale to OpenCV
 - sampled symbol queries are already useful
 - caller/reference/impact/overview queries all respond on real OpenCV data after rebuilding with the current schema
+- hierarchy, override, call-path, and metadata-aware queries also respond on real OpenCV data after rebuilding with the current schema
 - the database finalization path still needs follow-up before this can be treated as production-ready end-to-end behavior

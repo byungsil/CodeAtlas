@@ -2,7 +2,7 @@
 
 Status:
 
-- Next planned milestone
+- Completed
 
 ## 1. Objective
 
@@ -40,6 +40,10 @@ Goal:
 
 - model base and derived type relationships explicitly
 
+Status:
+
+- Completed
+
 Implementation tasks:
 
 - parse inheritance edges from class declarations
@@ -60,6 +64,12 @@ Exit criteria:
 
 - type inheritance can be queried structurally
 
+Completion summary:
+
+- existing graph-derived `inheritance` events are now promoted as first-class stored hierarchy edges through `inheritanceMention` references
+- `indexer` storage exposes internal direct-base and direct-derived query methods for hierarchy traversal
+- regression coverage now includes interface, abstract-base, and multi-derived inheritance shapes
+
 ---
 
 ### M5-E2. Override Candidate Logic
@@ -67,6 +77,10 @@ Exit criteria:
 Goal:
 
 - detect likely method override relationships using structural evidence
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -91,6 +105,12 @@ Exit criteria:
 
 - likely overrides can be surfaced with honest confidence levels
 
+Completion summary:
+
+- structural override candidate logic now combines base/derived hierarchy edges with matching method names
+- confidence remains `high` only when arity evidence also matches, otherwise candidates stay `partial`
+- response contract now has explicit override match reasons so later hierarchy APIs can expose why a candidate was suggested
+
 ---
 
 ### M5-E3. Type Hierarchy Queries
@@ -98,6 +118,10 @@ Exit criteria:
 Goal:
 
 - expose hierarchy information directly to agents
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -122,6 +146,12 @@ Exit criteria:
 
 - hierarchy and override queries are available and practical
 
+Completion summary:
+
+- added exact hierarchy query surfaces for direct base and direct derived types
+- added exact method-level queries for likely base methods and likely overrides
+- responses stay bounded and summary-first so agents can inspect class families without falling back to raw source scans
+
 ---
 
 ### M5-E4. Call-Path Tracing
@@ -129,6 +159,10 @@ Exit criteria:
 Goal:
 
 - help agents answer "how do we get from A to B?"
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -149,6 +183,12 @@ Exit criteria:
 
 - call-path tracing exists and remains operationally bounded
 
+Completion summary:
+
+- added exact source-to-target call-path tracing over the resolved call graph
+- search uses bounded breadth-first traversal so it returns a deterministic shortest path when one is found
+- responses stay compact with explicit `pathFound`, `steps`, `maxDepth`, and `truncated` markers instead of dumping oversized graph payloads
+
 ---
 
 ### M5-E5. Project Metadata Model
@@ -156,6 +196,10 @@ Exit criteria:
 Goal:
 
 - model repository-specific organization that matters in large game projects
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -181,6 +225,12 @@ Exit criteria:
 
 - symbols and files can be grouped by meaningful project boundaries
 
+Completion summary:
+
+- introduced a deterministic path-derived metadata model with `subsystem`, `module`, `projectArea`, `artifactKind`, and `headerRole`
+- metadata is attached during indexing and persisted on both symbol and file records
+- first release uses only repository path conventions, keeping the model simple, explainable, and stable before config-driven overrides
+
 ---
 
 ### M5-E6. Metadata-Aware Filtering and Grouping
@@ -188,6 +238,10 @@ Exit criteria:
 Goal:
 
 - improve query usefulness by grouping and filtering on project structure
+
+Status:
+
+- Completed
 
 Implementation tasks:
 
@@ -207,10 +261,18 @@ Expected touch points:
 Validation checklist:
 
 - grouped results improve readability without bloating responses
+- metadata-filtered search, caller, reference, and impact queries remain deterministic
+- MCP and HTTP responses echo active metadata filters and compact grouped summaries
 
 Exit criteria:
 
 - agents can reason at subsystem and module level, not only symbol level
+
+Completion summary:
+
+- added optional `subsystem`, `module`, `projectArea`, and `artifactKind` filters to `search`, `find_callers`, `find_references`, and `impact_analysis`
+- added grouped metadata summaries for callers, references, and impact payloads so agents can pivot by subsystem and module without extra raw-source reads
+- kept SQLite and JSON stores backward compatible by treating metadata filters as optional and returning empty filtered results when old SQLite snapshots do not expose metadata columns
 
 ---
 
@@ -221,3 +283,20 @@ Exit criteria:
 - repository metadata can be derived and queried
 - higher-level grouping improves impact and navigation workflows
 
+Completion summary:
+
+- all six planned epics are complete, including hierarchy queries, bounded call-path tracing, path-derived project metadata, and metadata-aware filtering/grouping
+- full automated validation passed on the current workspace:
+  - `indexer`: `116 passed, 0 failed`
+  - `server`: `99 passed, 0 failed`
+- real-workspace validation against `E:\Dev\opencv` confirmed:
+  - direct type hierarchy and override queries on `calib::FrameProcessor`
+  - bounded call-path tracing on OpenCV functions
+  - metadata-filtered search and impact responses on module-scoped symbols such as `cv::imread` and `cv::makeAgastOffsets`
+
+Exit-criteria assessment:
+
+- satisfied: inheritance and override relationships are queryable
+- satisfied: call-path tracing is available and bounded
+- satisfied: repository metadata can be derived and queried
+- satisfied: higher-level grouping improves impact and navigation workflows

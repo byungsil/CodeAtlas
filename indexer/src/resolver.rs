@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::models::{Call, RawCallKind, RawCallSite, RawQualifierKind, Symbol};
+use crate::models::{
+    Call, InheritanceEdge, OverrideCandidate, OverrideMatchReason, RawCallKind, RawCallSite,
+    RawExtractionConfidence, RawQualifierKind, Symbol,
+};
 use crate::storage::Database;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +314,11 @@ fn merge_symbol_variant(existing: &mut Symbol, incoming: &Symbol) {
         existing.scope_kind = incoming.scope_kind.clone();
         existing.symbol_role = incoming.symbol_role.clone();
         existing.parent_id = incoming.parent_id.clone();
+        existing.module = incoming.module.clone();
+        existing.subsystem = incoming.subsystem.clone();
+        existing.project_area = incoming.project_area.clone();
+        existing.artifact_kind = incoming.artifact_kind.clone();
+        existing.header_role = incoming.header_role.clone();
     } else {
         if existing.signature.is_none() && incoming.signature.is_some() {
             existing.signature = incoming.signature.clone();
@@ -326,6 +334,21 @@ fn merge_symbol_variant(existing: &mut Symbol, incoming: &Symbol) {
         }
         if existing.parent_id.is_none() && incoming.parent_id.is_some() {
             existing.parent_id = incoming.parent_id.clone();
+        }
+        if existing.module.is_none() && incoming.module.is_some() {
+            existing.module = incoming.module.clone();
+        }
+        if existing.subsystem.is_none() && incoming.subsystem.is_some() {
+            existing.subsystem = incoming.subsystem.clone();
+        }
+        if existing.project_area.is_none() && incoming.project_area.is_some() {
+            existing.project_area = incoming.project_area.clone();
+        }
+        if existing.artifact_kind.is_none() && incoming.artifact_kind.is_some() {
+            existing.artifact_kind = incoming.artifact_kind.clone();
+        }
+        if existing.header_role.is_none() && incoming.header_role.is_some() {
+            existing.header_role = incoming.header_role.clone();
         }
     }
 }
@@ -492,6 +515,87 @@ fn infer_parameter_count_from_signature(signature: Option<&str>) -> Option<usize
     Some(params.split(',').count())
 }
 
+pub fn find_override_candidates(
+    symbols: &[Symbol],
+    inheritance_edges: &[InheritanceEdge],
+) -> Vec<OverrideCandidate> {
+    let methods_by_parent = build_methods_by_parent(symbols);
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+
+    for edge in inheritance_edges {
+        let Some(derived_methods) = methods_by_parent.get(edge.derived_symbol_id.as_str()) else {
+            continue;
+        };
+        let Some(base_methods) = methods_by_parent.get(edge.base_symbol_id.as_str()) else {
+            continue;
+        };
+
+        for derived_method in derived_methods {
+            for base_method in base_methods {
+                if derived_method.name != base_method.name {
+                    continue;
+                }
+
+                let mut reasons = vec![
+                    OverrideMatchReason::InheritanceEdge,
+                    OverrideMatchReason::MatchingMethodName,
+                ];
+                let mut confidence = RawExtractionConfidence::Partial;
+
+                if derived_method.parameter_count.is_some()
+                    && derived_method.parameter_count == base_method.parameter_count
+                {
+                    reasons.push(OverrideMatchReason::ParameterCountMatch);
+                    confidence = RawExtractionConfidence::High;
+                } else {
+                    let derived_arity =
+                        infer_parameter_count_from_signature(derived_method.signature.as_deref());
+                    let base_arity =
+                        infer_parameter_count_from_signature(base_method.signature.as_deref());
+                    if derived_arity.is_some() && derived_arity == base_arity {
+                        reasons.push(OverrideMatchReason::SignatureArityMatch);
+                        confidence = RawExtractionConfidence::High;
+                    }
+                }
+
+                let key = format!("{}->{}", derived_method.id, base_method.id);
+                if seen.insert(key) {
+                    candidates.push(OverrideCandidate {
+                        derived_method_id: derived_method.id.clone(),
+                        base_method_id: base_method.id.clone(),
+                        confidence,
+                        reasons,
+                    });
+                }
+            }
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        left
+            .derived_method_id
+            .cmp(&right.derived_method_id)
+            .then_with(|| left.base_method_id.cmp(&right.base_method_id))
+    });
+
+    candidates
+}
+
+fn build_methods_by_parent<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
+    let mut methods_by_parent: HashMap<&str, Vec<&Symbol>> = HashMap::new();
+    for symbol in symbols {
+        if symbol.symbol_type != "method" {
+            continue;
+        }
+        let Some(parent_id) = symbol.parent_id.as_deref() else {
+            continue;
+        };
+        methods_by_parent.entry(parent_id).or_default().push(symbol);
+    }
+    methods_by_parent
+}
+
 fn collect_candidates_with_db<'a>(
     raw: &RawCallSite,
     new_by_name: &HashMap<&'a str, Vec<&'a Symbol>>,
@@ -540,6 +644,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: parent.map(|p| p.to_string()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         }
     }
 
@@ -659,6 +768,11 @@ mod tests {
                 definition_line: None,
                 definition_end_line: None,
                 parent_id: Some("Foo".into()),
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
             },
             Symbol {
                 id: "Foo::Bar".into(),
@@ -680,6 +794,11 @@ mod tests {
                 definition_line: Some(10),
                 definition_end_line: Some(15),
                 parent_id: Some("Foo".into()),
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
             },
         ];
         let merged = merge_symbols(&syms);
@@ -713,6 +832,11 @@ mod tests {
             definition_line: None,
             definition_end_line: None,
             parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
         let definition = Symbol {
             id: "Game::Worker::Update".into(),
@@ -734,6 +858,11 @@ mod tests {
             definition_line: Some(12),
             definition_end_line: Some(18),
             parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         let merged = merge_symbols(&[declaration, definition]);
@@ -769,6 +898,11 @@ mod tests {
             definition_line: Some(6),
             definition_end_line: Some(8),
             parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
         let definition = Symbol {
             id: "Game::Worker::Tick".into(),
@@ -790,6 +924,11 @@ mod tests {
             definition_line: Some(20),
             definition_end_line: Some(24),
             parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
         };
 
         let merged = merge_symbols(&[inline, definition]);
@@ -1281,5 +1420,81 @@ mod tests {
         assert!(decision.chosen.is_none());
 
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn override_candidates_use_inheritance_and_matching_arity_as_high_confidence() {
+        let symbols = vec![
+            Symbol {
+                parameter_count: Some(1),
+                signature: Some("virtual void Tick(float dt)".into()),
+                ..make_sym("Game::Actor::Tick", "Tick", "method", Some("Game::Actor"))
+            },
+            Symbol {
+                parameter_count: Some(1),
+                signature: Some("void Tick(float dt)".into()),
+                ..make_sym("Game::Player::Tick", "Tick", "method", Some("Game::Player"))
+            },
+            make_sym("Game::Actor::Update", "Update", "method", Some("Game::Actor")),
+            make_sym("Game::Player::Jump", "Jump", "method", Some("Game::Player")),
+        ];
+        let inheritance_edges = vec![InheritanceEdge {
+            derived_symbol_id: "Game::Player".into(),
+            base_symbol_id: "Game::Actor".into(),
+            file_path: "player.h".into(),
+            line: 7,
+            confidence: RawExtractionConfidence::Partial,
+        }];
+
+        let candidates = find_override_candidates(&symbols, &inheritance_edges);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].derived_method_id, "Game::Player::Tick");
+        assert_eq!(candidates[0].base_method_id, "Game::Actor::Tick");
+        assert_eq!(candidates[0].confidence, RawExtractionConfidence::High);
+        assert!(candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::InheritanceEdge));
+        assert!(candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::MatchingMethodName));
+        assert!(candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::ParameterCountMatch));
+    }
+
+    #[test]
+    fn override_candidates_remain_partial_when_only_name_and_hierarchy_match() {
+        let symbols = vec![
+            Symbol {
+                signature: Some("virtual void Tick()".into()),
+                ..make_sym("Game::System::Tick", "Tick", "method", Some("Game::System"))
+            },
+            Symbol {
+                signature: None,
+                ..make_sym("Game::DerivedSystem::Tick", "Tick", "method", Some("Game::DerivedSystem"))
+            },
+        ];
+        let inheritance_edges = vec![InheritanceEdge {
+            derived_symbol_id: "Game::DerivedSystem".into(),
+            base_symbol_id: "Game::System".into(),
+            file_path: "system.h".into(),
+            line: 11,
+            confidence: RawExtractionConfidence::Partial,
+        }];
+
+        let candidates = find_override_candidates(&symbols, &inheritance_edges);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].confidence, RawExtractionConfidence::Partial);
+        assert!(candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::InheritanceEdge));
+        assert!(candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::MatchingMethodName));
+        assert!(!candidates[0]
+            .reasons
+            .contains(&OverrideMatchReason::ParameterCountMatch));
     }
 }

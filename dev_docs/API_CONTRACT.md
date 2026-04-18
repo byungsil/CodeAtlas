@@ -665,6 +665,34 @@ Retrieve direct members for one exact class or struct qualified name.
 
 ---
 
+## Project Metadata Direction
+
+Milestone 5 introduces an optional path-derived metadata layer for symbols and file records.
+
+First-release metadata fields:
+
+- `subsystem`
+- `module`
+- `projectArea`
+- `artifactKind`
+- `headerRole`
+
+First-release rules:
+
+- metadata is derived deterministically from workspace-relative file paths
+- no repository-specific config is required in the initial version
+- absent or weak path evidence should leave fields unset rather than guessed
+
+Metadata-aware query behavior:
+
+- `GET /search` and MCP `search_symbols` accept optional `subsystem`, `module`, `projectArea`, and `artifactKind` filters
+- `GET /callers/:name`, `GET /references`, and `GET /impact` accept the same optional metadata filters
+- caller and reference responses may include compact grouped summaries such as `groupedBySubsystem` and `groupedByModule`
+- impact-analysis responses may include `affectedSubsystems` and `affectedModules` summaries
+- when metadata filters are requested against an older SQLite snapshot that does not expose metadata columns, filtered search returns an empty result set rather than silently ignoring the filter
+
+---
+
 ## Reference Query Direction
 
 Milestone 3 contract direction:

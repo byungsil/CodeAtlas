@@ -3,8 +3,16 @@ import * as path from "path";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
-import { ReferenceCategory, ReferenceRecord } from "../models/responses";
+import {
+  BaseMethodRecord,
+  MatchReason,
+  OverrideRecord,
+  ReferenceCategory,
+  ReferenceRecord,
+  TypeHierarchyNode,
+} from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
+import { MetadataFilters } from "./store";
 
 export interface IndexData {
   symbols: Symbol[];
@@ -59,7 +67,7 @@ export class JsonStore {
     return data.symbols.filter((s) => s.type === type);
   }
 
-  searchSymbols(query: string, type?: string, limit = SEARCH_DEFAULT_LIMIT): { results: Symbol[]; totalCount: number } {
+  searchSymbols(query: string, type?: string, limit = SEARCH_DEFAULT_LIMIT, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
     if (query.length < SEARCH_MIN_QUERY_LENGTH) {
       return { results: [], totalCount: 0 };
     }
@@ -71,6 +79,9 @@ export class JsonStore {
     );
     if (type) {
       matches = matches.filter((s) => s.type === type);
+    }
+    if (metadataFilters) {
+      matches = matches.filter((symbol) => matchesMetadataFilters(symbol, metadataFilters));
     }
     const totalCount = matches.length;
     return { results: matches.slice(0, limit), totalCount };
@@ -103,6 +114,78 @@ export class JsonStore {
   getMembers(parentId: string): Symbol[] {
     const data = this.load();
     return data.symbols.filter((s) => s.parentId === parentId);
+  }
+
+  getDirectBases(symbolId: string): Symbol[] {
+    const data = this.load();
+    const baseIds = data.references
+      .filter((reference) => reference.category === "inheritanceMention" && reference.sourceSymbolId === symbolId)
+      .map((reference) => reference.targetSymbolId);
+    return baseIds
+      .map((id) => data.symbols.find((symbol) => symbol.id === id))
+      .filter((symbol): symbol is Symbol => symbol !== undefined);
+  }
+
+  getDirectDerived(symbolId: string): Symbol[] {
+    const data = this.load();
+    const derivedIds = data.references
+      .filter((reference) => reference.category === "inheritanceMention" && reference.targetSymbolId === symbolId)
+      .map((reference) => reference.sourceSymbolId);
+    return derivedIds
+      .map((id) => data.symbols.find((symbol) => symbol.id === id))
+      .filter((symbol): symbol is Symbol => symbol !== undefined);
+  }
+
+  getBaseMethods(symbolId: string): BaseMethodRecord[] {
+    const data = this.load();
+    const method = data.symbols.find((symbol) => symbol.id === symbolId);
+    if (!method || method.type !== "method" || !method.parentId) {
+      return [];
+    }
+
+    const results: BaseMethodRecord[] = [];
+    for (const base of this.getDirectBases(method.parentId)) {
+      for (const candidate of data.symbols.filter((symbol) => symbol.parentId === base.id && symbol.type === "method")) {
+        if (candidate.name !== method.name) {
+          continue;
+        }
+        const inferred = inferOverrideConfidence(method, candidate);
+        results.push({
+          method: candidate,
+          owner: toHierarchyNode(base),
+          confidence: inferred.confidence,
+          matchReasons: inferred.matchReasons,
+        });
+      }
+    }
+
+    return results.sort(compareOverrideRecords);
+  }
+
+  getOverrides(symbolId: string): OverrideRecord[] {
+    const data = this.load();
+    const method = data.symbols.find((symbol) => symbol.id === symbolId);
+    if (!method || method.type !== "method" || !method.parentId) {
+      return [];
+    }
+
+    const results: OverrideRecord[] = [];
+    for (const derived of this.getDirectDerived(method.parentId)) {
+      for (const candidate of data.symbols.filter((symbol) => symbol.parentId === derived.id && symbol.type === "method")) {
+        if (candidate.name !== method.name) {
+          continue;
+        }
+        const inferred = inferOverrideConfidence(candidate, method);
+        results.push({
+          method: candidate,
+          owner: toHierarchyNode(derived),
+          confidence: inferred.confidence,
+          matchReasons: inferred.matchReasons,
+        });
+      }
+    }
+
+    return results.sort(compareOverrideRecords);
   }
 
   getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[] {
@@ -140,4 +223,65 @@ function compareSymbolsForOverview(a: Symbol, b: Symbol): number {
   return a.line - b.line
     || a.endLine - b.endLine
     || a.qualifiedName.localeCompare(b.qualifiedName);
+}
+
+function matchesMetadataFilters(symbol: Symbol, filters: MetadataFilters): boolean {
+  if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
+  if (filters.module && symbol.module !== filters.module) return false;
+  if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
+  if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
+  return true;
+}
+
+function toHierarchyNode(symbol: Symbol): TypeHierarchyNode {
+  return {
+    symbolId: symbol.id,
+    qualifiedName: symbol.qualifiedName,
+    type: symbol.type,
+    filePath: symbol.filePath,
+    line: symbol.line,
+  };
+}
+
+function compareOverrideRecords(left: BaseMethodRecord | OverrideRecord, right: BaseMethodRecord | OverrideRecord): number {
+  return left.owner.qualifiedName.localeCompare(right.owner.qualifiedName)
+    || left.method.qualifiedName.localeCompare(right.method.qualifiedName);
+}
+
+function inferOverrideConfidence(
+  derivedMethod: Symbol,
+  baseMethod: Symbol,
+): { confidence: "high" | "partial"; matchReasons: MatchReason[] } {
+  const matchReasons: MatchReason[] = [
+    "override_inheritance_match",
+    "override_name_match",
+  ];
+
+  if (
+    derivedMethod.parameterCount !== undefined
+    && baseMethod.parameterCount !== undefined
+    && derivedMethod.parameterCount === baseMethod.parameterCount
+  ) {
+    matchReasons.push("override_parameter_count_match");
+    return { confidence: "high", matchReasons };
+  }
+
+  const derivedArity = inferSignatureArity(derivedMethod.signature);
+  const baseArity = inferSignatureArity(baseMethod.signature);
+  if (derivedArity !== undefined && derivedArity === baseArity) {
+    matchReasons.push("override_signature_arity_match");
+    return { confidence: "high", matchReasons };
+  }
+
+  return { confidence: "partial", matchReasons };
+}
+
+function inferSignatureArity(signature?: string): number | undefined {
+  if (!signature) return undefined;
+  const start = signature.indexOf("(");
+  const end = signature.lastIndexOf(")");
+  if (start < 0 || end <= start) return undefined;
+  const params = signature.slice(start + 1, end).trim();
+  if (!params || params === "void") return 0;
+  return params.split(",").length;
 }
