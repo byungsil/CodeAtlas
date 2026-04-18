@@ -13,9 +13,11 @@ Recommended usage:
 Current intended baseline target:
 
 - `E:\Dev\opencv` for large real-project indexing benchmarks
+- `E:\Dev\llvm-project-llvmorg-18.1.8` as an additional monorepo-scale stress target
 
 Current checked-in example baseline:
 
 - `ambiguity-full-debug-baseline.json`
 - `incremental-suite-samples.json`
 - `opencv-query-profile.json`
+- `llvm-query-profile.json`

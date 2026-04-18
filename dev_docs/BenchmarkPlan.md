@@ -52,6 +52,7 @@ Purpose:
 Recommended inputs:
 
 - `E:\Dev\opencv`
+- `E:\Dev\llvm-project-llvmorg-18.1.8`
 
 Measurements:
 
@@ -62,6 +63,50 @@ Measurements:
 - branch-like mass change response
 - DB size
 - representative query latency
+
+Additional role:
+
+- `E:\Dev\opencv` remains the primary large-project benchmark target for repeated optimization work
+- `E:\Dev\llvm-project-llvmorg-18.1.8` is a larger monorepo-scale stress target for periodic validation
+
+## LLVM Monorepo Stress Validation
+
+Latest LLVM 18.1.8 full-rebuild validation:
+
+- workspace: `E:\Dev\llvm-project-llvmorg-18.1.8`
+- files: `42978`
+- symbols: `399546`
+- calls: `755292`
+- propagation edges: `1851298`
+- total time: `388300ms (388.30s)`
+
+Stage timings:
+
+- discovery: `6013ms (6.01s)`
+- parse: `66758ms (66.76s)`
+- resolve: `186772ms (186.77s)`
+- persist: `109650ms (109.65s)`
+- checkpoint: `1139ms (1.14s)`
+
+Observed interpretation:
+
+- LLVM-scale indexing completes successfully on a much larger dataset than OpenCV
+- the dominant wall-clock costs are resolve and persistence at this scale
+- build metadata ingestion degraded gracefully when it encountered a malformed subtree-local `compile_commands.json`
+
+Representative LLVM query profile:
+
+- result file: `dev_docs/benchmark_results/llvm-query-profile.json`
+- exact lookup `llvm::StringRef`: avg `0.117ms`
+- search `StringRef`: avg `3.226ms`
+- callers `llvm::outs`: avg `0.346ms`
+- references `llvm::StringRef`: avg `1.295ms`
+- impact `llvm::outs`: avg `0.813ms`
+
+Quality note:
+
+- `llvm::StringRef` resolved quickly, but its representative anchor landed on a test-heavy location rather than an intuitive canonical runtime definition
+- this reinforces that canonical representative selection still needs follow-up on giant mixed-purpose repositories
 
 ## Required Measurements
 
