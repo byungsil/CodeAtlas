@@ -51,6 +51,9 @@ thread_local! {
     static CPP_GRAPH_FILE: RefCell<Option<Result<GraphDslFile, String>>> = const { RefCell::new(None) };
 }
 
+const DEFAULT_CPP_PARSE_TIMEOUT_MICROS: u64 = 15_000_000;
+const CPP_PARSE_TIMEOUT_MICROS_ENV: &str = "CODEATLAS_CPP_PARSE_TIMEOUT_MICROS";
+
 fn graph_call_extraction_enabled() -> bool {
     !matches!(
         std::env::var("CODEATLAS_DISABLE_GRAPH_CALLS").ok().as_deref(),
@@ -71,11 +74,22 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     parser
         .set_language(&lang.into())
         .map_err(|e| format!("Failed to set language: {}", e))?;
+    if let Some(timeout_micros) = configured_cpp_parse_timeout_micros() {
+        parser.set_timeout_micros(timeout_micros);
+    }
 
     let tree_parse_start = Instant::now();
     let tree: Tree = parser
         .parse(source, None)
-        .ok_or_else(|| "Failed to parse".to_string())?;
+        .ok_or_else(|| {
+            match configured_cpp_parse_timeout_micros() {
+                Some(timeout_micros) => format!(
+                    "Failed to parse within {}ms timeout",
+                    timeout_micros / 1_000
+                ),
+                None => "Failed to parse".to_string(),
+            }
+        })?;
     let tree_sitter_parse_ms = tree_parse_start.elapsed().as_millis();
 
     let mut ctx = Ctx {
@@ -180,6 +194,22 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
             reference_normalization_ms,
         },
     })
+}
+
+fn configured_cpp_parse_timeout_micros() -> Option<u64> {
+    match std::env::var(CPP_PARSE_TIMEOUT_MICROS_ENV) {
+        Ok(value) => parse_optional_timeout_micros(&value),
+        Err(_) => Some(DEFAULT_CPP_PARSE_TIMEOUT_MICROS),
+    }
+}
+
+fn parse_optional_timeout_micros(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    let micros = trimmed.parse::<u64>().ok()?;
+    if micros == 0 {
+        return None;
+    }
+    Some(micros)
 }
 
 fn derive_file_risk_signals(root: Node, source: &str) -> FileRiskSignals {
@@ -697,6 +727,13 @@ fn extract_local_propagation_events_for_function(
 
     let mut events = Vec::new();
     let mut return_anchors = Vec::new();
+    extract_constructor_initializer_events(
+        node,
+        ctx,
+        &owner_symbol_id,
+        &mut scopes,
+        &mut events,
+    );
     let event_walk_start = Instant::now();
     let mut flow_metrics = LocalPropagationMetrics::default();
     process_local_flow_block(
@@ -732,6 +769,54 @@ fn extract_local_propagation_events_for_function(
             return_collection_ms,
         },
     })
+}
+
+fn extract_constructor_initializer_events(
+    function_node: Node,
+    ctx: &Ctx,
+    owner_symbol_id: &str,
+    scopes: &mut Vec<HashMap<String, LocalBinding>>,
+    events: &mut Vec<PropagationEvent>,
+) {
+    let Some(initializer_list) = function_node
+        .child_by_field_name("declarator")
+        .and_then(|_| find_direct_child(function_node, "field_initializer_list"))
+    else {
+        return;
+    };
+
+    for initializer in named_children(initializer_list) {
+        if initializer.kind() != "field_initializer" {
+            continue;
+        }
+
+        let Some(target) = resolve_constructor_initializer_target(initializer, owner_symbol_id, ctx) else {
+            continue;
+        };
+        let Some(value_node) = extract_constructor_initializer_value(initializer) else {
+            continue;
+        };
+        let Some(source) = extract_expression_flow(value_node, ctx, owner_symbol_id, scopes, events) else {
+            continue;
+        };
+
+        let combined_risks = merge_propagation_risks(source.risks.clone(), target.risks.clone());
+        let (confidence, risks) = combine_local_flow_risk(
+            target.pointer_like,
+            source.pointer_like,
+            combined_risks,
+        );
+        events.push(PropagationEvent {
+            owner_symbol_id: Some(owner_symbol_id.to_string()),
+            source_anchor: source.anchor,
+            target_anchor: target.anchor,
+            propagation_kind: PropagationKind::FieldWrite,
+            file_path: ctx.file_path.clone(),
+            line: initializer.start_position().row + 1,
+            confidence,
+            risks,
+        });
+    }
 }
 
 fn find_function_owner_symbol_id(node: Node, ctx: &Ctx) -> Option<String> {
@@ -1101,6 +1186,21 @@ fn process_local_declaration(
     }
 }
 
+fn extract_constructor_initializer_value(initializer: Node) -> Option<Node> {
+    let mut cursor = initializer.walk();
+    for child in initializer.named_children(&mut cursor) {
+        match child.kind() {
+            "argument_list" | "initializer_list" => {
+                let mut value_cursor = child.walk();
+                return child.named_children(&mut value_cursor).next();
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn extract_expression_flow(
     node: Node,
     ctx: &Ctx,
@@ -1358,6 +1458,37 @@ fn resolve_field_expression_anchor(
     })
 }
 
+fn resolve_constructor_initializer_target(
+    initializer: Node,
+    owner_symbol_id: &str,
+    ctx: &Ctx,
+) -> Option<FlowAnchorResolution> {
+    let mut cursor = initializer.walk();
+    for child in initializer.named_children(&mut cursor) {
+        let field_name = match child.kind() {
+            "field_identifier" => ctx.node_text(child),
+            "qualified_identifier" => parse_qualified_id(child, ctx).1,
+            _ => continue,
+        };
+        let owner_parent = owner_symbol_id
+            .rsplit_once("::")
+            .map(|(parent, _)| parent.to_string())
+            .unwrap_or_else(|| owner_symbol_id.to_string());
+        return Some(FlowAnchorResolution {
+            anchor: PropagationAnchor {
+                anchor_id: Some(format!("{}::field:{}", owner_parent, field_name)),
+                symbol_id: None,
+                expression_text: Some(field_name),
+                anchor_kind: PropagationAnchorKind::Field,
+            },
+            pointer_like: false,
+            risks: Vec::new(),
+        });
+    }
+
+    None
+}
+
 fn declaration_contains_function_declarator(node: Node) -> bool {
     let mut cursor = node.walk();
     let contains = node.named_children(&mut cursor).any(|child| {
@@ -1365,6 +1496,14 @@ fn declaration_contains_function_declarator(node: Node) -> bool {
             || find_descendant(child, "function_declarator").is_some()
     });
     contains
+}
+
+fn find_direct_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    let child = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == kind);
+    child
 }
 
 fn extract_identifier_node(node: Node) -> Option<Node> {
@@ -2715,6 +2854,180 @@ mod tests {
             .unwrap();
         assert_eq!(consume.parameter_anchors.len(), 1);
         assert!(consume.return_anchors.is_empty());
+
+        let make_hint = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::MakeHint")
+            .unwrap();
+        assert_eq!(make_hint.parameter_anchors.len(), 1);
+        assert_eq!(
+            make_hint.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeHint::param:value@13")
+        );
+        assert_eq!(make_hint.return_anchors.len(), 1);
+        assert_eq!(
+            make_hint.return_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeHint::local:hint@14")
+        );
+
+        let apply_hint = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::BoundaryWorker::ApplyHint")
+            .unwrap();
+        assert_eq!(apply_hint.parameter_anchors.len(), 1);
+        assert_eq!(
+            apply_hint.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::BoundaryWorker::ApplyHint::param:hint@20")
+        );
+        assert!(apply_hint.return_anchors.is_empty());
+
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::BoundaryWorker::ApplyHint")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("hint.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::BoundaryWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+
+        let make_envelope = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::MakeEnvelope")
+            .unwrap();
+        assert_eq!(make_envelope.parameter_anchors.len(), 1);
+        assert_eq!(
+            make_envelope.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeEnvelope::param:value@43")
+        );
+        assert_eq!(make_envelope.return_anchors.len(), 1);
+        assert_eq!(
+            make_envelope.return_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeEnvelope::local:envelope@44")
+        );
+
+        let envelope_apply_hint = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::EnvelopeWorker::ApplyHint")
+            .unwrap();
+        assert_eq!(envelope_apply_hint.parameter_anchors.len(), 1);
+        assert_eq!(
+            envelope_apply_hint.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::EnvelopeWorker::ApplyHint::param:hint@67")
+        );
+        assert!(envelope_apply_hint.return_anchors.is_empty());
+
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::EnvelopeWorker::ApplyHint")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("hint.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::EnvelopeWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+
+        let make_nested_envelope = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::MakeNestedEnvelope")
+            .unwrap();
+        assert_eq!(make_nested_envelope.parameter_anchors.len(), 1);
+        assert_eq!(
+            make_nested_envelope.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeNestedEnvelope::param:value@52")
+        );
+        assert_eq!(make_nested_envelope.return_anchors.len(), 1);
+        assert_eq!(
+            make_nested_envelope.return_anchors[0].anchor_id.as_deref(),
+            Some("Game::MakeNestedEnvelope::local:nested@53")
+        );
+
+        let nested_envelope_apply_hint = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::NestedEnvelopeWorker::ApplyHint")
+            .unwrap();
+        assert_eq!(nested_envelope_apply_hint.parameter_anchors.len(), 1);
+        assert_eq!(
+            nested_envelope_apply_hint.parameter_anchors[0]
+                .anchor_id
+                .as_deref(),
+            Some("Game::NestedEnvelopeWorker::ApplyHint::param:hint@82")
+        );
+        assert!(nested_envelope_apply_hint.return_anchors.is_empty());
+
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::NestedEnvelopeWorker::ApplyHint")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("hint.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedEnvelopeWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+
+        let extract_hint_power = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::ExtractHintPower")
+            .unwrap();
+        assert_eq!(extract_hint_power.parameter_anchors.len(), 1);
+        assert_eq!(
+            extract_hint_power.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::ExtractHintPower::param:hint@57")
+        );
+        assert_eq!(extract_hint_power.return_anchors.len(), 1);
+        assert_eq!(
+            extract_hint_power.return_anchors[0].anchor_id.as_deref(),
+            Some("Game::ExtractHintPower::fieldexpr:hint_power@58")
+        );
+
+        let emit_power = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::EmitPower")
+            .unwrap();
+        assert_eq!(emit_power.parameter_anchors.len(), 1);
+        assert_eq!(
+            emit_power.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::EmitPower::param:power@61")
+        );
+        assert!(emit_power.return_anchors.is_empty());
+
+        let member_relay_seed = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::MemberRelayWorker::Seed")
+            .unwrap();
+        assert_eq!(member_relay_seed.parameter_anchors.len(), 1);
+        assert_eq!(
+            member_relay_seed.parameter_anchors[0].anchor_id.as_deref(),
+            Some("Game::MemberRelayWorker::Seed::param:hint@97")
+        );
+        assert!(member_relay_seed.return_anchors.is_empty());
+
+        let member_relay_emit = result
+            .callable_flow_summaries
+            .iter()
+            .find(|summary| summary.callable_symbol_id == "Game::MemberRelayWorker::EmitStored")
+            .unwrap();
+        assert!(member_relay_emit.parameter_anchors.is_empty());
+        assert!(member_relay_emit.return_anchors.is_empty());
+
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::MemberRelayWorker::Seed")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("hint.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MemberRelayWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
     }
 
     #[test]
@@ -2723,29 +3036,186 @@ mod tests {
         let result = parse_cpp_file("samples/propagation/src/member_state.cpp", source).unwrap();
 
         assert!(result.propagation_events.iter().any(|event| {
-            event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromParam")
-                && event.propagation_kind == PropagationKind::FieldWrite
-                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::SetFromParam::param:value@4")
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromParam")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::Worker::SetFromParam::param:value@23")
                 && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
                 && event.confidence == RawExtractionConfidence::High
         }));
         assert!(result.propagation_events.iter().any(|event| {
-            event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromLocal")
-                && event.propagation_kind == PropagationKind::FieldWrite
-                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::SetFromLocal::local:local@9")
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::SetFromLocal")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::Worker::SetFromLocal::local:local@28")
                 && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:cached")
         }));
         assert!(result.propagation_events.iter().any(|event| {
-            event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadToLocal")
-                && event.propagation_kind == PropagationKind::FieldRead
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadToLocal")
+                    && event.propagation_kind == PropagationKind::FieldRead
                 && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
-                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::ReadToLocal::local:local@14")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::Worker::ReadToLocal::local:local@33")
         }));
         assert!(result.propagation_events.iter().any(|event| {
-            event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadMember")
-                && event.propagation_kind == PropagationKind::FieldRead
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::ReadMember")
+                    && event.propagation_kind == PropagationKind::FieldRead
                 && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::field:cached")
-                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::ReadMember::return@19")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::Worker::ReadMember::return@38")
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::PullFromCarrier")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("carrier.power")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::PushToCarrier")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::Worker::field:cached")
+                && event.target_anchor.expression_text.as_deref() == Some("carrier.mirrored")
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+                event.owner_symbol_id.as_deref() == Some("Game::Worker::StageThroughLocalCarrier")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::Worker::StageThroughLocalCarrier::param:value@58")
+                && event.target_anchor.expression_text.as_deref() == Some("stage.power")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref() == Some("Game::Worker::StageThroughLocalCarrier")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("stage.power")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Worker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+                event.owner_symbol_id.as_deref() == Some("Game::ConstructedWorker::ConstructedWorker")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::ConstructedWorker::ConstructedWorker::param:initialStored@72")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::ConstructedWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::High
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+                event.owner_symbol_id.as_deref() == Some("Game::ConstructedWorker::ConstructedWorker")
+                    && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::ConstructedWorker::ConstructedWorker::param:initialCached@72")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::ConstructedWorker::field:cached")
+                && event.confidence == RawExtractionConfidence::High
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::CarrierConstructedWorker::CarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("carrier.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::CarrierConstructedWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::CarrierConstructedWorker::CarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("carrier.mirrored")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::CarrierConstructedWorker::field:cached")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::PointerCarrierConstructedWorker::PointerCarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("carrier->power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::PointerCarrierConstructedWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::PointerHeavyFlow)
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::PointerCarrierConstructedWorker::PointerCarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref() == Some("carrier->mirrored")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::PointerCarrierConstructedWorker::field:cached")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::PointerHeavyFlow)
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::HelperCarrierConstructedWorker::HelperCarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("MakeCarrier(value).power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::HelperCarrierConstructedWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::HelperCarrierPipelineWorker::HelperCarrierPipelineWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("MakeCarrier(value).power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::HelperCarrierPipelineWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::HelperCarrierPipelineWorker::EmitStored")
+                && event.propagation_kind == PropagationKind::FieldRead
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::HelperCarrierPipelineWorker::field:stored")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::HelperCarrierPipelineWorker::EmitStored::local:current@116")
+                && event.confidence == RawExtractionConfidence::High
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::HelperCarrierConstructedWorker::HelperCarrierConstructedWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("MakeCarrier(value).mirrored")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::HelperCarrierConstructedWorker::field:cached")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::NestedHelperCarrierPipelineWorker::NestedHelperCarrierPipelineWorker")
+                && event.propagation_kind == PropagationKind::FieldWrite
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("MakeCarrierEnvelope(value).carrier.power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedHelperCarrierPipelineWorker::field:stored")
+                && event.confidence == RawExtractionConfidence::Partial
+                && event.risks.contains(&PropagationRisk::ReceiverAmbiguity)
+        }));
+        assert!(result.propagation_events.iter().any(|event| {
+            event.owner_symbol_id.as_deref()
+                == Some("Game::NestedHelperCarrierPipelineWorker::EmitStored")
+                && event.propagation_kind == PropagationKind::FieldRead
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedHelperCarrierPipelineWorker::field:stored")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedHelperCarrierPipelineWorker::EmitStored::local:current@130")
+                && event.confidence == RawExtractionConfidence::High
         }));
     }
 

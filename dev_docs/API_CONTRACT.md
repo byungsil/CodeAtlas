@@ -1030,6 +1030,101 @@ Trace one bounded propagation path for one exact symbol identity.
   ]
 }
 
+### Milestone 10 Investigation Workflow Direction
+
+Milestone 10 extends CodeAtlas from separate lookup, call-path, reference, and propagation queries into a more direct investigation workflow surface for agents.
+
+Problem framing:
+
+- agents often begin with a workflow question, not a single-symbol question
+- current query surfaces are individually useful but still require manual stitching
+- weak or empty answers should explain whether the likely problem is:
+  - no structural relation found
+  - partial path continuity
+  - weak index coverage
+  - ambiguous starting target
+
+First-release investigation workflow intent:
+
+- accept one exact source anchor and an optional exact sink anchor
+- compose bounded evidence from existing:
+  - call-path tracing
+  - propagation tracing
+  - generalized references
+- return one compact summary-first answer shaped for agent investigation
+- stay bounded and deterministic rather than dumping a raw stitched graph
+
+Investigation workflow response shape:
+
+| Field              | Type    | Description |
+|--------------------|---------|-------------|
+| lookupMode         | string  | Exact when source and sink are exact identities; heuristic expansion remains out of scope for the first slice |
+| source             | object  | Exact source symbol |
+| target             | object? | Exact target symbol when requested and resolved |
+| window             | object  | Shared bounded window metadata |
+| targetConfidence   | string  | Confidence in the selected source and target identities |
+| pathConfidence     | string  | Confidence in the stitched workflow path; one of: `high`, `partial` |
+| coverageConfidence | string  | Confidence that the index meaningfully covers the queried region; one of: `high`, `partial`, `weak` |
+| pathFound          | boolean | Whether a stitched workflow path was found |
+| truncated          | boolean | Whether traversal or response bounds cut the answer short |
+| entry              | object  | Compact starting anchor summary |
+| mainPath           | array   | Ordered bounded investigation steps |
+| handoffPoints      | array   | Important transition summaries such as call, assignment, argument-to-parameter, field write, or field read |
+| sink               | object? | Compact terminal anchor summary when a sink is present |
+| uncertainSegments  | array   | Bounded notes describing where continuity became partial or heuristic |
+| evidence           | array?  | Optional bounded nearby structural evidence for later Milestone 10 expansion |
+| diagnostics        | array   | Compact explanations for weak path or coverage conditions |
+| suggestedFollowUpQueries | array | Suggested focused next queries when the answer is partial |
+
+Investigation step shape:
+
+| Field         | Type   | Description |
+|---------------|--------|-------------|
+| hop           | number | Stable 1-based step order |
+| handoffKind   | string | One of: `call`, `assignment`, `initializerBinding`, `argumentToParameter`, `returnValue`, `fieldWrite`, `fieldRead`, `reference` |
+| from          | object | Source anchor or symbol summary |
+| to            | object | Target anchor or symbol summary |
+| filePath      | string | Relative file path |
+| line          | number | 1-based source line |
+| confidence    | string | Step confidence: `high` or `partial` |
+| risks         | array  | Zero or more bounded risk markers inherited from underlying analyses |
+
+Separation of confidence semantics:
+
+- `targetConfidence`
+  - describes whether the intended source and sink identities were selected confidently
+- `pathConfidence`
+  - describes whether the returned stitched path is structurally strong or partial
+- `coverageConfidence`
+  - describes whether the index appears to cover the relevant region well enough to trust absence or weakness
+
+First-release investigation workflow rules:
+
+- the first slice should require exact symbol identities for source-driven workflows
+- heuristic or natural-language workflow expansion may be added later, but should not be mixed into the first contract slice
+- `uncertainSegments` should be used when the system can outline a likely path but cannot prove one continuous high-confidence chain
+- `coverageConfidence = weak` should be reserved for cases where the system believes absence may reflect parser or indexing weakness rather than true structural absence
+- `evidence` must remain bounded by count, symbol body, or line window and must not become a raw-source dump
+
+Draft MCP tool direction:
+
+### Tool: `investigate_workflow`
+
+Current intended behavior:
+
+- accepts exact `sourceQualifiedName`
+- accepts optional exact `targetQualifiedName`
+- accepts bounded traversal controls such as `maxDepth` and `maxEdges`
+- returns one compact investigation-oriented response using the response shape above
+- reuses existing call-path, propagation, and reference surfaces before introducing new storage requirements
+
+Draft first-release follow-up behavior:
+
+- when no strong path is found, the response should still provide:
+  - diagnostics
+  - bounded uncertain segments when available
+  - suggested follow-up queries
+
 ---
 
 ## Project Metadata Direction

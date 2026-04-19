@@ -7,11 +7,11 @@ const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVe
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 describe("MCP payload contracts", () => {
-  it("tools/list returns 18 tools", async () => {
+  it("tools/list returns 19 tools", async () => {
     const responses = await mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }], DATA_DIR);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(18);
+    expect(toolList.result.tools).toHaveLength(19);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([
       "explain_symbol_propagation",
@@ -22,6 +22,7 @@ describe("MCP payload contracts", () => {
       "get_callgraph",
       "get_type_hierarchy",
       "impact_analysis",
+      "investigate_workflow",
       "list_class_members",
       "list_file_symbols",
       "list_namespace_symbols",

@@ -791,18 +791,9 @@ pub fn derive_function_boundary_propagation_events(
             let Some(argument_text) = raw_call.argument_texts.get(index) else {
                 continue;
             };
-            let source_anchor = PropagationAnchor {
-                anchor_id: Some(format!(
-                    "{}::arg{}@{}",
-                    raw_call.caller_id,
-                    index,
-                    raw_call.line
-                )),
-                symbol_id: None,
-                expression_text: Some(argument_text.clone()),
-                anchor_kind: PropagationAnchorKind::Expression,
-            };
-            let (confidence, risks) = propagation_confidence_for_text(argument_text);
+            let source_anchor =
+                resolve_argument_source_anchor(&raw_call.caller_id, argument_text, &symbol_by_id, index, raw_call.line);
+            let (confidence, risks) = propagation_confidence_for_anchor(&source_anchor);
             events.push(PropagationEvent {
                 owner_symbol_id: Some(call.callee_id.clone()),
                 source_anchor,
@@ -837,6 +828,35 @@ pub fn derive_function_boundary_propagation_events(
     dedupe_propagation_events(events)
 }
 
+fn resolve_argument_source_anchor(
+    caller_id: &str,
+    argument_text: &str,
+    symbol_by_id: &HashMap<&str, &Symbol>,
+    index: usize,
+    line: usize,
+) -> PropagationAnchor {
+    if let Some(field_name) = argument_text.strip_prefix("this->") {
+        if let Some(parent_id) = symbol_by_id
+            .get(caller_id)
+            .and_then(|symbol| symbol.parent_id.as_deref())
+        {
+            return PropagationAnchor {
+                anchor_id: Some(format!("{}::field:{}", parent_id, field_name)),
+                symbol_id: None,
+                expression_text: Some(argument_text.to_string()),
+                anchor_kind: PropagationAnchorKind::Field,
+            };
+        }
+    }
+
+    PropagationAnchor {
+        anchor_id: Some(format!("{}::arg{}@{}", caller_id, index, line)),
+        symbol_id: None,
+        expression_text: Some(argument_text.to_string()),
+        anchor_kind: PropagationAnchorKind::Expression,
+    }
+}
+
 pub fn merge_propagation_events(
     local_events: &[PropagationEvent],
     boundary_events: &[PropagationEvent],
@@ -845,17 +865,6 @@ pub fn merge_propagation_events(
     combined.extend(local_events.iter().cloned());
     combined.extend(boundary_events.iter().cloned());
     dedupe_propagation_events(combined)
-}
-
-fn propagation_confidence_for_text(text: &str) -> (RawExtractionConfidence, Vec<PropagationRisk>) {
-    if text.contains("->") || text.starts_with('&') || text.starts_with('*') {
-        (
-            RawExtractionConfidence::Partial,
-            vec![PropagationRisk::PointerHeavyFlow],
-        )
-    } else {
-        (RawExtractionConfidence::High, Vec::new())
-    }
 }
 
 fn propagation_confidence_for_anchor(
@@ -1060,7 +1069,165 @@ mod tests {
             event.propagation_kind == PropagationKind::ReturnValue
                 && event.owner_symbol_id.as_deref() == Some("Game::Forward")
                 && event.source_anchor.anchor_id.as_deref() == Some("Game::Forward::local:local@5")
-                && event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:out@12")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::Tick::local:out@36")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeHint")
+                && event.source_anchor.expression_text.as_deref() == Some("source")
+                && event.target_anchor.anchor_id.as_deref() == Some("Game::MakeHint::param:value@13")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeHint")
+                && event.source_anchor.anchor_id.as_deref() == Some("Game::MakeHint::local:hint@14")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::BoundaryWorker::Run::local:staged@25")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::BoundaryWorker::ApplyHint")
+                && event.source_anchor.expression_text.as_deref() == Some("staged")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::BoundaryWorker::ApplyHint::param:hint@20")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeEnvelope")
+                && event.source_anchor.expression_text.as_deref() == Some("source")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeEnvelope::param:value@43")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeEnvelope")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeEnvelope::local:envelope@44")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::EnvelopeWorker::RunEnvelope::local:envelope@72")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::EnvelopeWorker::ApplyHint")
+                && event.source_anchor.expression_text.as_deref() == Some("envelope.hint")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::EnvelopeWorker::ApplyHint::param:hint@67")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeNestedEnvelope")
+                && event.source_anchor.expression_text.as_deref() == Some("source")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeNestedEnvelope::param:value@52")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeNestedEnvelope")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeNestedEnvelope::local:nested@53")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedEnvelopeWorker::RunNestedEnvelope::local:nested@87")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref()
+                    == Some("Game::NestedEnvelopeWorker::ApplyHint")
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("nested.envelope.hint")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::NestedEnvelopeWorker::ApplyHint::param:hint@82")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeNestedEnvelope")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeNestedEnvelope::local:nested@53")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::RelayNestedHint::local:nested@116")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::ExtractHintPower")
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("nested.envelope.hint")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::ExtractHintPower::param:hint@57")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::ExtractHintPower")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::ExtractHintPower::fieldexpr:hint_power@58")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::RelayNestedHint::local:power@117")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::Consume")
+                && event.source_anchor.expression_text.as_deref() == Some("power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::Consume::param:value@2")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeNestedEnvelope")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeNestedEnvelope::local:nested@53")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::RelayNestedHintToEmitter::local:nested@122")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::ExtractHintPower")
+                && event.source_anchor.expression_text.as_deref()
+                    == Some("nested.envelope.hint")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::ExtractHintPower::param:hint@57")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::ExtractHintPower")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::ExtractHintPower::fieldexpr:hint_power@58")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::RelayNestedHintToEmitter::local:power@123")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::EmitPower")
+                && event.source_anchor.expression_text.as_deref() == Some("power")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::EmitPower::param:power@61")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeHint")
+                && event.source_anchor.expression_text.as_deref() == Some("source")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeHint::param:value@13")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ReturnValue
+                && event.owner_symbol_id.as_deref() == Some("Game::MakeHint")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MakeHint::local:hint@14")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MemberRelayWorker::RunMemberRelay::local:staged@106")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::MemberRelayWorker::Seed")
+                && event.source_anchor.expression_text.as_deref() == Some("staged")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::MemberRelayWorker::Seed::param:hint@97")
+        }));
+        assert!(events.iter().any(|event| {
+            event.propagation_kind == PropagationKind::ArgumentToParameter
+                && event.owner_symbol_id.as_deref() == Some("Game::EmitPower")
+                && event.target_anchor.anchor_id.as_deref()
+                    == Some("Game::EmitPower::param:power@61")
+                && event.source_anchor.anchor_id.as_deref()
+                    == Some("Game::MemberRelayWorker::field:stored")
         }));
     }
 

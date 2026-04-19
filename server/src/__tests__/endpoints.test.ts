@@ -227,6 +227,591 @@ describe("Heuristic ambiguity metadata", () => {
     expect(res.body.matchReasons).toEqual(["ambiguous_top_score"]);
     expect(res.body.ambiguity).toEqual({ candidateCount: 2 });
   });
+
+  it("uses anchor-qualified context to steer ambiguous HTTP function lookup", async () => {
+    const makeSymbol = (params: {
+      id: string;
+      name: string;
+      type: Symbol["type"];
+      filePath: string;
+      artifactKind?: Symbol["artifactKind"];
+      subsystem?: string;
+      module?: string;
+      projectArea?: string;
+    }): Symbol => ({
+      id: params.id,
+      name: params.name,
+      qualifiedName: params.id,
+      language: "cpp",
+      type: params.type,
+      filePath: params.filePath,
+      line: 1,
+      endLine: 3,
+      artifactKind: params.artifactKind,
+      subsystem: params.subsystem,
+      module: params.module,
+      projectArea: params.projectArea,
+    });
+
+    const symbols = [
+      makeSymbol({
+        id: "Game::Runtime::UpdateShot",
+        name: "UpdateShot",
+        type: "function",
+        filePath: "runtime/update_shot.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::UpdateShot",
+        name: "UpdateShot",
+        type: "function",
+        filePath: "editor/update_shot.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Investigation::RunHintWorkflow",
+        name: "RunHintWorkflow",
+        type: "function",
+        filePath: "runtime/workflow.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::RefreshShotPreview",
+        name: "RefreshShotPreview",
+        type: "function",
+        filePath: "editor/panel.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+    ];
+
+    const anchorAwareStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const anchorAwareApp = createApp(anchorAwareStore);
+
+    const runtimeRes = await request(anchorAwareApp)
+      .get("/function/UpdateShot")
+      .query({ anchorQualifiedName: "Game::Investigation::RunHintWorkflow" })
+      .expect(200);
+    expect(runtimeRes.body.lookupMode).toBe("heuristic");
+    expect(runtimeRes.body.confidence).toBe("ambiguous");
+    expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+
+    const editorRes = await request(anchorAwareApp)
+      .get("/function/UpdateShot")
+      .query({ anchorQualifiedName: "Game::Editor::RefreshShotPreview" })
+      .expect(200);
+    expect(editorRes.body.lookupMode).toBe("heuristic");
+    expect(editorRes.body.confidence).toBe("ambiguous");
+    expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+
+    const runtimeRecentRes = await request(anchorAwareApp)
+      .get("/function/UpdateShot")
+      .query({ recentQualifiedName: "Game::Investigation::RunHintWorkflow" })
+      .expect(200);
+    expect(runtimeRecentRes.body.lookupMode).toBe("heuristic");
+    expect(runtimeRecentRes.body.confidence).toBe("ambiguous");
+    expect(runtimeRecentRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+
+    const editorRecentRes = await request(anchorAwareApp)
+      .get("/function/UpdateShot")
+      .query({ recentQualifiedName: "Game::Editor::RefreshShotPreview" })
+      .expect(200);
+    expect(editorRecentRes.body.lookupMode).toBe("heuristic");
+    expect(editorRecentRes.body.confidence).toBe("ambiguous");
+    expect(editorRecentRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+  });
+
+  it("uses recent exact symbol context to steer ambiguous HTTP caller lookup", async () => {
+    const makeSymbol = (params: {
+      id: string;
+      name: string;
+      type: Symbol["type"];
+      filePath: string;
+      artifactKind?: Symbol["artifactKind"];
+      subsystem?: string;
+      module?: string;
+      projectArea?: string;
+      parentId?: string;
+    }): Symbol => ({
+      id: params.id,
+      name: params.name,
+      qualifiedName: params.id,
+      language: "cpp",
+      type: params.type,
+      filePath: params.filePath,
+      line: 1,
+      endLine: 3,
+      artifactKind: params.artifactKind,
+      subsystem: params.subsystem,
+      module: params.module,
+      projectArea: params.projectArea,
+      ...(params.parentId ? { parentId: params.parentId } : {}),
+    });
+
+    const symbols = [
+      makeSymbol({
+        id: "Game::Runtime::UpdateShot",
+        name: "UpdateShot",
+        type: "function",
+        filePath: "runtime/update_shot.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::UpdateShot",
+        name: "UpdateShot",
+        type: "function",
+        filePath: "editor/update_shot.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Runtime::TickRuntimeShot",
+        name: "TickRuntimeShot",
+        type: "function",
+        filePath: "runtime/tick_runtime_shot.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::RefreshShotPreview",
+        name: "RefreshShotPreview",
+        type: "function",
+        filePath: "editor/panel.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Investigation::HintController",
+        name: "HintController",
+        type: "class",
+        filePath: "runtime/workflow.h",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Investigation::HintController::hintedPower",
+        name: "hintedPower",
+        type: "variable",
+        filePath: "runtime/workflow.h",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+        parentId: "Game::Investigation::HintController",
+      }),
+    ];
+
+    const calls = [
+      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7 },
+      { callerId: "Game::Editor::RefreshShotPreview", calleeId: "Game::Editor::UpdateShot", filePath: "editor/panel.cpp", line: 9 },
+    ];
+
+    const recentAwareStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers(symbolId: string) {
+        return calls.filter((call) => call.calleeId === symbolId);
+      },
+      getCallees(symbolId: string) {
+        return calls.filter((call) => call.callerId === symbolId);
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recentAwareApp = createApp(recentAwareStore);
+
+    const runtimeRes = await request(recentAwareApp)
+      .get("/callers/UpdateShot")
+      .query({ recentQualifiedName: "Game::Investigation::HintController::hintedPower", limit: 10 })
+      .expect(200);
+    expect(runtimeRes.body.lookupMode).toBe("heuristic");
+    expect(runtimeRes.body.confidence).toBe("ambiguous");
+    expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+    expect(runtimeRes.body.callers).toHaveLength(1);
+    expect(runtimeRes.body.callers[0].qualifiedName).toBe("Game::Runtime::TickRuntimeShot");
+
+    const editorRes = await request(recentAwareApp)
+      .get("/callers/UpdateShot")
+      .query({ recentQualifiedName: "Game::Editor::RefreshShotPreview", limit: 10 })
+      .expect(200);
+    expect(editorRes.body.lookupMode).toBe("heuristic");
+    expect(editorRes.body.confidence).toBe("ambiguous");
+    expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+    expect(editorRes.body.callers).toHaveLength(1);
+    expect(editorRes.body.callers[0].qualifiedName).toBe("Game::Editor::RefreshShotPreview");
+  });
+
+  it("uses recent exact symbol context to steer ambiguous HTTP class lookup", async () => {
+    const makeSymbol = (params: {
+      id: string;
+      name: string;
+      type: Symbol["type"];
+      filePath: string;
+      artifactKind?: Symbol["artifactKind"];
+      subsystem?: string;
+      module?: string;
+      projectArea?: string;
+    }): Symbol => ({
+      id: params.id,
+      name: params.name,
+      qualifiedName: params.id,
+      language: "cpp",
+      type: params.type,
+      filePath: params.filePath,
+      line: 1,
+      endLine: 3,
+      artifactKind: params.artifactKind,
+      subsystem: params.subsystem,
+      module: params.module,
+      projectArea: params.projectArea,
+    });
+
+    const symbols = [
+      makeSymbol({
+        id: "Game::Runtime::ShotPanel",
+        name: "ShotPanel",
+        type: "class",
+        filePath: "runtime/update_shot.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::ShotPanel",
+        name: "ShotPanel",
+        type: "class",
+        filePath: "editor/update_shot.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Investigation::RunHintWorkflow",
+        name: "RunHintWorkflow",
+        type: "function",
+        filePath: "runtime/workflow.cpp",
+        artifactKind: "runtime",
+        subsystem: "runtime",
+        module: "gameplay",
+        projectArea: "investigation",
+      }),
+      makeSymbol({
+        id: "Game::Editor::RefreshShotPreview",
+        name: "RefreshShotPreview",
+        type: "function",
+        filePath: "editor/panel.cpp",
+        artifactKind: "editor",
+        subsystem: "editor",
+        module: "editor",
+        projectArea: "investigation",
+      }),
+    ];
+
+    const recentAwareStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recentAwareApp = createApp(recentAwareStore);
+
+    const runtimeRes = await request(recentAwareApp)
+      .get("/class/ShotPanel")
+      .query({ recentQualifiedName: "Game::Investigation::RunHintWorkflow" })
+      .expect(200);
+    expect(runtimeRes.body.lookupMode).toBe("heuristic");
+    expect(runtimeRes.body.confidence).toBe("ambiguous");
+    expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::ShotPanel");
+
+    const editorRes = await request(recentAwareApp)
+      .get("/class/ShotPanel")
+      .query({ recentQualifiedName: "Game::Editor::RefreshShotPreview" })
+      .expect(200);
+    expect(editorRes.body.lookupMode).toBe("heuristic");
+    expect(editorRes.body.confidence).toBe("ambiguous");
+    expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::ShotPanel");
+  });
+
+  it("prefers direct workflow neighbors when anchor metadata alone would still tie", async () => {
+    const makeSymbol = (id: string, filePath: string): Symbol => ({
+      id,
+      name: id.endsWith("UpdateShot") ? "UpdateShot" : id.split("::").at(-1)!,
+      qualifiedName: id,
+      language: "cpp",
+      type: "function",
+      filePath,
+      line: 1,
+      endLine: 3,
+      artifactKind: "runtime",
+      subsystem: "runtime",
+      module: "gameplay",
+      projectArea: "investigation",
+    });
+
+    const symbols = [
+      makeSymbol("Game::Runtime::UpdateShot", "runtime/update_shot.cpp"),
+      makeSymbol("Game::Runtime::Alt::UpdateShot", "runtime/alt_update_shot.cpp"),
+      makeSymbol("Game::Runtime::TickRuntimeShot", "runtime/tick_runtime_shot.cpp"),
+    ];
+
+    const calls = [
+      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7 },
+    ];
+
+    const neighborAwareStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers(symbolId: string) {
+        return calls.filter((call) => call.calleeId === symbolId);
+      },
+      getCallees(symbolId: string) {
+        return calls.filter((call) => call.callerId === symbolId);
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const neighborAwareApp = createApp(neighborAwareStore);
+    const res = await request(neighborAwareApp)
+      .get("/function/UpdateShot")
+      .query({ anchorQualifiedName: "Game::Runtime::TickRuntimeShot" })
+      .expect(200);
+    expect(res.body.lookupMode).toBe("heuristic");
+    expect(res.body.confidence).toBe("ambiguous");
+    expect(res.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+  });
 });
 
 describe("GET /search", () => {

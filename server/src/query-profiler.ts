@@ -4,7 +4,13 @@ import { performance } from "perf_hooks";
 import { openStore } from "./mcp-runtime";
 import { Store, MetadataFilters } from "./storage/store";
 import { SEARCH_DEFAULT_LIMIT, CALLGRAPH_MAX_DEPTH } from "./constants";
-import { ReferenceCategory } from "./models/responses";
+import { InvestigationWorkflowStep, ReferenceCategory } from "./models/responses";
+import {
+  buildInvestigateWorkflowResponse,
+  createWorkflowQueryContext,
+  toInvestigationAnchorSummary,
+  WorkflowProfiler,
+} from "./investigation-workflow";
 
 interface ProfilerConfig {
   dataDir: string;
@@ -16,6 +22,8 @@ interface ProfilerConfig {
   referencesQualifiedName: string;
   traceSourceQualifiedName: string;
   traceTargetQualifiedName: string;
+  workflowSourceQualifiedName: string;
+  workflowTargetQualifiedName: string;
   callersQualifiedName?: string;
   metadataFilters?: MetadataFilters;
 }
@@ -56,6 +64,8 @@ function parseArgs(argv: string[]): ProfilerConfig {
     referencesQualifiedName: values.get("--references-qualified") ?? values.get("--exact-qualified") ?? "Gameplay::Update",
     traceSourceQualifiedName: values.get("--trace-source-qualified") ?? "Bootstrap",
     traceTargetQualifiedName: values.get("--trace-target-qualified") ?? "ApplyDamage",
+    workflowSourceQualifiedName: values.get("--workflow-source-qualified") ?? values.get("--trace-source-qualified") ?? "Bootstrap",
+    workflowTargetQualifiedName: values.get("--workflow-target-qualified") ?? values.get("--trace-target-qualified") ?? "ApplyDamage",
   };
 }
 
@@ -224,6 +234,94 @@ function profileImpact(store: Store, qualifiedName: string, maxDepth = 2) {
   };
 }
 
+function buildFileRiskNotes(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): string[] {
+  const notes: string[] = [];
+  if (symbol.parseFragility === "elevated") {
+    notes.push("This symbol lives in a parse-fragile file, so structurally exact results may still sit near unstable syntax.");
+  }
+  if (symbol.macroSensitivity === "high") {
+    notes.push("This symbol lives in a macro-sensitive region, so exact structure may be less stable than usual.");
+  }
+  if (symbol.includeHeaviness === "heavy") {
+    notes.push("This symbol lives in an include-heavy file, so build-context interactions may matter more than usual.");
+  }
+  return notes;
+}
+
+function createLocalProfiler(): WorkflowProfiler & { snapshot(): Record<string, number> } {
+  const phaseTimings = new Map<string, number>();
+  return {
+    measure<T>(phase: string, action: () => T): T {
+      const started = performance.now();
+      try {
+        return action();
+      } finally {
+        phaseTimings.set(phase, Number(((phaseTimings.get(phase) ?? 0) + (performance.now() - started)).toFixed(3)));
+      }
+    },
+    flush() {},
+    snapshot() {
+      return Object.fromEntries(Array.from(phaseTimings.entries()));
+    },
+  };
+}
+
+function profileInvestigateWorkflow(
+  store: Store,
+  sourceQualifiedName: string,
+  targetQualifiedName: string,
+  maxDepth = CALLGRAPH_MAX_DEPTH,
+  maxEdges = 20,
+) {
+  const source = store.getSymbolByQualifiedName(sourceQualifiedName);
+  const target = store.getSymbolByQualifiedName(targetQualifiedName);
+  if (!source || !target) {
+    return { pathFound: false, mainPathLength: 0, handoffPointCount: 0, evidenceCount: 0, phaseTimingsMs: {} };
+  }
+
+  const queryContext = createWorkflowQueryContext(store);
+  const profiler = createLocalProfiler();
+  const callPath = profiler.measure("trace_call_path", () => profileTraceCallPath(store, sourceQualifiedName, targetQualifiedName, maxDepth));
+  const mainPath = profiler.measure("map_main_path", () => callPath.steps.map((step, index): InvestigationWorkflowStep => {
+    const fromSymbol = queryContext.getSymbolById(step.callerId);
+    const toSymbol = queryContext.getSymbolById(step.calleeId);
+    return {
+      hop: index + 1,
+      handoffKind: "call",
+      from: toInvestigationAnchorSummary({ symbol: fromSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+      to: toInvestigationAnchorSummary({ symbol: toSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+      filePath: step.filePath,
+      line: step.line,
+      confidence: "high",
+      risks: [],
+    };
+  }));
+  const response = buildInvestigateWorkflowResponse({
+    queryContext,
+    source,
+    target,
+    mainPath,
+    pathFound: callPath.pathFound,
+    truncated: false,
+    maxEdges,
+    lookupMode: "exact",
+    confidence: "exact",
+    matchReasons: ["exact_qualified_name_match"],
+    getFileRiskNotes: buildFileRiskNotes,
+    profiler,
+  });
+
+  return {
+    pathFound: response.pathFound,
+    pathConfidence: response.pathConfidence,
+    coverageConfidence: response.coverageConfidence,
+    mainPathLength: response.mainPath.length,
+    handoffPointCount: response.handoffPoints.length,
+    evidenceCount: response.evidence.length,
+    phaseTimingsMs: profiler.snapshot(),
+  };
+}
+
 function runMeasured<T>(label: string, repeatCount: number, action: () => T) {
   const samples: BenchmarkSample[] = [];
   let lastResult: T | undefined;
@@ -268,6 +366,8 @@ function main() {
           profileReferences(store, config.referencesQualifiedName)),
         runMeasured(`trace:${config.traceSourceQualifiedName}->${config.traceTargetQualifiedName}`, config.repeatCount, () =>
           profileTraceCallPath(store, config.traceSourceQualifiedName, config.traceTargetQualifiedName)),
+        runMeasured(`workflow:${config.workflowSourceQualifiedName}->${config.workflowTargetQualifiedName}`, config.repeatCount, () =>
+          profileInvestigateWorkflow(store, config.workflowSourceQualifiedName, config.workflowTargetQualifiedName)),
         runMeasured(`impact:${config.impactQualifiedName}`, config.repeatCount, () =>
           profileImpact(store, config.impactQualifiedName)),
       ],

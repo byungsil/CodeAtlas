@@ -415,6 +415,104 @@ export interface TraceCallPathResponse {
   steps: CallPathStep[];
 }
 
+export type WorkflowPathConfidence = "high" | "partial";
+
+export type WorkflowCoverageConfidence = "high" | "partial" | "weak";
+
+export type InvestigationHandoffKind =
+  | "call"
+  | "assignment"
+  | "initializerBinding"
+  | "argumentToParameter"
+  | "returnValue"
+  | "fieldWrite"
+  | "fieldRead"
+  | "reference";
+
+export interface InvestigationAnchorSummary {
+  symbolId?: string;
+  symbolName?: string;
+  qualifiedName?: string;
+  filePath?: string;
+  line?: number;
+  anchorKind?: PropagationAnchorKind;
+  expressionText?: string;
+}
+
+export interface InvestigationWorkflowStep {
+  hop: number;
+  handoffKind: InvestigationHandoffKind;
+  ownerSymbolId?: string;
+  ownerQualifiedName?: string;
+  from: InvestigationAnchorSummary;
+  to: InvestigationAnchorSummary;
+  filePath: string;
+  line: number;
+  confidence: WorkflowPathConfidence;
+  risks: PropagationRisk[];
+}
+
+export type InvestigationEvidenceKind =
+  | "adjacentCall"
+  | "boundaryArgument"
+  | "boundaryReturn"
+  | "fieldAssignment"
+  | "fieldRead"
+  | "ownerContext";
+
+export interface InvestigationEvidence {
+  kind: InvestigationEvidenceKind;
+  summary: string;
+  filePath: string;
+  line: number;
+  relatedSymbolId?: string;
+  relatedQualifiedName?: string;
+  confidence: WorkflowPathConfidence;
+  risks: PropagationRisk[]; 
+}
+
+export interface InvestigationSuggestedLookupCandidate {
+  shortName: string;
+  symbol: Symbol;
+  query: string;
+  confidence: ConfidenceLevel;
+  advisory?: string;
+  supportingEvidence?: Array<{
+    kind: InvestigationEvidenceKind;
+    relatedQualifiedName?: string;
+  }>;
+  contextSummary?: {
+    qualifiedName: string;
+    artifactKind?: Symbol["artifactKind"];
+    subsystem?: string;
+    module?: string;
+    projectArea?: string;
+    filePath?: string;
+  };
+  ambiguity?: AmbiguityInfo;
+}
+
+export interface InvestigateWorkflowResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  source: Symbol;
+  target?: Symbol;
+  window: ResultWindow;
+  targetConfidence: ConfidenceLevel;
+  pathConfidence: WorkflowPathConfidence;
+  coverageConfidence: WorkflowCoverageConfidence;
+  pathFound: boolean;
+  truncated: boolean;
+  entry: InvestigationAnchorSummary;
+  mainPath: InvestigationWorkflowStep[];
+  handoffPoints: InvestigationWorkflowStep[];
+  evidence: InvestigationEvidence[];
+  sink?: InvestigationAnchorSummary;
+  uncertainSegments: string[];
+  diagnostics: string[];
+  suggestedFollowUpQueries: string[];
+  suggestedLookupCandidates?: InvestigationSuggestedLookupCandidate[];
+}
+
 export interface ErrorResponse {
   error: string;
   code: string;

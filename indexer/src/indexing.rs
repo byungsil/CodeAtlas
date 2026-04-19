@@ -30,6 +30,7 @@ use std::collections::HashMap;
 const DEFAULT_INDEXER_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
 const MIN_INDEXER_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 const PARSE_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(15);
+const PARSE_PROGRESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PARSE_SLOW_FILE_THRESHOLD: Duration = Duration::from_secs(20);
 const DEFAULT_CPP_SKIP_THRESHOLD_BYTES: usize = 2 * 1024 * 1024;
 const CPP_SKIP_CONTENT_SAMPLE_BYTES: usize = 64 * 1024;
@@ -205,7 +206,7 @@ fn skip_reason_before_parse(language: SourceLanguage, content: &str) -> Option<&
 }
 
 fn classify_cpp_skip_reason(content: &str) -> Option<&'static str> {
-    let sample = &content[..content.len().min(CPP_SKIP_CONTENT_SAMPLE_BYTES)];
+    let sample = sample_prefix(content, CPP_SKIP_CONTENT_SAMPLE_BYTES);
     let source_structure_markers = count_cpp_source_markers(sample);
 
     if configured_cpp_skip_threshold_bytes()
@@ -234,6 +235,27 @@ fn classify_cpp_skip_reason(content: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+fn sample_prefix(content: &str, max_bytes: usize) -> &str {
+    if content.len() <= max_bytes {
+        return content;
+    }
+
+    let mut end = 0usize;
+    for (index, ch) in content.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+
+    if end == 0 {
+        ""
+    } else {
+        &content[..end]
+    }
 }
 
 fn count_cpp_source_markers(sample: &str) -> usize {
@@ -456,14 +478,15 @@ pub fn parse_discovered_files(
                     match &result {
                         Ok(pr) => {
                             eprintln!(
-                                "  Slow parse: {}/{} done in {} | {} ({:?}) | {} symbols, {} raw calls",
+                                "  Slow parse: {}/{} done in {} | {} ({:?}) | {} symbols, {} raw calls | {}",
                                 current,
                                 total,
                                 format_elapsed_ms(elapsed),
                                 rel_path,
                                 discovered.language,
                                 pr.symbols.len(),
-                                pr.raw_calls.len()
+                                pr.raw_calls.len(),
+                                summarize_parse_metrics(&pr.metrics),
                             );
                         }
                         Err(err) => {
@@ -569,11 +592,17 @@ fn spawn_parse_progress_monitor(
     progress: Arc<AtomicUsize>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let mut waited = Duration::ZERO;
         loop {
-            thread::sleep(PARSE_PROGRESS_LOG_INTERVAL);
             if parsing_complete.load(Ordering::Relaxed) {
                 break;
             }
+            thread::sleep(PARSE_PROGRESS_POLL_INTERVAL);
+            waited += PARSE_PROGRESS_POLL_INTERVAL;
+            if waited < PARSE_PROGRESS_LOG_INTERVAL {
+                continue;
+            }
+            waited = Duration::ZERO;
 
             let completed = progress.load(Ordering::Relaxed);
             let snapshot = {
@@ -613,8 +642,27 @@ fn spawn_parse_progress_monitor(
     })
 }
 
+fn summarize_parse_metrics(metrics: &ParseMetrics) -> String {
+    format!(
+        "tree-sitter {} | syntax-walk {} | local-propagation {} | graph-relations {} | graph-execute {}",
+        format_elapsed_u128_ms(metrics.tree_sitter_parse_ms),
+        format_elapsed_u128_ms(metrics.syntax_walk_ms),
+        format_elapsed_u128_ms(metrics.local_propagation_ms),
+        format_elapsed_u128_ms(metrics.graph_relation_ms),
+        format_elapsed_u128_ms(metrics.graph_rule_execute_ms),
+    )
+}
+
 fn format_elapsed_ms(elapsed: Duration) -> String {
     let elapsed_ms = elapsed.as_millis();
+    if elapsed_ms >= 1_000 {
+        format!("{}ms ({:.2}s)", elapsed_ms, elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{}ms", elapsed_ms)
+    }
+}
+
+fn format_elapsed_u128_ms(elapsed_ms: u128) -> String {
     if elapsed_ms >= 1_000 {
         format!("{}ms ({:.2}s)", elapsed_ms, elapsed_ms as f64 / 1_000.0)
     } else {
@@ -920,4 +968,13 @@ mod tests {
         assert_eq!(parse_stack_size_bytes("1048576"), None);
         assert_eq!(parse_stack_size_bytes("abc"), None);
     }
+
+    #[test]
+    fn sample_prefix_respects_utf8_boundaries() {
+        let content = format!("{}…tail", "a".repeat(CPP_SKIP_CONTENT_SAMPLE_BYTES - 2));
+        let sample = sample_prefix(&content, CPP_SKIP_CONTENT_SAMPLE_BYTES);
+        assert!(sample.is_char_boundary(sample.len()));
+        assert!(!sample.ends_with('…'));
+    }
+
 }

@@ -14,6 +14,18 @@ import { Symbol } from "./models/symbol";
 
 type LookupMetadata = Pick<FunctionResponse, "lookupMode" | "confidence" | "matchReasons" | "ambiguity">;
 
+export interface HeuristicLookupContext {
+  language?: Symbol["language"];
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: Symbol["artifactKind"];
+  filePath?: string;
+  anchorQualifiedName?: string;
+  anchorNeighborSymbolIds?: string[];
+  anchorScopePrefixes?: string[];
+}
+
 export function deriveLegacyLookupMetadata(candidateCount: number): LookupMetadata {
   if (candidateCount > 1) {
     return {
@@ -328,4 +340,76 @@ export function buildResultWindow(
     truncated,
     ...(limitApplied !== undefined ? { limitApplied } : {}),
   };
+}
+
+export function rankHeuristicCandidates(symbols: Symbol[], context?: HeuristicLookupContext): Symbol[] {
+  return symbols.slice().sort((left, right) =>
+    heuristicContextScore(right, context) - heuristicContextScore(left, context)
+    || representativeTieBreakScore(right) - representativeTieBreakScore(left)
+    || left.filePath.localeCompare(right.filePath)
+    || left.line - right.line
+    || left.qualifiedName.localeCompare(right.qualifiedName));
+}
+
+function heuristicContextScore(symbol: Symbol, context?: HeuristicLookupContext): number {
+  if (!context) {
+    return baseHeuristicScore(symbol);
+  }
+
+  let score = baseHeuristicScore(symbol);
+  if (context.language && symbol.language === context.language) score += 80;
+  if (context.subsystem && symbol.subsystem === context.subsystem) score += 120;
+  if (context.module && symbol.module === context.module) score += 110;
+  if (context.projectArea && symbol.projectArea === context.projectArea) score += 90;
+  if (context.artifactKind && symbol.artifactKind === context.artifactKind) score += 140;
+  if (context.filePath) score += filePathNeighborhoodScore(symbol.filePath, context.filePath);
+  if (context.anchorNeighborSymbolIds?.includes(symbol.id)) score += 220;
+  if (context.anchorScopePrefixes?.some((prefix) => symbol.qualifiedName === prefix || symbol.qualifiedName.startsWith(`${prefix}::`))) score += 70;
+
+  return score;
+}
+
+function baseHeuristicScore(symbol: Symbol): number {
+  let score = 0;
+  if (symbol.artifactKind === "runtime") score += 20;
+  if (symbol.artifactKind === "editor") score += 10;
+  if (!isTestLikePath(symbol.filePath, symbol.artifactKind)) score += 8;
+  if (!isGeneratedLikePath(symbol.filePath, symbol.artifactKind)) score += 8;
+  if (symbol.type === "function") score += 8;
+  if (looksLikeImplementationPath(symbol.filePath)) score += 4;
+  score += scopeDepthPreference(symbol.qualifiedName);
+  return score;
+}
+
+function scopeDepthPreference(qualifiedName: string): number {
+  const scopeDepth = qualifiedName.split("::").length - 1;
+  if (scopeDepth <= 1) return 6;
+  if (scopeDepth === 2) return 2;
+  return 0;
+}
+
+function representativeTieBreakScore(symbol: Symbol): number {
+  return representativeReasonScore(deriveRepresentativeSelectionReasons(symbol)[0] ?? "declarationOnlyFallback");
+}
+
+function filePathNeighborhoodScore(candidatePath: string, contextPath: string): number {
+  const candidateParts = normalizePathParts(candidatePath);
+  const contextParts = normalizePathParts(contextPath);
+  let prefix = 0;
+  const maxPrefix = Math.min(candidateParts.length, contextParts.length);
+  while (prefix < maxPrefix && candidateParts[prefix] === contextParts[prefix]) {
+    prefix += 1;
+  }
+
+  const candidateDirs = new Set(candidateParts.slice(0, -1));
+  const overlap = contextParts.slice(0, -1).filter((part) => candidateDirs.has(part)).length;
+  return prefix * 30 + overlap * 10;
+}
+
+function normalizePathParts(filePath: string): string[] {
+  return filePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.toLowerCase())
+    .filter((part) => part.length > 0);
 }

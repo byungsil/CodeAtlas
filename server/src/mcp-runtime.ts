@@ -23,6 +23,8 @@ import {
   ExplainSymbolPropagationResponse,
   FileSymbolsResponse,
   ImpactAnalysisResponse,
+  InvestigationWorkflowStep,
+  InvestigateWorkflowResponse,
   ImpactedFileSummary,
   ImpactedSymbolSummary,
   MetadataGroupSummary,
@@ -48,8 +50,17 @@ import {
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
+  HeuristicLookupContext,
   makeResolvedCallReference,
+  rankHeuristicCandidates,
 } from "./response-metadata";
+import {
+  buildInvestigateWorkflowResponse,
+  createWorkflowProfiler,
+  createWorkflowQueryContext,
+  buildPropagationWorkflowSteps as sharedBuildPropagationWorkflowSteps,
+  toInvestigationAnchorSummary as sharedToInvestigationAnchorSummary,
+} from "./investigation-workflow";
 
 export const DEFAULT_DATA_DIR = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
 
@@ -103,6 +114,97 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
     return filters ?? {};
+  }
+
+  function buildHeuristicLookupContext(params: {
+    language?: SourceLanguage;
+    subsystem?: string;
+    module?: string;
+    projectArea?: string;
+    artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+    filePath?: string;
+    anchorQualifiedName?: string;
+    recentQualifiedName?: string;
+  }): HeuristicLookupContext | undefined {
+    const { language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName } = params;
+    const anchorSymbol = resolveHeuristicAnchorSymbol({ anchorQualifiedName, recentQualifiedName });
+    if (!language && !subsystem && !module && !projectArea && !artifactKind && !filePath && !anchorSymbol) {
+      return undefined;
+    }
+    return {
+      language: language ?? anchorSymbol?.language,
+      subsystem: subsystem ?? anchorSymbol?.subsystem,
+      module: module ?? anchorSymbol?.module,
+      projectArea: projectArea ?? anchorSymbol?.projectArea,
+      artifactKind: artifactKind ?? anchorSymbol?.artifactKind,
+      filePath: filePath ?? anchorSymbol?.filePath,
+      anchorQualifiedName: anchorSymbol?.qualifiedName,
+      anchorNeighborSymbolIds: anchorSymbol
+        ? Array.from(new Set([
+          ...store.getCallers(anchorSymbol.id).map((call) => call.callerId),
+          ...store.getCallees(anchorSymbol.id).map((call) => call.calleeId),
+        ]))
+        : undefined,
+      anchorScopePrefixes: anchorSymbol ? collectAnchorScopePrefixes(anchorSymbol.qualifiedName) : undefined,
+    };
+  }
+
+  function buildCallerLookupContext(params: {
+    anchorQualifiedName?: string;
+    recentQualifiedName?: string;
+  }): HeuristicLookupContext | undefined {
+    return buildHeuristicLookupContext({
+      anchorQualifiedName: params.anchorQualifiedName,
+      recentQualifiedName: params.recentQualifiedName,
+    });
+  }
+
+  function resolveHeuristicAnchorSymbol(params: {
+    anchorQualifiedName?: string;
+    recentQualifiedName?: string;
+  }) {
+    const explicitAnchor = params.anchorQualifiedName
+      ? store.getSymbolByQualifiedName(params.anchorQualifiedName)
+      : undefined;
+    if (explicitAnchor) {
+      return explicitAnchor;
+    }
+
+    const recentSymbol = params.recentQualifiedName
+      ? store.getSymbolByQualifiedName(params.recentQualifiedName)
+      : undefined;
+    if (!recentSymbol) {
+      return undefined;
+    }
+    if (recentSymbol.type === "function"
+      || recentSymbol.type === "method"
+      || recentSymbol.type === "class"
+      || recentSymbol.type === "struct"
+      || recentSymbol.type === "namespace") {
+      return recentSymbol;
+    }
+    if (recentSymbol.parentId) {
+      const parentSymbol = store.getSymbolById(recentSymbol.parentId);
+      if (parentSymbol) {
+        return parentSymbol;
+      }
+    }
+    if (recentSymbol.scopeQualifiedName) {
+      const scopeSymbol = store.getSymbolByQualifiedName(recentSymbol.scopeQualifiedName);
+      if (scopeSymbol) {
+        return scopeSymbol;
+      }
+    }
+    return recentSymbol;
+  }
+
+  function collectAnchorScopePrefixes(qualifiedName: string): string[] {
+    const parts = qualifiedName.split("::");
+    const prefixes: string[] = [];
+    for (let index = 1; index < parts.length; index += 1) {
+      prefixes.push(parts.slice(0, index).join("::"));
+    }
+    return prefixes;
   }
 
   function matchesMetadataFilters(symbol: ReturnType<Store["getSymbolById"]>, filters?: MetadataFilters): boolean {
@@ -181,9 +283,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     };
   }
 
-  function resolveFunctionSymbol(name: string) {
+  function resolveFunctionSymbol(name: string, context?: HeuristicLookupContext) {
     const symbols = store.getSymbolsByName(name);
-    const functions = symbols.filter((s) => s.type === "function" || s.type === "method");
+    const functions = rankHeuristicCandidates(
+      symbols.filter((s) => s.type === "function" || s.type === "method"),
+      context,
+    );
     const symbol = functions[0];
     return {
       symbol,
@@ -352,6 +457,79 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     }
 
     return Array.from(new Set(queries));
+  }
+
+  function buildInvestigateWorkflowPayload(
+    source: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    target: NonNullable<ReturnType<Store["getSymbolById"]>> | undefined,
+    maxDepth: number,
+    maxEdges: number,
+  ): InvestigateWorkflowResponse {
+    const base = buildExactLookupResponse({ symbol: source, matchedBy: "qualifiedName" });
+    const workflowQueryContext = createWorkflowQueryContext(store);
+    const workflowProfiler = createWorkflowProfiler({
+      channel: "mcp",
+      source,
+      target,
+      maxDepth,
+      maxEdges,
+    });
+    let steps: InvestigationWorkflowStep[] = [];
+    let truncated = false;
+    let pathFound = false;
+
+    if (
+      target
+      && (source.type === "function" || source.type === "method")
+      && (target.type === "function" || target.type === "method")
+    ) {
+      const callPath = workflowProfiler.measure("trace_call_path", () => traceShortestCallPath(source, target, maxDepth));
+      pathFound = callPath.pathFound;
+      truncated = callPath.truncated;
+      steps = callPath.steps.map((step, index) => {
+        const fromSymbol = store.getSymbolById(step.callerId);
+        const toSymbol = store.getSymbolById(step.calleeId);
+        return {
+          hop: index + 1,
+          handoffKind: "call",
+          from: sharedToInvestigationAnchorSummary({ symbol: fromSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+          to: sharedToInvestigationAnchorSummary({ symbol: toSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+          filePath: step.filePath,
+          line: step.line,
+          confidence: "high",
+          risks: [],
+        };
+      });
+    } else {
+      const propagation = workflowProfiler.measure("trace_variable_flow", () => buildTraceVariableFlowPayload(source, "qualifiedName", maxDepth, maxEdges));
+      pathFound = propagation.pathFound;
+      truncated = propagation.truncated;
+      steps = workflowProfiler.measure("map_main_path", () => sharedBuildPropagationWorkflowSteps(workflowQueryContext, propagation.steps, 1));
+    }
+
+    const response = buildInvestigateWorkflowResponse({
+      queryContext: workflowQueryContext,
+      source,
+      target,
+      mainPath: steps,
+      pathFound,
+      truncated,
+      maxEdges,
+      lookupMode: base.lookupMode,
+      confidence: base.confidence,
+      matchReasons: base.matchReasons,
+      getFileRiskNotes: buildFileRiskNotes,
+      profiler: workflowProfiler,
+    });
+    workflowProfiler.flush({
+      pathFound,
+      mainPathLength: steps.length,
+      handoffPointCount: response.handoffPoints.length,
+      evidenceCount: response.evidence.length,
+      pathConfidence: response.pathConfidence,
+      coverageConfidence: response.coverageConfidence,
+    });
+    return response;
   }
 
   function buildExplainPropagationPayload(
@@ -820,9 +998,18 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "Look up a function or method by name. Returns the symbol definition, its callers, and its callees.",
     {
       name: z.string().describe("Function or method name to look up"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language hint for ranking ambiguous candidates"),
+      subsystem: z.string().optional().describe("Optional subsystem hint for ranking ambiguous candidates"),
+      module: z.string().optional().describe("Optional module hint for ranking ambiguous candidates"),
+      projectArea: z.string().optional().describe("Optional project-area hint for ranking ambiguous candidates"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind hint for ranking ambiguous candidates"),
+      filePath: z.string().optional().describe("Optional workspace-relative path hint for ranking ambiguous candidates"),
+      anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
+      recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
     },
-    async ({ name }) => {
-      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
+    async ({ name, language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName }) => {
+      const context = buildHeuristicLookupContext({ language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName });
+      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
 
       if (!sym) {
         return notFoundPayload();
@@ -856,12 +1043,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       module: z.string().optional().describe("Optional module filter applied to caller symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to caller symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to caller symbols"),
+      anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
+      recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
     },
-    async ({ name, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ name, limit, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
-      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
+      const context = buildCallerLookupContext({ anchorQualifiedName, recentQualifiedName });
+      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
 
       if (!sym) {
         return notFoundPayload();
@@ -893,10 +1083,22 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "Look up a class or struct by name. Returns the class definition and its members.",
     {
       name: z.string().describe("Class or struct name to look up"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language hint for ranking ambiguous candidates"),
+      subsystem: z.string().optional().describe("Optional subsystem hint for ranking ambiguous candidates"),
+      module: z.string().optional().describe("Optional module hint for ranking ambiguous candidates"),
+      projectArea: z.string().optional().describe("Optional project-area hint for ranking ambiguous candidates"),
+      artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind hint for ranking ambiguous candidates"),
+      filePath: z.string().optional().describe("Optional workspace-relative path hint for ranking ambiguous candidates"),
+      anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
+      recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
     },
-    async ({ name }) => {
-      const symbols = store.getSymbolsByName(name);
-      const sym = symbols.find((s) => s.type === "class" || s.type === "struct");
+    async ({ name, language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName }) => {
+      const context = buildHeuristicLookupContext({ language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName });
+      const symbols = rankHeuristicCandidates(
+        store.getSymbolsByName(name).filter((s) => s.type === "class" || s.type === "struct"),
+        context,
+      );
+      const sym = symbols[0];
 
       if (!sym) {
         return notFoundPayload();
@@ -908,7 +1110,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           type: "text",
           text: JSON.stringify(buildClassResponse({
             symbol: sym,
-            candidateCount: symbols.filter((s) => s.type === "class" || s.type === "struct").length,
+            candidateCount: symbols.length,
             members,
           }), null, 2),
         }],
@@ -1298,6 +1500,31 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
       return {
         content: [{ type: "text", text: JSON.stringify(traceShortestCallPath(source, target, maxDepth), null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "investigate_workflow",
+    "Compose a bounded investigation-oriented workflow answer from exact source and optional target symbols.",
+    {
+      sourceQualifiedName: z.string().describe("Exact source function, method, or field qualified name"),
+      targetQualifiedName: z.string().optional().describe("Optional exact target function, method, or field qualified name"),
+      maxDepth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum workflow traversal depth"),
+      maxEdges: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum workflow edges to explore"),
+    },
+    async ({ sourceQualifiedName, targetQualifiedName, maxDepth, maxEdges }) => {
+      const source = store.getSymbolByQualifiedName(sourceQualifiedName);
+      const target = targetQualifiedName ? store.getSymbolByQualifiedName(targetQualifiedName) : undefined;
+      if (!source || (targetQualifiedName && !target)) {
+        return notFoundPayload();
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(buildInvestigateWorkflowPayload(source, target, maxDepth, maxEdges), null, 2),
+        }],
       };
     },
   );

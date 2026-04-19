@@ -30,6 +30,8 @@ import {
   PropagationEventRecord,
   PropagationKind,
   PropagationPathStep,
+  InvestigationWorkflowStep,
+  InvestigateWorkflowResponse,
   ReferenceCategory,
   ReferenceQueryResponse,
   ResolvedReference,
@@ -47,8 +49,17 @@ import {
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
+  HeuristicLookupContext,
   makeResolvedCallReference,
+  rankHeuristicCandidates,
 } from "./response-metadata";
+import {
+  buildInvestigateWorkflowResponse,
+  createWorkflowProfiler,
+  createWorkflowQueryContext,
+  buildPropagationWorkflowSteps as sharedBuildPropagationWorkflowSteps,
+  toInvestigationAnchorSummary as sharedToInvestigationAnchorSummary,
+} from "./investigation-workflow";
 
 export function createApp(store: Store): express.Express {
   const app = express();
@@ -99,6 +110,88 @@ export function createApp(store: Store): express.Express {
     }
 
     return { language, subsystem, module, projectArea, artifactKind };
+  }
+
+  function parseHeuristicLookupContext(source: Record<string, unknown>): HeuristicLookupContext | undefined {
+    const filePath = typeof source.filePath === "string" ? source.filePath : undefined;
+    const anchorQualifiedName = typeof source.anchorQualifiedName === "string" ? source.anchorQualifiedName : undefined;
+    const recentQualifiedName = typeof source.recentQualifiedName === "string" ? source.recentQualifiedName : undefined;
+    const metadata = parseMetadataFilters(source);
+    const anchorSymbol = resolveHeuristicAnchorSymbol({ anchorQualifiedName, recentQualifiedName });
+    if (!filePath && !metadata && !anchorSymbol) {
+      return undefined;
+    }
+    return {
+      language: metadata?.language ?? anchorSymbol?.language,
+      subsystem: metadata?.subsystem ?? anchorSymbol?.subsystem,
+      module: metadata?.module ?? anchorSymbol?.module,
+      projectArea: metadata?.projectArea ?? anchorSymbol?.projectArea,
+      artifactKind: metadata?.artifactKind ?? anchorSymbol?.artifactKind,
+      filePath: filePath ?? anchorSymbol?.filePath,
+      anchorQualifiedName: anchorSymbol?.qualifiedName,
+      anchorNeighborSymbolIds: anchorSymbol
+        ? Array.from(new Set([
+          ...store.getCallers(anchorSymbol.id).map((call) => call.callerId),
+          ...store.getCallees(anchorSymbol.id).map((call) => call.calleeId),
+        ]))
+        : undefined,
+      anchorScopePrefixes: anchorSymbol ? collectAnchorScopePrefixes(anchorSymbol.qualifiedName) : undefined,
+    };
+  }
+
+  function parseCallerLookupContext(source: Record<string, unknown>): HeuristicLookupContext | undefined {
+    return parseHeuristicLookupContext({
+      anchorQualifiedName: source.anchorQualifiedName,
+      recentQualifiedName: source.recentQualifiedName,
+    });
+  }
+
+  function resolveHeuristicAnchorSymbol(params: {
+    anchorQualifiedName?: string;
+    recentQualifiedName?: string;
+  }): CodeSymbol | undefined {
+    const explicitAnchor = params.anchorQualifiedName
+      ? store.getSymbolByQualifiedName(params.anchorQualifiedName)
+      : undefined;
+    if (explicitAnchor) {
+      return explicitAnchor;
+    }
+
+    const recentSymbol = params.recentQualifiedName
+      ? store.getSymbolByQualifiedName(params.recentQualifiedName)
+      : undefined;
+    if (!recentSymbol) {
+      return undefined;
+    }
+    if (recentSymbol.type === "function"
+      || recentSymbol.type === "method"
+      || recentSymbol.type === "class"
+      || recentSymbol.type === "struct"
+      || recentSymbol.type === "namespace") {
+      return recentSymbol;
+    }
+    if (recentSymbol.parentId) {
+      const parentSymbol = store.getSymbolById(recentSymbol.parentId);
+      if (parentSymbol) {
+        return parentSymbol;
+      }
+    }
+    if (recentSymbol.scopeQualifiedName) {
+      const scopeSymbol = store.getSymbolByQualifiedName(recentSymbol.scopeQualifiedName);
+      if (scopeSymbol) {
+        return scopeSymbol;
+      }
+    }
+    return recentSymbol;
+  }
+
+  function collectAnchorScopePrefixes(qualifiedName: string): string[] {
+    const parts = qualifiedName.split("::");
+    const prefixes: string[] = [];
+    for (let index = 1; index < parts.length; index += 1) {
+      prefixes.push(parts.slice(0, index).join("::"));
+    }
+    return prefixes;
   }
 
   function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
@@ -336,6 +429,79 @@ export function createApp(store: Store): express.Express {
     }
 
     return Array.from(new Set(queries));
+  }
+
+  function traceInvestigationWorkflow(
+    source: CodeSymbol,
+    target: CodeSymbol | undefined,
+    maxDepth: number,
+    maxEdges: number,
+  ): InvestigateWorkflowResponse {
+    const base = buildExactLookupResponse({ symbol: source, matchedBy: "qualifiedName" });
+    const workflowQueryContext = createWorkflowQueryContext(store);
+    const workflowProfiler = createWorkflowProfiler({
+      channel: "http",
+      source,
+      target,
+      maxDepth,
+      maxEdges,
+    });
+    let steps: InvestigationWorkflowStep[] = [];
+    let truncated = false;
+    let pathFound = false;
+
+    if (
+      target
+      && (source.type === "function" || source.type === "method")
+      && (target.type === "function" || target.type === "method")
+    ) {
+      const callPath = workflowProfiler.measure("trace_call_path", () => traceShortestCallPath(source, target, maxDepth));
+      pathFound = callPath.pathFound;
+      truncated = callPath.truncated;
+      steps = callPath.steps.map((step, index) => {
+        const fromSymbol = store.getSymbolById(step.callerId);
+        const toSymbol = store.getSymbolById(step.calleeId);
+        return {
+          hop: index + 1,
+          handoffKind: "call",
+          from: sharedToInvestigationAnchorSummary({ symbol: fromSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+          to: sharedToInvestigationAnchorSummary({ symbol: toSymbol, fallbackFilePath: step.filePath, fallbackLine: step.line }),
+          filePath: step.filePath,
+          line: step.line,
+          confidence: "high",
+          risks: [],
+        };
+      });
+    } else {
+      const propagation = workflowProfiler.measure("trace_variable_flow", () => traceVariableFlow(source, "qualifiedName", maxDepth, maxEdges));
+      pathFound = propagation.pathFound;
+      truncated = propagation.truncated;
+      steps = workflowProfiler.measure("map_main_path", () => sharedBuildPropagationWorkflowSteps(workflowQueryContext, propagation.steps, 1));
+    }
+
+    const response = buildInvestigateWorkflowResponse({
+      queryContext: workflowQueryContext,
+      source,
+      target,
+      mainPath: steps,
+      pathFound,
+      truncated,
+      maxEdges,
+      lookupMode: base.lookupMode,
+      confidence: base.confidence,
+      matchReasons: base.matchReasons,
+      getFileRiskNotes: buildFileRiskNotes,
+      profiler: workflowProfiler,
+    });
+    workflowProfiler.flush({
+      pathFound,
+      mainPathLength: steps.length,
+      handoffPointCount: response.handoffPoints.length,
+      evidenceCount: response.evidence.length,
+      pathConfidence: response.pathConfidence,
+      coverageConfidence: response.coverageConfidence,
+    });
+    return response;
   }
 
   function buildExplainPropagation(
@@ -737,9 +903,12 @@ export function createApp(store: Store): express.Express {
     };
   }
 
-  function resolveFunctionSymbol(name: string) {
+  function resolveFunctionSymbol(name: string, context?: HeuristicLookupContext) {
     const symbols = store.getSymbolsByName(name);
-    const functions = symbols.filter((s) => s.type === "function" || s.type === "method");
+    const functions = rankHeuristicCandidates(
+      symbols.filter((s) => s.type === "function" || s.type === "method"),
+      context,
+    );
     const symbol = functions[0];
     return {
       symbol,
@@ -809,7 +978,8 @@ export function createApp(store: Store): express.Express {
 
   app.get("/function/:name", (req, res) => {
     const { name } = req.params;
-    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
+    const context = parseHeuristicLookupContext(req.query as Record<string, unknown>);
+    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
 
     if (!sym) {
       return notFound(res);
@@ -831,7 +1001,8 @@ export function createApp(store: Store): express.Express {
     const { name } = req.params;
     const limit = Math.min(parseInt((req.query.limit as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
-    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
+    const context = parseCallerLookupContext(req.query as Record<string, unknown>);
+    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
 
     if (!sym) {
       return notFound(res);
@@ -857,8 +1028,12 @@ export function createApp(store: Store): express.Express {
 
   app.get("/class/:name", (req, res) => {
     const { name } = req.params;
-    const symbols = store.getSymbolsByName(name);
-    const sym = symbols.find((s) => s.type === "class" || s.type === "struct");
+    const context = parseHeuristicLookupContext(req.query as Record<string, unknown>);
+    const symbols = rankHeuristicCandidates(
+      store.getSymbolsByName(name).filter((s) => s.type === "class" || s.type === "struct"),
+      context,
+    );
+    const sym = symbols[0];
 
     if (!sym) {
       return notFound(res);
@@ -867,7 +1042,7 @@ export function createApp(store: Store): express.Express {
     const members = store.getMembers(sym.id);
     const response: ClassResponse = buildClassResponse({
       symbol: sym,
-      candidateCount: symbols.filter((s) => s.type === "class" || s.type === "struct").length,
+      candidateCount: symbols.length,
       members,
     });
     return res.json(response);
@@ -993,6 +1168,25 @@ export function createApp(store: Store): express.Express {
       propagationKinds,
       filePath,
     ));
+  });
+
+  app.get("/investigate-workflow", (req, res) => {
+    const sourceQualifiedName = typeof req.query.sourceQualifiedName === "string" ? req.query.sourceQualifiedName : undefined;
+    const targetQualifiedName = typeof req.query.targetQualifiedName === "string" ? req.query.targetQualifiedName : undefined;
+    const maxDepth = Math.min(parseInt((req.query.maxDepth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
+    const maxEdges = Math.min(parseInt((req.query.maxEdges as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+
+    if (!sourceQualifiedName) {
+      return badRequest(res);
+    }
+
+    const source = store.getSymbolByQualifiedName(sourceQualifiedName);
+    const target = targetQualifiedName ? store.getSymbolByQualifiedName(targetQualifiedName) : undefined;
+    if (!source || (targetQualifiedName && !target)) {
+      return notFound(res);
+    }
+
+    return res.json(traceInvestigationWorkflow(source, target, maxDepth, maxEdges));
   });
 
   app.get("/impact", (req, res) => {
