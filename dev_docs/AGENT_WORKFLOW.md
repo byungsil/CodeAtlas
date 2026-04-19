@@ -13,7 +13,9 @@ Flow: **Agent -> MCP tool call -> structured JSON -> reasoning**
 ```bash
 codeatlas-indexer <workspace-root>         # incremental (default)
 codeatlas-indexer <workspace-root> --full  # full rebuild
+codeatlas-indexer <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
 codeatlas-indexer watch <workspace-root>   # auto-reindex on file changes
+codeatlas-indexer watch <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
 ```
 
 Operational notes:
@@ -21,6 +23,9 @@ Operational notes:
 - For large game repositories, keep a workspace-local `.codeatlasignore` so vendor mirrors, generated code, tests, and tools do not drown the index in low-value symbols.
 - Full rebuilds now print stage-level progress (`parse files`, `merge symbols`, `resolve calls`, `persist sqlite`) so long tails are easier to diagnose.
 - Non-verbose full rebuilds report active slow files during parsing.
+- The default per-file C/C++ parse timeout is `60000 ms` (`60 s`). Override it per run with `--parse-timeout-ms <ms>` or by environment with `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS=<micros>`.
+- If the workspace should only index selected languages or file types, pass `--extensions cpp,h,hpp,py` or set `CODEATLAS_INDEX_EXTENSIONS`.
+- Watch mode honors the same `--extensions` and `--parse-timeout-ms` overrides, so steady-state reindexing can stay aligned with the initial indexing scope.
 - C/C++ files that look like embedded binary dumps or giant numeric blobs are skipped before parsing. The default size threshold is `2097152` bytes and can be overridden with `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES`.
 
 ### 2. Start the MCP server

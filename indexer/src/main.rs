@@ -18,7 +18,7 @@ mod storage;
 mod typescript_parser;
 mod watcher;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::hash::{Hash, Hasher};
@@ -28,7 +28,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use constants::{DATA_DIR_NAME, DB_FILENAME};
+use constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS, INDEX_EXTENSIONS_ENV, parse_extension_list};
 use indexing::{
     default_language_registry, make_relative, parse_discovered_files, parse_file_strict,
     parse_files_strict,
@@ -38,6 +38,14 @@ use representative_rules::{load_workspace_representative_rules, set_active_repre
 use rusqlite::ErrorCode;
 
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
+const FULL_REBUILD_PARSE_BATCH_SIZE: usize = 2048;
+const FULL_REBUILD_PARSE_BATCH_SIZE_ENV: &str = "CODEATLAS_FULL_REBUILD_PARSE_BATCH_SIZE";
+
+#[derive(Debug, Clone, Copy)]
+struct MemorySnapshot {
+    working_set_bytes: u64,
+    private_bytes: u64,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 struct IndexStageTimings {
@@ -70,6 +78,17 @@ struct IncrementalStageTimings {
     commit_ms: u128,
 }
 
+#[derive(Debug, Clone)]
+struct CliOptions {
+    workspace_root: PathBuf,
+    watch_mode: bool,
+    requested_full_mode: bool,
+    json_mode: bool,
+    verbose_mode: bool,
+    index_extensions: Option<Vec<String>>,
+    parse_timeout_ms: Option<u64>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -77,24 +96,40 @@ fn main() {
         return;
     }
 
-    let watch_mode = args.get(1).map(|s| s.as_str()) == Some("watch");
-    let requested_full_mode = args.iter().any(|a| a == "--full");
-    let json_mode = args.iter().any(|a| a == "--json");
-    let verbose_mode = args.iter().any(|a| a == "--verbose");
-    let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-') && a.as_str() != "watch").collect();
-
-    let workspace_root = match positional.first() {
-        Some(p) => PathBuf::from(p),
-        None => {
-            eprintln!("Usage: codeatlas-indexer [watch] <workspace-root> [--full] [--json]");
+    let options = match parse_cli_args(&args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{}", error);
             eprintln!("Try `codeatlas-indexer --help` for more information.");
             std::process::exit(1);
         }
     };
+    let CliOptions {
+        workspace_root,
+        watch_mode,
+        requested_full_mode,
+        json_mode,
+        verbose_mode,
+        index_extensions,
+        parse_timeout_ms,
+    } = options;
 
     if !workspace_root.exists() {
         eprintln!("Directory not found: {}", workspace_root.display());
         std::process::exit(1);
+    }
+
+    if let Some(extensions) = index_extensions {
+        std::env::set_var(INDEX_EXTENSIONS_ENV, extensions.join(","));
+        println!("Index extensions: {}", extensions.join(", "));
+    }
+
+    if let Some(timeout_ms) = parse_timeout_ms {
+        std::env::set_var(
+            "CODEATLAS_CPP_PARSE_TIMEOUT_MICROS",
+            timeout_ms.saturating_mul(1_000).to_string(),
+        );
+        println!("C/C++ parse timeout: {}ms", timeout_ms);
     }
 
     match load_workspace_representative_rules(&workspace_root) {
@@ -157,6 +192,7 @@ fn main() {
         let discovered_files =
             discovery::find_source_files_with_feedback(&workspace_root, verbose_mode, &supported_languages);
         let discovery_elapsed = discovery_start.elapsed().as_millis();
+        print_memory_snapshot("after discovery");
         let all_relative: Vec<String> = discovered_files
             .iter()
             .map(|entry| make_relative(&workspace_root, &entry.path))
@@ -267,6 +303,86 @@ fn print_stage_timings(timings: &IndexStageTimings, json_mode: bool) {
     println!("  Timings: {}", parts.join(" | "));
 }
 
+fn accumulate_parse_metrics(total: &mut ParseMetrics, batch: &ParseMetrics) {
+    total.tree_sitter_parse_ms += batch.tree_sitter_parse_ms;
+    total.syntax_walk_ms += batch.syntax_walk_ms;
+    total.local_propagation_ms += batch.local_propagation_ms;
+    total.local_function_discovery_ms += batch.local_function_discovery_ms;
+    total.local_owner_lookup_ms += batch.local_owner_lookup_ms;
+    total.local_seed_ms += batch.local_seed_ms;
+    total.local_event_walk_ms += batch.local_event_walk_ms;
+    total.local_declaration_ms += batch.local_declaration_ms;
+    total.local_expression_statement_ms += batch.local_expression_statement_ms;
+    total.local_return_statement_ms += batch.local_return_statement_ms;
+    total.local_nested_block_ms += batch.local_nested_block_ms;
+    total.local_return_collection_ms += batch.local_return_collection_ms;
+    total.graph_relation_ms += batch.graph_relation_ms;
+    total.graph_rule_compile_ms += batch.graph_rule_compile_ms;
+    total.graph_rule_execute_ms += batch.graph_rule_execute_ms;
+    total.reference_normalization_ms += batch.reference_normalization_ms;
+}
+
+fn format_memory_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes >= GIB as u64 {
+        format!("{:.2} GiB", bytes as f64 / GIB)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / MIB)
+    }
+}
+
+fn configured_full_rebuild_parse_batch_size() -> usize {
+    std::env::var(FULL_REBUILD_PARSE_BATCH_SIZE_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(FULL_REBUILD_PARSE_BATCH_SIZE)
+}
+
+fn print_memory_snapshot(label: &str) {
+    if let Some(snapshot) = current_process_memory_snapshot() {
+        println!(
+            "  Memory: {} | working-set {} | private {}",
+            label,
+            format_memory_bytes(snapshot.working_set_bytes),
+            format_memory_bytes(snapshot.private_bytes)
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_process_memory_snapshot() -> Option<MemorySnapshot> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let process = unsafe { GetCurrentProcess() };
+    let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { zeroed() };
+    let ok = unsafe {
+        GetProcessMemoryInfo(
+            process,
+            &mut counters as *mut PROCESS_MEMORY_COUNTERS_EX as *mut _,
+            size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+
+    Some(MemorySnapshot {
+        working_set_bytes: counters.WorkingSetSize as u64,
+        private_bytes: counters.PrivateUsage as u64,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_process_memory_snapshot() -> Option<MemorySnapshot> {
+    None
+}
+
 fn print_resolve_breakdown(label: &str, timings: &ResolveBreakdownTimings) {
     println!(
         "  {}: merge-symbols {} | resolve-calls {} | boundary-propagation {} | propagation-merge {}",
@@ -323,7 +439,9 @@ fn print_help() {
     println!("  codeatlas-indexer <workspace-root>");
     println!("  codeatlas-indexer <workspace-root> --full");
     println!("  codeatlas-indexer <workspace-root> --full --json");
+    println!("  codeatlas-indexer <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000");
     println!("  codeatlas-indexer watch <workspace-root>");
+    println!("  codeatlas-indexer watch <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000");
     println!("  codeatlas-indexer --help");
     println!();
     println!("Modes:");
@@ -334,6 +452,9 @@ fn print_help() {
     println!("Options:");
     println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");
     println!("  --json       Write JSON snapshots alongside the SQLite database");
+    println!("  --extensions Comma-separated extension allowlist, e.g. cpp,h,hpp,py");
+    println!("  --parse-timeout-ms  Per-file C/C++ parse timeout in milliseconds");
+    println!("               Applies to watch mode too.");
     println!("  -h, --help   Show this help message");
     println!();
     println!("Large-repository stack safety:");
@@ -351,7 +472,101 @@ fn print_help() {
     println!();
     println!("Output:");
     println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
-    println!("  Supported file extensions: .c, .cpp, .h, .hpp, .cc, .cxx, .inl, .inc, .lua, .py, .ts, .tsx");
+    println!(
+        "  Supported file extensions: {}",
+        EXTENSIONS
+            .iter()
+            .map(|ext| format!(".{}", ext))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
+    let mut watch_mode = false;
+    let mut requested_full_mode = false;
+    let mut json_mode = false;
+    let mut verbose_mode = false;
+    let mut workspace_root: Option<PathBuf> = None;
+    let mut index_extensions: Option<Vec<String>> = None;
+    let mut parse_timeout_ms: Option<u64> = None;
+
+    let mut index = 1usize;
+    if args.get(1).map(|arg| arg.as_str()) == Some("watch") {
+        watch_mode = true;
+        index = 2;
+    }
+
+    while index < args.len() {
+        let arg = &args[index];
+        match arg.as_str() {
+            "--full" => requested_full_mode = true,
+            "--json" => json_mode = true,
+            "--verbose" => verbose_mode = true,
+            "--extensions" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "Missing value for --extensions".to_string())?;
+                index_extensions = Some(parse_cli_extensions(value)?);
+            }
+            "--parse-timeout-ms" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "Missing value for --parse-timeout-ms".to_string())?;
+                parse_timeout_ms = Some(parse_timeout_ms_arg(value)?);
+            }
+            _ if let Some(value) = arg.strip_prefix("--extensions=") => {
+                index_extensions = Some(parse_cli_extensions(value)?);
+            }
+            _ if let Some(value) = arg.strip_prefix("--parse-timeout-ms=") => {
+                parse_timeout_ms = Some(parse_timeout_ms_arg(value)?);
+            }
+            _ if arg.starts_with('-') => {
+                return Err(format!("Unknown option: {}", arg));
+            }
+            _ => {
+                if workspace_root.is_some() {
+                    return Err(format!("Unexpected extra positional argument: {}", arg));
+                }
+                workspace_root = Some(PathBuf::from(arg));
+            }
+        }
+        index += 1;
+    }
+
+    let workspace_root = workspace_root.ok_or_else(|| {
+        "Usage: codeatlas-indexer [watch] <workspace-root> [--full] [--json]".to_string()
+    })?;
+
+    Ok(CliOptions {
+        workspace_root,
+        watch_mode,
+        requested_full_mode,
+        json_mode,
+        verbose_mode,
+        index_extensions,
+        parse_timeout_ms,
+    })
+}
+
+fn parse_cli_extensions(raw: &str) -> Result<Vec<String>, String> {
+    let parsed = parse_extension_list(raw).ok_or_else(|| {
+        format!(
+            "Invalid --extensions value: {}. Supported extensions: {}",
+            raw,
+            EXTENSIONS.join(",")
+        )
+    })?;
+    let mut values: Vec<String> = parsed.into_iter().collect();
+    values.sort();
+    Ok(values)
+}
+
+fn parse_timeout_ms_arg(raw: &str) -> Result<u64, String> {
+    raw.parse::<u64>()
+        .map_err(|_| format!("Invalid --parse-timeout-ms value: {}", raw))
 }
 
 fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
@@ -521,99 +736,230 @@ fn run_full(
     let mut timings = IndexStageTimings::default();
     let mut resolve_breakdown = ResolveBreakdownTimings::default();
     let registry = default_language_registry();
+    let batch_size = configured_full_rebuild_parse_batch_size();
+    print_memory_snapshot("full rebuild start");
 
     println!("  Stage: parse files");
     let parse_start = Instant::now();
-    let (
-        raw_symbols,
-        raw_calls,
-        normalized_references,
-        local_propagation_events,
-        callable_flow_summaries,
-        file_records,
-        parse_metrics,
-    ) = parse_discovered_files(
-        workspace_root,
-        discovered_files,
-        verbose,
-        build_metadata,
-        &registry,
-    );
+    let mut parse_metrics = ParseMetrics::default();
+    db.begin().expect("Failed to begin full rebuild transaction");
+    db.clear().expect("Failed to clear SQLite tables before full rebuild");
+    for (batch_index, batch) in discovered_files
+        .chunks(batch_size)
+        .enumerate()
+    {
+        let (
+            raw_symbols,
+            raw_calls,
+            normalized_references,
+            local_propagation_events,
+            callable_flow_summaries,
+            file_records,
+            batch_metrics,
+        ) = parse_discovered_files(
+            workspace_root,
+            batch,
+            verbose,
+            build_metadata,
+            &registry,
+        );
+        db.write_raw_symbols(&raw_symbols)
+            .expect("Failed to write batch raw symbols");
+        db.write_raw_calls(&raw_calls)
+            .expect("Failed to write batch raw calls");
+        db.write_references(&normalized_references)
+            .expect("Failed to write batch references");
+        db.write_propagation_events(&local_propagation_events)
+            .expect("Failed to write batch local propagation");
+        db.write_callable_flow_summaries(&callable_flow_summaries, &raw_symbols)
+            .expect("Failed to write batch callable summaries");
+        db.write_files(&file_records)
+            .expect("Failed to write batch file records");
+        accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
+        if !verbose {
+            println!(
+                "  Parse batch {}/{} committed ({} files)",
+                batch_index + 1,
+                discovered_files.len().div_ceil(batch_size),
+                batch.len()
+            );
+            print_memory_snapshot("after parse batch flush");
+        }
+    }
     timings.parse_ms = parse_start.elapsed().as_millis();
     println!(
         "  Stage complete: parse files in {}",
         format_elapsed(timings.parse_ms)
     );
+    print_memory_snapshot("after parse files");
 
     println!("  Stage: merge symbols");
     let resolve_start = Instant::now();
     let merge_symbols_start = Instant::now();
-    let symbols = resolver::merge_symbols(&raw_symbols);
+    let raw_symbols = db
+        .read_all_raw_symbols()
+        .expect("Failed to read staged raw symbols");
+    let mut symbols = resolver::merge_symbols(&raw_symbols);
+    drop(raw_symbols);
+    db.write_symbols(&symbols)
+        .expect("Failed to write merged representative symbols");
+    db.rebuild_fts()
+        .expect("Failed to rebuild symbols FTS");
+    let symbol_count = symbols.len();
+    let caller_parent_by_id: HashMap<String, String> = symbols
+        .iter()
+        .filter_map(|symbol| {
+            symbol
+                .parent_id
+                .as_ref()
+                .map(|parent_id| (symbol.id.clone(), parent_id.clone()))
+        })
+        .collect();
+    let callee_name_by_id: HashMap<String, String> = symbols
+        .iter()
+        .map(|symbol| (symbol.id.clone(), symbol.name.clone()))
+        .collect();
     resolve_breakdown.merge_symbols_ms = merge_symbols_start.elapsed().as_millis();
     println!(
         "  Stage complete: merge symbols in {}",
         format_elapsed(resolve_breakdown.merge_symbols_ms)
     );
+    print_memory_snapshot("after merge symbols");
 
     println!("  Stage: resolve calls");
     let resolve_calls_start = Instant::now();
-    let calls = resolver::resolve_calls(&raw_calls, &symbols);
+    let file_paths: Vec<String> = db
+        .read_file_records()
+        .expect("Failed to read staged file records for batching")
+        .into_iter()
+        .map(|record| record.path)
+        .collect();
+    for (batch_index, file_batch) in file_paths.chunks(batch_size).enumerate() {
+        let raw_calls = db
+            .read_raw_calls_for_paths(file_batch)
+            .expect("Failed to read staged raw calls for resolve batch");
+        let calls = resolver::resolve_calls(&raw_calls, &symbols);
+        if !calls.is_empty() {
+            db.write_calls(&calls)
+                .expect("Failed to write resolved call batch");
+        }
+        if !verbose {
+            println!(
+                "  Resolve batch {}/{} committed ({} files, {} calls)",
+                batch_index + 1,
+                file_paths.len().div_ceil(batch_size),
+                file_batch.len(),
+                calls.len()
+            );
+        }
+    }
     resolve_breakdown.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
     println!(
         "  Stage complete: resolve calls in {}",
         format_elapsed(resolve_breakdown.resolve_calls_ms)
     );
+    print_memory_snapshot("after resolve calls");
+    let symbols_for_json = if json_mode { Some(symbols.clone()) } else { None };
+    drop(symbols);
 
     println!("  Stage: derive boundary propagation");
     let boundary_start = Instant::now();
-    let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
-        &raw_calls,
-        &calls,
-        &callable_flow_summaries,
-        &symbols,
-    );
+    let mut propagation_keys = db
+        .read_all_propagation_event_keys()
+        .expect("Failed to read staged propagation keys");
+    let mut appended_boundary_propagation = 0usize;
+    for (batch_index, file_batch) in file_paths.chunks(batch_size).enumerate() {
+        let raw_calls = db
+            .read_raw_calls_for_paths(file_batch)
+            .expect("Failed to read staged raw calls for boundary batch");
+        let calls = db
+            .read_calls_for_paths(file_batch)
+            .expect("Failed to read resolved calls for boundary batch");
+        let callee_ids: Vec<String> = calls.iter().map(|call| call.callee_id.clone()).collect();
+        let callable_flow_summaries = db
+            .read_callable_flow_summaries_for_ids(&callee_ids)
+            .expect("Failed to read callable summaries for boundary batch");
+        let boundary_propagation_events =
+            resolver::derive_function_boundary_propagation_events_with_indexes(
+            &raw_calls,
+            &calls,
+            &callable_flow_summaries,
+            &caller_parent_by_id,
+            &callee_name_by_id,
+        );
+        let mut unique_boundary_events = Vec::new();
+        for event in boundary_propagation_events {
+            let key = storage::propagation_event_storage_key(&event);
+            if propagation_keys.insert(key) {
+                unique_boundary_events.push(event);
+            }
+        }
+        appended_boundary_propagation += unique_boundary_events.len();
+        if !unique_boundary_events.is_empty() {
+            db.write_propagation_events(&unique_boundary_events)
+                .expect("Failed to write boundary propagation batch");
+        }
+        if !verbose {
+            println!(
+                "  Boundary batch {}/{} appended {} event(s)",
+                batch_index + 1,
+                file_paths.len().div_ceil(batch_size),
+                unique_boundary_events.len()
+            );
+        }
+    }
     resolve_breakdown.boundary_propagation_ms = boundary_start.elapsed().as_millis();
     println!(
         "  Stage complete: derive boundary propagation in {}",
         format_elapsed(resolve_breakdown.boundary_propagation_ms)
     );
+    print_memory_snapshot("after boundary propagation");
 
     println!("  Stage: merge propagation");
     let propagation_merge_start = Instant::now();
-    let propagation_events = resolver::merge_propagation_events(
-        &local_propagation_events,
-        &boundary_propagation_events,
-    );
     resolve_breakdown.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
     timings.resolve_ms = resolve_start.elapsed().as_millis();
     println!(
         "  Stage complete: merge propagation in {}",
         format_elapsed(resolve_breakdown.propagation_merge_ms)
     );
+    println!(
+        "  Propagation merge: appended {} boundary event(s)",
+        appended_boundary_propagation
+    );
+    print_memory_snapshot("after merge propagation");
 
     let raw_count: usize = discovered_files.len();
     println!("  Stage: persist sqlite");
     let persist_start = Instant::now();
-    db.write_all(
-        &raw_symbols,
-        &symbols,
-        &calls,
-        &normalized_references,
-        &propagation_events,
-        &callable_flow_summaries,
-        &file_records,
-    )
-        .expect("Failed to write to SQLite");
+    db.clear_raw_calls()
+        .expect("Failed to clear staged raw calls");
     timings.persist_ms = persist_start.elapsed().as_millis();
     println!(
         "  Stage complete: persist sqlite in {}",
         format_elapsed(timings.persist_ms)
     );
+    print_memory_snapshot("after persist sqlite");
 
     if json_mode {
         println!("  Stage: write json");
         let json_start = Instant::now();
-        write_json(&data_dir.join("symbols.json"), &symbols);
+        let calls = db
+            .read_all_calls()
+            .expect("Failed to read persisted calls");
+        let normalized_references = db
+            .read_all_references()
+            .expect("Failed to read staged references");
+        let propagation_events = db
+            .read_all_propagation_events()
+            .expect("Failed to read persisted propagation events");
+        let file_records = db
+            .read_file_records()
+            .expect("Failed to read staged file records");
+        write_json(
+            &data_dir.join("symbols.json"),
+            symbols_for_json.as_ref().expect("symbols must be present for json mode"),
+        );
         write_json(&data_dir.join("calls.json"), &calls);
         write_json(&data_dir.join("references.json"), &normalized_references);
         write_json(&data_dir.join("propagation.json"), &propagation_events);
@@ -623,13 +969,16 @@ fn run_full(
             "  Stage complete: write json in {}",
             format_elapsed(timings.json_ms)
         );
+        print_memory_snapshot("after write json");
     }
+    db.commit()
+        .expect("Failed to commit full rebuild transaction");
 
     println!(
         "  Symbols: {} | Calls: {} | Propagation: {} | Files: {}",
-        symbols.len(),
-        calls.len(),
-        propagation_events.len(),
+        symbol_count,
+        db.count_calls().unwrap_or(0),
+        db.count_propagation_events().unwrap_or(0),
         raw_count
     );
     print_parse_breakdown("Parse breakdown", &parse_metrics);
@@ -646,6 +995,7 @@ fn run_incremental(
     build_metadata: Option<&build_metadata::BuildMetadataContext>,
 ) -> Result<(), String> {
     let mut timings = IncrementalStageTimings::default();
+    print_memory_snapshot("incremental start");
     let initial_parse_start = Instant::now();
     let (
         parsed_symbols,
@@ -669,6 +1019,7 @@ fn run_incremental(
         )
     };
     timings.initial_parse_ms = initial_parse_start.elapsed().as_millis();
+    print_memory_snapshot("after incremental initial parse");
     if parse_metrics != ParseMetrics::default() {
         print_parse_breakdown("Incremental parse breakdown", &parse_metrics);
     }
@@ -740,6 +1091,7 @@ fn run_incremental(
             .cleanup_dangling_references()
             .map_err(|e| format!("Failed to cleanup dangling references: {}", e))?;
         timings.cleanup_refresh_ms = cleanup_refresh_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental cleanup/refresh");
 
         let mut all_calls = new_raw_calls;
         let mut all_references = new_references;
@@ -792,10 +1144,12 @@ fn run_incremental(
             all_callable_summaries.extend(result.callable_flow_summaries);
         }
         timings.affected_reparse_ms = affected_reparse_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental affected reparse");
 
         let resolve_calls_start = Instant::now();
         let resolved = resolver::resolve_calls_with_db(&all_calls, &refreshed_symbols, db);
         timings.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental resolve calls");
 
         let summary_load_start = Instant::now();
         let callable_summaries = merge_callable_summaries(
@@ -804,6 +1158,7 @@ fn run_incremental(
                 .map_err(|e| format!("Failed to read callable summaries: {}", e))?,
         );
         timings.summary_load_ms = summary_load_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental summary load");
 
         let boundary_start = Instant::now();
         let boundary_propagation = resolver::derive_function_boundary_propagation_events(
@@ -813,11 +1168,13 @@ fn run_incremental(
             &refreshed_symbols,
         );
         timings.boundary_propagation_ms = boundary_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental boundary propagation");
 
         let propagation_merge_start = Instant::now();
         let propagation_events =
             resolver::merge_propagation_events(&all_local_propagation, &boundary_propagation);
         timings.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental propagation merge");
 
         let persist_start = Instant::now();
         if !resolved.is_empty() {
@@ -845,6 +1202,7 @@ fn run_incremental(
         db.refresh_fts_for_symbol_ids(&affected_symbol_ids)
             .map_err(|e| format!("Failed to refresh FTS: {}", e))?;
         timings.persist_ms = persist_start.elapsed().as_millis();
+        print_memory_snapshot("after incremental persist");
 
         let total_syms: i64 = db.count_symbols().unwrap_or(0);
         let total_calls: i64 = db.count_calls().unwrap_or(0);
@@ -867,6 +1225,7 @@ fn run_incremental(
     db.commit()
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
     timings.commit_ms = commit_start.elapsed().as_millis();
+    print_memory_snapshot("after incremental commit");
     print_incremental_timings(&timings);
 
     if plan.to_index.is_empty() && !plan.to_delete.is_empty() {
@@ -1103,6 +1462,43 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn parse_cli_args_accepts_extensions_and_timeout() {
+        let args = vec![
+            "codeatlas-indexer".to_string(),
+            "watch".to_string(),
+            "workspace".to_string(),
+            "--extensions=cpp,h,hpp".to_string(),
+            "--parse-timeout-ms".to_string(),
+            "60000".to_string(),
+            "--verbose".to_string(),
+        ];
+
+        let parsed = parse_cli_args(&args).unwrap();
+
+        assert!(parsed.watch_mode);
+        assert!(parsed.verbose_mode);
+        assert_eq!(parsed.workspace_root, PathBuf::from("workspace"));
+        assert_eq!(parsed.parse_timeout_ms, Some(60_000));
+        assert_eq!(
+            parsed.index_extensions,
+            Some(vec!["cpp".into(), "h".into(), "hpp".into()])
+        );
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_unknown_extension() {
+        let args = vec![
+            "codeatlas-indexer".to_string(),
+            "workspace".to_string(),
+            "--extensions".to_string(),
+            "cpp,md".to_string(),
+        ];
+
+        let err = parse_cli_args(&args).unwrap_err();
+        assert!(err.contains("Invalid --extensions value"));
     }
 
     #[test]

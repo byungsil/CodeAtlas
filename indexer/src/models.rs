@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+const PROPAGATION_EXPRESSION_TEXT_ENV: &str = "CODEATLAS_PROPAGATION_EXPRESSION_TEXT";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Symbol {
@@ -391,6 +393,33 @@ pub struct CallableFlowSummary {
     pub callable_symbol_id: String,
     pub parameter_anchors: Vec<PropagationAnchor>,
     pub return_anchors: Vec<PropagationAnchor>,
+}
+
+pub fn propagation_expression_text_enabled() -> bool {
+    !matches!(
+        std::env::var(PROPAGATION_EXPRESSION_TEXT_ENV).ok().as_deref(),
+        Some("0" | "false" | "FALSE" | "no" | "NO")
+    )
+}
+
+pub fn compact_propagation_event(event: &mut PropagationEvent) {
+    if propagation_expression_text_enabled() {
+        return;
+    }
+    event.source_anchor.expression_text = None;
+    event.target_anchor.expression_text = None;
+}
+
+pub fn compact_callable_flow_summary(summary: &mut CallableFlowSummary) {
+    if propagation_expression_text_enabled() {
+        return;
+    }
+    for anchor in &mut summary.parameter_anchors {
+        anchor.expression_text = None;
+    }
+    for anchor in &mut summary.return_anchors {
+        anchor.expression_text = None;
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

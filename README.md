@@ -58,8 +58,14 @@ npm install
 # Incremental (default - only re-indexes changed files)
 ./indexer/target/release/codeatlas-indexer <workspace-root>
 
+# Restrict indexing to selected extensions and raise the C/C++ parse timeout to 60s
+./indexer/target/release/codeatlas-indexer <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
+
 # Watch mode (auto re-index on file changes)
 ./indexer/target/release/codeatlas-indexer watch <workspace-root>
+
+# Watch mode with a restricted extension set and 60s C/C++ parse timeout
+./indexer/target/release/codeatlas-indexer watch <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
 ```
 
 The indexer creates a `.codeatlas/index.db` SQLite database inside the workspace root. The database uses a dual-table architecture (`symbols_raw` for per-file parsed symbols, `symbols` for merged representatives) to support correct incremental updates when header/source pairs change independently.
@@ -127,6 +133,8 @@ All configuration is through environment variables, set in the MCP client config
 | `CODEATLAS_WATCHER` | `false` | Auto-start watcher as child process on MCP start |
 | `CODEATLAS_INDEXER_PATH` | `codeatlas-indexer` | Path to the Rust indexer binary |
 | `CODEATLAS_INDEXER_STACK_BYTES` | `67108864` | Worker-thread stack size for the Rust indexer thread pool |
+| `CODEATLAS_INDEX_EXTENSIONS` | `.c,.cpp,.h,.hpp,.cc,.cxx,.inl,.inc,.lua,.py,.ts,.tsx,.rs` | Default extension allowlist. CLI `--extensions` overrides it for the current run. |
+| `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS` | `60000000` | Per-file C/C++ Tree-sitter timeout in microseconds. CLI `--parse-timeout-ms` overrides it for the current run. |
 | `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES` | `2097152` | Default oversized C/C++ skip threshold. Set to `0` to disable the threshold. |
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory (fallback if no CLI arg) |
 
@@ -139,10 +147,14 @@ codeatlas-indexer <workspace-root> --verbose     # incremental index with per-fi
 codeatlas-indexer <workspace-root> --full        # full rebuild
 codeatlas-indexer <workspace-root> --full --verbose  # full rebuild with per-file logs
 codeatlas-indexer <workspace-root> --full --json  # full rebuild + JSON output
+codeatlas-indexer <workspace-root> --extensions cpp,h,hpp  # only index selected extensions
+codeatlas-indexer <workspace-root> --parse-timeout-ms 60000  # 60s per-file C/C++ parse timeout
+codeatlas-indexer <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
 codeatlas-indexer watch <workspace-root>          # watch mode
+codeatlas-indexer watch <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000
 ```
 
-Supported file extensions: `.c`, `.cpp`, `.h`, `.hpp`, `.cc`, `.cxx`, `.inl`, `.inc`, `.lua`, `.py`, `.ts`, `.tsx`, `.rs`
+Supported file extensions by default: `.c`, `.cpp`, `.h`, `.hpp`, `.cc`, `.cxx`, `.inl`, `.inc`, `.lua`, `.py`, `.ts`, `.tsx`, `.rs`
 
 Large-repository stack safety:
 
@@ -154,8 +166,17 @@ Large-repository parse protection:
 
 - full rebuilds now emit stage-level progress so long no-output windows are easier to distinguish from a true hang
 - slow-file monitoring remains active in non-verbose runs and reports the currently active long-tail parse files
+- the default per-file C/C++ parse timeout is now `60000 ms` (`60 s`)
+- `--parse-timeout-ms <ms>` overrides that timeout for a single run; `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS` remains available as an environment-level default
 - oversized or blob-like C/C++ files are skipped before Tree-sitter parsing to prevent a small number of pathological headers from stalling the whole run
 - the same skip protection applies consistently to full rebuilds, incremental runs, and watch mode
+
+Indexer scope control:
+
+- by default, the indexer scans the full built-in extension set listed above
+- `--extensions cpp,h,hpp,py` narrows the run to a comma-separated allowlist
+- `CODEATLAS_INDEX_EXTENSIONS` provides the same allowlist behavior through environment configuration when CLI flags are inconvenient
+- watch mode uses the same extension allowlist and parse-timeout overrides as full and incremental runs
 
 Mixed-workspace query behavior:
 

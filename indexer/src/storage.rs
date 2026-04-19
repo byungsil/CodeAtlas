@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use crate::models::{
     Call, CallableFlowSummary, FileRecord, InheritanceEdge, NormalizedReference,
     PropagationAnchorKind, PropagationEvent, PropagationKind, RawExtractionConfidence,
-    ReferenceCategory, Symbol,
+    RawCallKind, RawCallSite, RawQualifierKind, RawReceiverKind, ReferenceCategory, Symbol,
 };
 use crate::resolver;
 
@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS calls (
     line        INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS raw_calls (
+    caller_id   TEXT NOT NULL,
+    called_name TEXT NOT NULL,
+    call_kind   TEXT NOT NULL,
+    argument_count INTEGER,
+    argument_texts_json TEXT NOT NULL,
+    result_target_json TEXT,
+    receiver    TEXT,
+    receiver_kind TEXT,
+    qualifier   TEXT,
+    qualifier_kind TEXT,
+    file_path   TEXT NOT NULL,
+    line        INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS symbol_references (
     source_symbol_id TEXT NOT NULL,
     target_symbol_id TEXT NOT NULL,
@@ -140,6 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_id);
 CREATE INDEX IF NOT EXISTS idx_calls_caller_order ON calls(caller_id, file_path, line, callee_id);
 CREATE INDEX IF NOT EXISTS idx_calls_callee_order ON calls(callee_id, file_path, line, caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_path);
+CREATE INDEX IF NOT EXISTS idx_raw_calls_caller_order ON raw_calls(caller_id, file_path, line, called_name);
+CREATE INDEX IF NOT EXISTS idx_raw_calls_file ON raw_calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_references_source ON symbol_references(source_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_target_category_file ON symbol_references(target_symbol_id, category, file_path, line, source_symbol_id);
@@ -279,7 +296,7 @@ impl Database {
 
     pub fn clear(&self) -> SqlResult<()> {
         self.conn.execute_batch(
-            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM symbol_references; DELETE FROM propagation_events; DELETE FROM callable_flow_summaries; DELETE FROM files; DELETE FROM symbols_fts;",
+            "DELETE FROM symbols_raw; DELETE FROM symbols; DELETE FROM calls; DELETE FROM raw_calls; DELETE FROM symbol_references; DELETE FROM propagation_events; DELETE FROM callable_flow_summaries; DELETE FROM files; DELETE FROM symbols_fts;",
         )
     }
 
@@ -375,6 +392,36 @@ impl Database {
         )?;
         for c in calls {
             stmt.execute(params![c.caller_id, c.callee_id, c.file_path, c.line])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_raw_calls(&self, raw_calls: &[RawCallSite]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO raw_calls (
+                caller_id, called_name, call_kind, argument_count, argument_texts_json,
+                result_target_json, receiver, receiver_kind, qualifier, qualifier_kind,
+                file_path, line
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+        for raw_call in raw_calls {
+            stmt.execute(params![
+                raw_call.caller_id,
+                raw_call.called_name,
+                raw_call_kind_key(&raw_call.call_kind),
+                raw_call.argument_count,
+                serde_json::to_string(&raw_call.argument_texts).unwrap_or_else(|_| "[]".to_string()),
+                raw_call
+                    .result_target
+                    .as_ref()
+                    .map(|anchor| serde_json::to_string(anchor).unwrap_or_else(|_| "null".to_string())),
+                raw_call.receiver,
+                raw_call.receiver_kind.as_ref().map(raw_receiver_kind_key),
+                raw_call.qualifier,
+                raw_call.qualifier_kind.as_ref().map(raw_qualifier_kind_key),
+                raw_call.file_path,
+                raw_call.line,
+            ])?;
         }
         Ok(())
     }
@@ -551,6 +598,226 @@ impl Database {
         rows.collect()
     }
 
+    pub fn read_all_raw_symbols(&self) -> SqlResult<Vec<Symbol>> {
+        let sql = format!("SELECT {} FROM symbols_raw", SYMBOL_SELECT_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_symbol)?;
+        rows.collect()
+    }
+
+    pub fn read_all_raw_calls(&self) -> SqlResult<Vec<RawCallSite>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, file_path, line
+             FROM raw_calls
+             ORDER BY file_path, line, caller_id, called_name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let argument_texts_json: String = row.get(4)?;
+            let result_target_json: Option<String> = row.get(5)?;
+            Ok(RawCallSite {
+                caller_id: row.get(0)?,
+                called_name: row.get(1)?,
+                call_kind: raw_call_kind_from_key(&row.get::<_, String>(2)?),
+                argument_count: row.get(3)?,
+                argument_texts: serde_json::from_str(&argument_texts_json).unwrap_or_default(),
+                result_target: result_target_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok()),
+                receiver: row.get(6)?,
+                receiver_kind: row
+                    .get::<_, Option<String>>(7)?
+                    .as_deref()
+                    .map(raw_receiver_kind_from_key),
+                qualifier: row.get(8)?,
+                qualifier_kind: row
+                    .get::<_, Option<String>>(9)?
+                    .as_deref()
+                    .map(raw_qualifier_kind_from_key),
+                file_path: row.get(10)?,
+                line: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_raw_calls_for_paths(&self, file_paths: &[String]) -> SqlResult<Vec<RawCallSite>> {
+        if file_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = vec!["?"; file_paths.len()].join(", ");
+        let sql = format!(
+            "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, file_path, line
+             FROM raw_calls
+             WHERE file_path IN ({})
+             ORDER BY file_path, line, caller_id, called_name",
+            placeholders,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(file_paths.iter()), |row| {
+            let argument_texts_json: String = row.get(4)?;
+            let result_target_json: Option<String> = row.get(5)?;
+            Ok(RawCallSite {
+                caller_id: row.get(0)?,
+                called_name: row.get(1)?,
+                call_kind: raw_call_kind_from_key(&row.get::<_, String>(2)?),
+                argument_count: row.get(3)?,
+                argument_texts: serde_json::from_str(&argument_texts_json).unwrap_or_default(),
+                result_target: result_target_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok()),
+                receiver: row.get(6)?,
+                receiver_kind: row
+                    .get::<_, Option<String>>(7)?
+                    .as_deref()
+                    .map(raw_receiver_kind_from_key),
+                qualifier: row.get(8)?,
+                qualifier_kind: row
+                    .get::<_, Option<String>>(9)?
+                    .as_deref()
+                    .map(raw_qualifier_kind_from_key),
+                file_path: row.get(10)?,
+                line: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_calls_for_paths(&self, file_paths: &[String]) -> SqlResult<Vec<Call>> {
+        if file_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = vec!["?"; file_paths.len()].join(", ");
+        let sql = format!(
+            "SELECT caller_id, callee_id, file_path, line
+             FROM calls
+             WHERE file_path IN ({})
+             ORDER BY file_path, line, caller_id, callee_id",
+            placeholders,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(file_paths.iter()), |row| {
+            Ok(Call {
+                caller_id: row.get(0)?,
+                callee_id: row.get(1)?,
+                file_path: row.get(2)?,
+                line: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_all_calls(&self) -> SqlResult<Vec<Call>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT caller_id, callee_id, file_path, line
+             FROM calls
+             ORDER BY file_path, line, caller_id, callee_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Call {
+                caller_id: row.get(0)?,
+                callee_id: row.get(1)?,
+                file_path: row.get(2)?,
+                line: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_all_references(&self) -> SqlResult<Vec<NormalizedReference>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_symbol_id, target_symbol_id, category, file_path, line, confidence
+             FROM symbol_references
+             ORDER BY file_path, line, source_symbol_id, target_symbol_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NormalizedReference {
+                source_symbol_id: row.get(0)?,
+                target_symbol_id: row.get(1)?,
+                category: reference_category_from_key(&row.get::<_, String>(2)?),
+                file_path: row.get(3)?,
+                line: row.get(4)?,
+                confidence: extraction_confidence_from_key(&row.get::<_, String>(5)?),
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_all_propagation_events(&self) -> SqlResult<Vec<PropagationEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                owner_symbol_id, source_anchor_id, source_symbol_id, source_expression_text, source_anchor_kind,
+                target_anchor_id, target_symbol_id, target_expression_text, target_anchor_kind,
+                propagation_kind, file_path, line, confidence, risks
+             FROM propagation_events
+             ORDER BY file_path, line, propagation_kind, source_anchor_id, target_anchor_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(PropagationEvent {
+                owner_symbol_id: row.get(0)?,
+                source_anchor: crate::models::PropagationAnchor {
+                    anchor_id: row.get(1)?,
+                    symbol_id: row.get(2)?,
+                    expression_text: row.get(3)?,
+                    anchor_kind: propagation_anchor_kind_from_key(&row.get::<_, String>(4)?),
+                },
+                target_anchor: crate::models::PropagationAnchor {
+                    anchor_id: row.get(5)?,
+                    symbol_id: row.get(6)?,
+                    expression_text: row.get(7)?,
+                    anchor_kind: propagation_anchor_kind_from_key(&row.get::<_, String>(8)?),
+                },
+                propagation_kind: propagation_kind_from_key(&row.get::<_, String>(9)?),
+                file_path: row.get(10)?,
+                line: row.get(11)?,
+                confidence: extraction_confidence_from_key(&row.get::<_, String>(12)?),
+                risks: serde_json::from_str(&row.get::<_, String>(13)?).unwrap_or_default(),
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_all_propagation_event_keys(&self) -> SqlResult<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                owner_symbol_id, source_anchor_id, source_expression_text,
+                target_anchor_id, target_expression_text,
+                propagation_kind, file_path, line
+             FROM propagation_events",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(propagation_event_key_from_parts(
+                row.get::<_, Option<String>>(0)?.as_deref(),
+                row.get::<_, Option<String>>(1)?.as_deref(),
+                row.get::<_, Option<String>>(2)?.as_deref(),
+                row.get::<_, Option<String>>(3)?.as_deref(),
+                row.get::<_, Option<String>>(4)?.as_deref(),
+                &row.get::<_, String>(5)?,
+                &row.get::<_, String>(6)?,
+                row.get::<_, usize>(7)?,
+            ))
+        })?;
+        rows.collect()
+    }
+
+    pub fn read_all_callable_flow_summaries(&self) -> SqlResult<Vec<CallableFlowSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT callable_symbol_id, parameter_anchors_json, return_anchors_json
+             FROM callable_flow_summaries",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let parameter_json: String = row.get(1)?;
+            let return_json: String = row.get(2)?;
+            Ok(CallableFlowSummary {
+                callable_symbol_id: row.get(0)?,
+                parameter_anchors: serde_json::from_str(&parameter_json).unwrap_or_default(),
+                return_anchors: serde_json::from_str(&return_json).unwrap_or_default(),
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn delete_file_record(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM files WHERE path = ?1", params![file_path])?;
         Ok(())
@@ -634,6 +901,32 @@ impl Database {
         Ok(())
     }
 
+    pub fn replace_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM propagation_events", [])?;
+        self.write_propagation_events(events)
+    }
+
+    pub fn append_unique_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<usize> {
+        let mut existing = self.read_all_propagation_event_keys()?;
+        let mut unique = Vec::new();
+        for event in events {
+            let key = propagation_event_storage_key(event);
+            if existing.insert(key) {
+                unique.push(event.clone());
+            }
+        }
+        let appended = unique.len();
+        if appended > 0 {
+            self.write_propagation_events(&unique)?;
+        }
+        Ok(appended)
+    }
+
+    pub fn clear_raw_calls(&self) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM raw_calls", [])?;
+        Ok(())
+    }
+
     pub fn delete_callable_flow_summaries_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute(
             "DELETE FROM callable_flow_summaries WHERE file_path = ?1",
@@ -646,28 +939,35 @@ impl Database {
         &self,
         callable_symbol_ids: &[String],
     ) -> SqlResult<Vec<CallableFlowSummary>> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+
         if callable_symbol_ids.is_empty() {
             return Ok(Vec::new());
         }
 
-        let placeholders = vec!["?"; callable_symbol_ids.len()].join(", ");
-        let sql = format!(
-            "SELECT callable_symbol_id, parameter_anchors_json, return_anchors_json
-             FROM callable_flow_summaries
-             WHERE callable_symbol_id IN ({})",
-            placeholders,
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(callable_symbol_ids.iter()), |row| {
-            let parameter_json: String = row.get(1)?;
-            let return_json: String = row.get(2)?;
-            Ok(CallableFlowSummary {
-                callable_symbol_id: row.get(0)?,
-                parameter_anchors: serde_json::from_str(&parameter_json).unwrap_or_default(),
-                return_anchors: serde_json::from_str(&return_json).unwrap_or_default(),
-            })
-        })?;
-        rows.collect()
+        let mut summaries = Vec::new();
+        for chunk in callable_symbol_ids.chunks(SQLITE_VARIABLE_LIMIT) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT callable_symbol_id, parameter_anchors_json, return_anchors_json
+                 FROM callable_flow_summaries
+                 WHERE callable_symbol_id IN ({})",
+                placeholders,
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                let parameter_json: String = row.get(1)?;
+                let return_json: String = row.get(2)?;
+                Ok(CallableFlowSummary {
+                    callable_symbol_id: row.get(0)?,
+                    parameter_anchors: serde_json::from_str(&parameter_json).unwrap_or_default(),
+                    return_anchors: serde_json::from_str(&return_json).unwrap_or_default(),
+                })
+            })?;
+            summaries.extend(rows.collect::<SqlResult<Vec<_>>>()?);
+        }
+
+        Ok(summaries)
     }
 
     pub fn read_symbols_for_paths(&self, file_paths: &[String]) -> SqlResult<Vec<Symbol>> {
@@ -922,6 +1222,17 @@ fn reference_category_key(category: &ReferenceCategory) -> &'static str {
     }
 }
 
+fn reference_category_from_key(value: &str) -> ReferenceCategory {
+    match value {
+        "methodCall" => ReferenceCategory::MethodCall,
+        "classInstantiation" => ReferenceCategory::ClassInstantiation,
+        "moduleImport" => ReferenceCategory::ModuleImport,
+        "typeUsage" => ReferenceCategory::TypeUsage,
+        "inheritanceMention" => ReferenceCategory::InheritanceMention,
+        _ => ReferenceCategory::FunctionCall,
+    }
+}
+
 fn extraction_confidence_key(confidence: &RawExtractionConfidence) -> &'static str {
     match confidence {
         RawExtractionConfidence::High => "high",
@@ -947,6 +1258,17 @@ fn propagation_kind_key(kind: &PropagationKind) -> &'static str {
     }
 }
 
+fn propagation_kind_from_key(value: &str) -> PropagationKind {
+    match value {
+        "initializerBinding" => PropagationKind::InitializerBinding,
+        "argumentToParameter" => PropagationKind::ArgumentToParameter,
+        "returnValue" => PropagationKind::ReturnValue,
+        "fieldWrite" => PropagationKind::FieldWrite,
+        "fieldRead" => PropagationKind::FieldRead,
+        _ => PropagationKind::Assignment,
+    }
+}
+
 fn propagation_anchor_kind_key(kind: &PropagationAnchorKind) -> &'static str {
     match kind {
         PropagationAnchorKind::LocalVariable => "localVariable",
@@ -954,6 +1276,106 @@ fn propagation_anchor_kind_key(kind: &PropagationAnchorKind) -> &'static str {
         PropagationAnchorKind::ReturnValue => "returnValue",
         PropagationAnchorKind::Field => "field",
         PropagationAnchorKind::Expression => "expression",
+    }
+}
+
+fn propagation_anchor_kind_from_key(value: &str) -> PropagationAnchorKind {
+    match value {
+        "parameter" => PropagationAnchorKind::Parameter,
+        "returnValue" => PropagationAnchorKind::ReturnValue,
+        "field" => PropagationAnchorKind::Field,
+        "expression" => PropagationAnchorKind::Expression,
+        _ => PropagationAnchorKind::LocalVariable,
+    }
+}
+
+pub fn propagation_event_storage_key(event: &PropagationEvent) -> String {
+    propagation_event_key_from_parts(
+        event.owner_symbol_id.as_deref(),
+        event.source_anchor.anchor_id.as_deref(),
+        event.source_anchor.expression_text.as_deref(),
+        event.target_anchor.anchor_id.as_deref(),
+        event.target_anchor.expression_text.as_deref(),
+        propagation_kind_key(&event.propagation_kind),
+        event.file_path.as_str(),
+        event.line,
+    )
+}
+
+fn propagation_event_key_from_parts(
+    owner_symbol_id: Option<&str>,
+    source_anchor_id: Option<&str>,
+    source_expression_text: Option<&str>,
+    target_anchor_id: Option<&str>,
+    target_expression_text: Option<&str>,
+    propagation_kind: &str,
+    file_path: &str,
+    line: usize,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        owner_symbol_id.unwrap_or_default(),
+        source_anchor_id.or(source_expression_text).unwrap_or_default(),
+        target_anchor_id.or(target_expression_text).unwrap_or_default(),
+        propagation_kind,
+        file_path,
+        line,
+    )
+}
+
+fn raw_call_kind_key(kind: &RawCallKind) -> &'static str {
+    match kind {
+        RawCallKind::Unqualified => "unqualified",
+        RawCallKind::MemberAccess => "memberAccess",
+        RawCallKind::PointerMemberAccess => "pointerMemberAccess",
+        RawCallKind::ThisPointerAccess => "thisPointerAccess",
+        RawCallKind::Qualified => "qualified",
+    }
+}
+
+fn raw_call_kind_from_key(value: &str) -> RawCallKind {
+    match value {
+        "memberAccess" => RawCallKind::MemberAccess,
+        "pointerMemberAccess" => RawCallKind::PointerMemberAccess,
+        "thisPointerAccess" => RawCallKind::ThisPointerAccess,
+        "qualified" => RawCallKind::Qualified,
+        _ => RawCallKind::Unqualified,
+    }
+}
+
+fn raw_receiver_kind_key(kind: &RawReceiverKind) -> &'static str {
+    match kind {
+        RawReceiverKind::Identifier => "identifier",
+        RawReceiverKind::This => "this",
+        RawReceiverKind::PointerExpression => "pointerExpression",
+        RawReceiverKind::FieldExpression => "fieldExpression",
+        RawReceiverKind::QualifiedIdentifier => "qualifiedIdentifier",
+        RawReceiverKind::Other => "other",
+    }
+}
+
+fn raw_receiver_kind_from_key(value: &str) -> RawReceiverKind {
+    match value {
+        "this" => RawReceiverKind::This,
+        "pointerExpression" => RawReceiverKind::PointerExpression,
+        "fieldExpression" => RawReceiverKind::FieldExpression,
+        "qualifiedIdentifier" => RawReceiverKind::QualifiedIdentifier,
+        "other" => RawReceiverKind::Other,
+        _ => RawReceiverKind::Identifier,
+    }
+}
+
+fn raw_qualifier_kind_key(kind: &RawQualifierKind) -> &'static str {
+    match kind {
+        RawQualifierKind::Namespace => "namespace",
+        RawQualifierKind::Type => "type",
+    }
+}
+
+fn raw_qualifier_kind_from_key(value: &str) -> RawQualifierKind {
+    match value {
+        "type" => RawQualifierKind::Type,
+        _ => RawQualifierKind::Namespace,
     }
 }
 
@@ -1079,7 +1501,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 29);
+        assert_eq!(idx_count, 31);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 use walkdir::WalkDir;
-use crate::constants::{EXTENSIONS, DATA_DIR_NAME};
+use crate::constants::{DATA_DIR_NAME, is_indexed_extension};
 use crate::ignore::IgnoreRules;
 use crate::language::{DiscoveredSourceFile, SourceLanguage};
 
@@ -65,7 +65,7 @@ pub fn find_cpp_files_with_ignore(root: &Path, ignore: &IgnoreRules) -> Vec<Path
                 e.path()
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .map(|ext| EXTENSIONS.contains(&ext))
+                    .map(is_indexed_extension)
                     .unwrap_or(false)
             })
             .map(|e| e.into_path())
@@ -148,6 +148,9 @@ pub fn find_source_files_with_ignore(
                     .extension()
                     .and_then(|ext| ext.to_str())
                     .map(|ext| ext.to_ascii_lowercase())?;
+                if !is_indexed_extension(&extension) {
+                    return None;
+                }
                 let language = languages
                     .iter()
                     .copied()

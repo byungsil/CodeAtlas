@@ -12,7 +12,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use rusqlite::ErrorCode;
 
 use crate::build_metadata;
-use crate::constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS};
+use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
 use crate::discovery;
 use crate::indexing::{default_language_registry, make_relative, parse_file_strict, parse_files, parse_files_strict};
 use crate::ignore::IgnoreRules;
@@ -36,7 +36,7 @@ struct NormalizedWatchEvent {
 fn is_tracked(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| EXTENSIONS.contains(&e))
+        .map(is_indexed_extension)
         .unwrap_or(false)
 }
 
@@ -141,7 +141,7 @@ fn strip_editor_temp_suffix(name: &str) -> &str {
             if Path::new(base)
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| EXTENSIONS.contains(&ext))
+                .map(is_indexed_extension)
                 .unwrap_or(false)
             {
                 return base;

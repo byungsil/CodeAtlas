@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::models::{
     Call, CallableFlowSummary, InheritanceEdge, OverrideCandidate, OverrideMatchReason,
     PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
+    compact_propagation_event,
     RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
     RepresentativeSelectionReason, Symbol,
 };
@@ -749,6 +750,35 @@ pub fn derive_function_boundary_propagation_events(
     callable_summaries: &[CallableFlowSummary],
     symbols: &[Symbol],
 ) -> Vec<PropagationEvent> {
+    let caller_parent_by_id: HashMap<String, String> = symbols
+        .iter()
+        .filter_map(|symbol| {
+            symbol
+                .parent_id
+                .as_ref()
+                .map(|parent_id| (symbol.id.clone(), parent_id.clone()))
+        })
+        .collect();
+    let callee_name_by_id: HashMap<String, String> = symbols
+        .iter()
+        .map(|symbol| (symbol.id.clone(), symbol.name.clone()))
+        .collect();
+    derive_function_boundary_propagation_events_with_indexes(
+        raw_calls,
+        calls,
+        callable_summaries,
+        &caller_parent_by_id,
+        &callee_name_by_id,
+    )
+}
+
+pub fn derive_function_boundary_propagation_events_with_indexes(
+    raw_calls: &[RawCallSite],
+    calls: &[Call],
+    callable_summaries: &[CallableFlowSummary],
+    caller_parent_by_id: &HashMap<String, String>,
+    callee_name_by_id: &HashMap<String, String>,
+) -> Vec<PropagationEvent> {
     let mut raw_calls_by_site: HashMap<String, Vec<&RawCallSite>> = HashMap::new();
     for raw in raw_calls {
         raw_calls_by_site
@@ -760,10 +790,6 @@ pub fn derive_function_boundary_propagation_events(
         .iter()
         .map(|summary| (summary.callable_symbol_id.as_str(), summary))
         .collect();
-    let symbol_by_id: HashMap<&str, &Symbol> = symbols
-        .iter()
-        .map(|symbol| (symbol.id.as_str(), symbol))
-        .collect();
 
     let mut events = Vec::new();
 
@@ -772,9 +798,9 @@ pub fn derive_function_boundary_propagation_events(
         let Some(raw_calls_at_site) = raw_calls_by_site.get(key.as_str()) else {
             continue;
         };
-        let callee_name = symbol_by_id
+        let callee_name = callee_name_by_id
             .get(call.callee_id.as_str())
-            .map(|symbol| symbol.name.as_str());
+            .map(|name| name.as_str());
         let Some(raw_call) = raw_calls_at_site
             .iter()
             .copied()
@@ -792,7 +818,13 @@ pub fn derive_function_boundary_propagation_events(
                 continue;
             };
             let source_anchor =
-                resolve_argument_source_anchor(&raw_call.caller_id, argument_text, &symbol_by_id, index, raw_call.line);
+                resolve_argument_source_anchor(
+                    &raw_call.caller_id,
+                    argument_text,
+                    caller_parent_by_id,
+                    index,
+                    raw_call.line,
+                );
             let (confidence, risks) = propagation_confidence_for_anchor(&source_anchor);
             events.push(PropagationEvent {
                 owner_symbol_id: Some(call.callee_id.clone()),
@@ -820,26 +852,27 @@ pub fn derive_function_boundary_propagation_events(
                     risks,
                 });
             }
-        } else if symbol_by_id.contains_key(call.callee_id.as_str()) {
+        } else if callee_name_by_id.contains_key(call.callee_id.as_str()) {
             continue;
         }
     }
 
-    dedupe_propagation_events(events)
+    let mut events = dedupe_propagation_events(events);
+    for event in &mut events {
+        compact_propagation_event(event);
+    }
+    events
 }
 
 fn resolve_argument_source_anchor(
     caller_id: &str,
     argument_text: &str,
-    symbol_by_id: &HashMap<&str, &Symbol>,
+    caller_parent_by_id: &HashMap<String, String>,
     index: usize,
     line: usize,
 ) -> PropagationAnchor {
     if let Some(field_name) = argument_text.strip_prefix("this->") {
-        if let Some(parent_id) = symbol_by_id
-            .get(caller_id)
-            .and_then(|symbol| symbol.parent_id.as_deref())
-        {
+        if let Some(parent_id) = caller_parent_by_id.get(caller_id) {
             return PropagationAnchor {
                 anchor_id: Some(format!("{}::field:{}", parent_id, field_name)),
                 symbol_id: None,
@@ -861,10 +894,17 @@ pub fn merge_propagation_events(
     local_events: &[PropagationEvent],
     boundary_events: &[PropagationEvent],
 ) -> Vec<PropagationEvent> {
-    let mut combined = Vec::with_capacity(local_events.len() + boundary_events.len());
-    combined.extend(local_events.iter().cloned());
-    combined.extend(boundary_events.iter().cloned());
-    dedupe_propagation_events(combined)
+    let mut seen = HashSet::with_capacity(local_events.len() + boundary_events.len());
+    let mut merged = Vec::with_capacity(local_events.len() + boundary_events.len());
+
+    for event in local_events.iter().chain(boundary_events.iter()) {
+        let key = propagation_event_key(event);
+        if seen.insert(key) {
+            merged.push(event.clone());
+        }
+    }
+
+    merged
 }
 
 fn propagation_confidence_for_anchor(
@@ -890,38 +930,42 @@ fn dedupe_propagation_events(events: Vec<PropagationEvent>) -> Vec<PropagationEv
     let mut deduped = Vec::new();
 
     for event in events {
-        let key = format!(
-            "{}|{}|{}|{}|{}|{}",
-            event.owner_symbol_id.as_deref().unwrap_or_default(),
-            event
-                .source_anchor
-                .anchor_id
-                .as_deref()
-                .or(event.source_anchor.expression_text.as_deref())
-                .unwrap_or_default(),
-            event
-                .target_anchor
-                .anchor_id
-                .as_deref()
-                .or(event.target_anchor.expression_text.as_deref())
-                .unwrap_or_default(),
-            match event.propagation_kind {
-                PropagationKind::Assignment => "assignment",
-                PropagationKind::InitializerBinding => "initializerBinding",
-                PropagationKind::ArgumentToParameter => "argumentToParameter",
-                PropagationKind::ReturnValue => "returnValue",
-                PropagationKind::FieldWrite => "fieldWrite",
-                PropagationKind::FieldRead => "fieldRead",
-            },
-            event.file_path,
-            event.line,
-        );
+        let key = propagation_event_key(&event);
         if seen.insert(key) {
             deduped.push(event);
         }
     }
 
     deduped
+}
+
+fn propagation_event_key(event: &PropagationEvent) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        event.owner_symbol_id.as_deref().unwrap_or_default(),
+        event
+            .source_anchor
+            .anchor_id
+            .as_deref()
+            .or(event.source_anchor.expression_text.as_deref())
+            .unwrap_or_default(),
+        event
+            .target_anchor
+            .anchor_id
+            .as_deref()
+            .or(event.target_anchor.expression_text.as_deref())
+            .unwrap_or_default(),
+        match event.propagation_kind {
+            PropagationKind::Assignment => "assignment",
+            PropagationKind::InitializerBinding => "initializerBinding",
+            PropagationKind::ArgumentToParameter => "argumentToParameter",
+            PropagationKind::ReturnValue => "returnValue",
+            PropagationKind::FieldWrite => "fieldWrite",
+            PropagationKind::FieldRead => "fieldRead",
+        },
+        event.file_path,
+        event.line,
+    )
 }
 
 fn raw_call_site_key(caller_id: &str, file_path: &str, line: usize) -> String {

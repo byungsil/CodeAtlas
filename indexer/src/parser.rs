@@ -14,6 +14,7 @@ use crate::models::{
     NormalizedReference, ParseFragility, ParseResult, PropagationAnchor,
     PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
     ParseMetrics,
+    compact_callable_flow_summary, compact_propagation_event,
     RawCallKind, RawCallSite, RawEventSource, RawExtractionConfidence,
     RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind,
     ReferenceCategory, Symbol,
@@ -51,7 +52,7 @@ thread_local! {
     static CPP_GRAPH_FILE: RefCell<Option<Result<GraphDslFile, String>>> = const { RefCell::new(None) };
 }
 
-const DEFAULT_CPP_PARSE_TIMEOUT_MICROS: u64 = 15_000_000;
+const DEFAULT_CPP_PARSE_TIMEOUT_MICROS: u64 = 60_000_000;
 const CPP_PARSE_TIMEOUT_MICROS_ENV: &str = "CODEATLAS_CPP_PARSE_TIMEOUT_MICROS";
 
 fn graph_call_extraction_enabled() -> bool {
@@ -74,21 +75,17 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     parser
         .set_language(&lang.into())
         .map_err(|e| format!("Failed to set language: {}", e))?;
-    if let Some(timeout_micros) = configured_cpp_parse_timeout_micros() {
+    let timeout_micros = configured_cpp_parse_timeout_micros();
+    if let Some(timeout_micros) = timeout_micros {
         parser.set_timeout_micros(timeout_micros);
     }
 
     let tree_parse_start = Instant::now();
     let tree: Tree = parser
         .parse(source, None)
-        .ok_or_else(|| {
-            match configured_cpp_parse_timeout_micros() {
-                Some(timeout_micros) => format!(
-                    "Failed to parse within {}ms timeout",
-                    timeout_micros / 1_000
-                ),
-                None => "Failed to parse".to_string(),
-            }
+        .ok_or_else(|| match timeout_micros {
+            Some(timeout_micros) => format!("Parse timed out after {}ms", timeout_micros / 1_000),
+            None => "Failed to parse".to_string(),
         })?;
     let tree_sitter_parse_ms = tree_parse_start.elapsed().as_millis();
 
@@ -114,7 +111,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
             )
     });
     let local_propagation_start = Instant::now();
-    let (propagation_events, callable_flow_summaries, local_metrics) = if local_propagation_enabled()
+    let (mut propagation_events, mut callable_flow_summaries, local_metrics) = if local_propagation_enabled()
         && local_flow_candidates_exist
     {
         extract_local_propagation_data(tree.root_node(), &ctx)
@@ -122,6 +119,12 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         (Vec::new(), Vec::new(), LocalPropagationMetrics::default())
     };
     let local_propagation_ms = local_propagation_start.elapsed().as_millis();
+    for event in &mut propagation_events {
+        compact_propagation_event(event);
+    }
+    for summary in &mut callable_flow_summaries {
+        compact_callable_flow_summary(summary);
+    }
     let legacy_type_usage_events = extract_type_usage_relation_events(tree.root_node(), &ctx);
     let legacy_inheritance_events = extract_inheritance_relation_events(tree.root_node(), &ctx);
     let graph_call_candidates_exist = !ctx.raw_calls.is_empty();

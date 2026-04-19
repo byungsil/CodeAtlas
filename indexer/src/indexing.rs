@@ -471,8 +471,34 @@ pub fn parse_discovered_files(
                             );
                         }
                         Err(e) => {
-                            println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
+                            if is_parse_timeout_error(e) {
+                                println!("  [{}/{}] TIMEOUT: {}: {}", current, total, rel_path, e);
+                            } else {
+                                println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
+                            }
                         }
+                    }
+                } else if let Err(err) = &result {
+                    if is_parse_timeout_error(err) {
+                        eprintln!(
+                            "  Parse timeout: {}/{} after {} | {} ({:?}) | {}",
+                            current,
+                            total,
+                            format_elapsed_ms(elapsed),
+                            rel_path,
+                            discovered.language,
+                            err
+                        );
+                    } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
+                        eprintln!(
+                            "  Slow failure: {}/{} after {} | {} ({:?}) | {}",
+                            current,
+                            total,
+                            format_elapsed_ms(elapsed),
+                            rel_path,
+                            discovered.language,
+                            err
+                        );
                     }
                 } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
                     match &result {
@@ -489,17 +515,7 @@ pub fn parse_discovered_files(
                                 summarize_parse_metrics(&pr.metrics),
                             );
                         }
-                        Err(err) => {
-                            eprintln!(
-                                "  Slow failure: {}/{} after {} | {} ({:?}) | {}",
-                                current,
-                                total,
-                                format_elapsed_ms(elapsed),
-                                rel_path,
-                                discovered.language,
-                                err
-                            );
-                        }
+                        Err(_) => {}
                     }
                 }
                 (rel_path, result, hash, lossy)
@@ -568,7 +584,11 @@ pub fn parse_discovered_files(
             }
             Err(e) => {
                 if !verbose {
-                    eprintln!("  FAILED: {}: {}", rel_path, e);
+                    if is_parse_timeout_error(&e) {
+                        eprintln!("  TIMEOUT: {}: {}", rel_path, e);
+                    } else {
+                        eprintln!("  FAILED: {}: {}", rel_path, e);
+                    }
                 }
             }
         }
@@ -662,6 +682,10 @@ fn format_elapsed_ms(elapsed: Duration) -> String {
     }
 }
 
+fn is_parse_timeout_error(message: &str) -> bool {
+    message.contains("Parse timed out after")
+}
+
 fn format_elapsed_u128_ms(elapsed_ms: u128) -> String {
     if elapsed_ms >= 1_000 {
         format!("{}ms ({:.2}s)", elapsed_ms, elapsed_ms as f64 / 1_000.0)
@@ -698,9 +722,16 @@ pub fn parse_discovered_file_strict(
     if skip_reason_before_parse(discovered.language, &content).is_some() {
         return Ok((empty_parse_result(), hash, lossy, true));
     }
-    let result = registry
-        .parse_file(discovered.language, &rel_path, &content)
-        .map_err(|e| format!("Parse error for {}: {}", rel_path, e))?;
+    let result = match registry.parse_file(discovered.language, &rel_path, &content) {
+        Ok(result) => result,
+        Err(e) => {
+            let message = format!("Parse error for {}: {}", rel_path, e);
+            if is_parse_timeout_error(&e) {
+                eprintln!("  TIMEOUT: {}: {}", rel_path, e);
+            }
+            return Err(message);
+        }
+    };
     let mut result = result;
     for symbol in &mut result.symbols {
         apply_metadata_to_symbol_with_context(symbol, build_metadata);
