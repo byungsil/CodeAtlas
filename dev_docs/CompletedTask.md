@@ -4,7 +4,7 @@ Status:
 
 - This document is now a completed-work record.
 - The phases below describe work that has already been delivered.
-- New forward-looking planning should live in `dev_docs/NextTask.md` and the milestone documents.
+- New forward-looking planning should live in the milestone documents under `dev_docs/`.
 
 ## 1. Objective
 

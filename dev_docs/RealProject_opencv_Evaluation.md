@@ -224,6 +224,14 @@ These samples are enough to show that:
 
 This suggests that the Milestone 2 extraction pipeline is operational, but representative-symbol selection for heavily duplicated or declaration-rich OpenCV types still needs improvement.
 
+Representative regression target:
+
+- see `dev_docs/RepresentativeRegressionList.md`
+- tracked symbol:
+  - `cv::Mat::Mat`
+- current representative status:
+  - `weak`
+
 ## What This Validates
 
 - Milestone 2 indexing still completes on a very large real project after `tree-sitter-graph` integration

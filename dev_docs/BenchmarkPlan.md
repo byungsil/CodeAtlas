@@ -74,25 +74,27 @@ Additional role:
 Latest LLVM 18.1.8 full-rebuild validation:
 
 - workspace: `E:\Dev\llvm-project-llvmorg-18.1.8`
-- files: `42978`
-- symbols: `399546`
-- calls: `755292`
-- propagation edges: `1851298`
-- total time: `388300ms (388.30s)`
+- files: `56214`
+- symbols: `526387`
+- calls: `849451`
+- propagation edges: `2005690`
+- total time: `462006ms (462.01s)`
 
 Stage timings:
 
-- discovery: `6013ms (6.01s)`
-- parse: `66758ms (66.76s)`
-- resolve: `186772ms (186.77s)`
-- persist: `109650ms (109.65s)`
-- checkpoint: `1139ms (1.14s)`
+- discovery: `6542ms (6.54s)`
+- parse: `77623ms (77.62s)`
+- resolve: `222180ms (222.18s)`
+- persist: `129513ms (129.51s)`
+- checkpoint: `1234ms (1.23s)`
 
 Observed interpretation:
 
 - LLVM-scale indexing completes successfully on a much larger dataset than OpenCV
 - the dominant wall-clock costs are resolve and persistence at this scale
 - build metadata ingestion degraded gracefully when it encountered a malformed subtree-local `compile_commands.json`
+- the repository is genuinely mixed-language at scale, not only large-C++
+- the current default CodeAtlas runtime is now sufficient for this run after adding a larger internal indexing worker-thread stack
 
 Representative LLVM query profile:
 
@@ -101,12 +103,34 @@ Representative LLVM query profile:
 - search `StringRef`: avg `3.226ms`
 - callers `llvm::outs`: avg `0.346ms`
 - references `llvm::StringRef`: avg `1.295ms`
-- impact `llvm::outs`: avg `0.813ms`
+- impact `llvm::StringRef`: avg `0.813ms`
 
 Quality note:
 
 - `llvm::StringRef` resolved quickly, but its representative anchor landed on a test-heavy location rather than an intuitive canonical runtime definition
 - this reinforces that canonical representative selection still needs follow-up on giant mixed-purpose repositories
+
+Mixed-workspace summary from the same run:
+
+- `cpp`: `53811` files, `507904` symbols
+- `lua`: `6` files, `43` symbols
+- `python`: `2378` files, `18383` symbols
+- `rust`: `4` files, `19` symbols
+- `typescript`: `15` files, `38` symbols
+- total: `56214` files, `526387` symbols
+
+Operational note:
+
+- historical default run overflowed the stack
+- `RUST_MIN_STACK=16777216` still overflowed
+- `RUST_MIN_STACK=67108864` completed successfully
+- current default runtime with internal worker-stack control also completes successfully
+
+Interpretation:
+
+- LLVM is now both a scale benchmark and a stack-safety benchmark
+- CodeAtlas no longer depends on manual `RUST_MIN_STACK` tuning for this LLVM benchmark
+- any repository in the Unreal-engine class should still be assumed to need further validation beyond LLVM
 
 ## Required Measurements
 
@@ -144,6 +168,25 @@ Machine-readable benchmark outputs should be written to:
 Primary harness entrypoint:
 
 - `scripts/benchmark/Run-CodeAtlasBenchmark.ps1`
+
+## Post-MS8 Immediate Follow-Up
+
+The next non-optional runtime hardening target is stack-safe indexing for Unreal-engine-class repositories.
+
+Why it matters:
+
+- LLVM already required a larger thread stack before the new internal worker-stack fix
+- the intended production target is even larger and structurally harsher than LLVM
+- LLVM now succeeds without manual stack environment variables, but that should be treated as a milestone, not the final proof point
+
+Required work items:
+
+1. identify remaining deep recursion or recursion-like stack growth in parser, propagation, and resolution paths
+2. keep the controlled runtime fallback for larger worker thread stacks and validate whether it remains sufficient at Unreal-engine scale
+3. validate the final behavior against at least:
+   - LLVM
+   - an Unreal-engine-class game repository
+4. preserve existing benchmark discipline so stack-safety changes are measured, not guessed
 
 ## Stage Timing Contract
 

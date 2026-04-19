@@ -1,3 +1,10 @@
+export type SourceLanguage =
+  | "cpp"
+  | "lua"
+  | "python"
+  | "typescript"
+  | "rust";
+
 export type SymbolType =
   | "function"
   | "method"
@@ -12,6 +19,7 @@ export interface Symbol {
   id: string;
   name: string;
   qualifiedName: string;
+  language: SourceLanguage;
   type: SymbolType;
   filePath: string;
   line: number;

@@ -31,6 +31,91 @@ Base URL: `http://localhost:3000`
 - When declaration and definition coexist, the API contract is one logical symbol, not two separate exact symbols.
 - Inline/header-only callable implementations are represented as one logical symbol with inline-definition lifecycle semantics.
 
+### Representative Symbol Direction
+
+This is the Milestone 9 contract direction for choosing the representative anchor of a logical symbol on very large repositories.
+
+Problem statement:
+
+- a symbol may be resolved correctly while still exposing an unhelpful representative anchor
+- on giant monorepos, representative anchors can drift toward:
+  - test files
+  - secondary declarations
+  - inline helper locations
+  - generated or compatibility paths
+- this is a usability problem for agents because they usually continue reasoning from the first anchor returned
+
+Representative anchor intent:
+
+- every logical symbol should have one representative file and line anchor for default lookup responses
+- representative selection must prefer the location a human engineer would most likely consider canonical
+- declaration and definition metadata must still remain available even when only one anchor is chosen as representative
+
+First-release representative ranking inputs:
+
+- definition vs declaration
+- out-of-line definition vs inline definition
+- artifact kind:
+  - runtime
+  - editor
+  - tool
+  - test
+  - generated
+- header role:
+  - public
+  - private
+  - internal
+- path quality:
+  - production/runtime path preferred over test/sample/benchmark/generated path
+- scope quality:
+  - symbol anchors closer to the canonical owning scope should outrank structurally weaker duplicates
+
+First-release declaration and definition preference order:
+
+- out-of-line definition in an implementation translation unit is preferred when present
+- inline or header-only definition is the next structural fallback
+- declaration-only anchor is the last structural fallback
+- declaration and definition metadata must remain attached even when only one anchor becomes representative
+- representative choice must not depend on incidental raw-merge order
+
+Representative confidence vocabulary:
+
+- `canonical`
+  - the selected representative anchor is strongly preferred by current structure and path evidence
+- `acceptable`
+  - the selected representative anchor is usable, but not obviously the only canonical choice
+- `weak`
+  - the symbol is valid, but the representative anchor is selected from a duplicate-heavy or structurally noisy cluster
+
+Representative selection reason vocabulary:
+
+- `outOfLineDefinitionPreferred`
+- `inlineDefinitionFallback`
+- `declarationOnlyFallback`
+- `runtimeArtifactPreferred`
+- `publicHeaderPreferred`
+- `nonTestPathPreferred`
+- `nonGeneratedPathPreferred`
+- `scopeCanonicalityPreferred`
+- `duplicateClusterWeakCanonicality`
+
+First-release path and artifact-aware canonicality guidance:
+
+- runtime anchors should outrank test, sample, benchmark, and generated anchors when structural preference is otherwise comparable
+- public headers should outrank private or internal headers when the symbol remains declaration-shaped on both sides
+- path- and artifact-aware scoring is a tie-shaping policy layered on top of declaration/definition structure, not a replacement for structural preference
+- representative choice should stay deterministic and explainable from persisted metadata such as:
+  - `artifactKind`
+  - `headerRole`
+  - file path classification
+
+Milestone 9 intent:
+
+- representative selection quality is a separate concern from symbol existence and exact identity
+- a symbol may be exact while its representative anchor is only `acceptable` or `weak`
+- representative confidence should be surfaced separately from symbol lookup confidence when that metadata becomes part of public responses
+- duplicate-heavy repositories such as LLVM and Unreal-engine-class game repositories are the primary validation targets for this contract
+
 ### Call
 
 | Field    | Type   | Description                |
@@ -87,6 +172,8 @@ Supported first-release reference categories:
   - a direct call whose resolved target is a class or struct member function
 - `classInstantiation`
   - reserved for constructor-like or object-creation references once extraction is added
+- `moduleImport`
+  - a structural module import relation such as Lua `require(...)`
 - `typeUsage`
   - a structural mention of a type in declarations, fields, parameters, or local declarations
 - `inheritanceMention`
@@ -105,7 +192,7 @@ Normalized reference payload:
 |----------------|--------|-------------|
 | sourceSymbolId | string | Canonical symbol ID that owns or originates the reference |
 | targetSymbolId | string | Canonical symbol ID being referenced |
-| category       | string | One of: `functionCall`, `methodCall`, `classInstantiation`, `typeUsage`, `inheritanceMention` |
+| category       | string | One of: `functionCall`, `methodCall`, `classInstantiation`, `moduleImport`, `typeUsage`, `inheritanceMention` |
 | filePath       | string | Relative file path |
 | line           | number | 1-based source line |
 | confidence     | string | Extraction confidence: `high` or `partial` |
@@ -115,6 +202,7 @@ Modeling decisions for Milestone 3:
 - `Call` storage remains the canonical source for direct call edges that have already been resolved
 - generalized references will live in their own storage surface rather than overloading the `calls` table
 - `functionCall` and `methodCall` may be derived from existing resolved call edges when reference queries are introduced
+- `moduleImport` is the first shared non-call structural relation added for mixed-language workspace support
 - `typeUsage` and `inheritanceMention` will be promoted from normalized extraction events into persisted references in later Milestone 3 steps
 - `classInstantiation` is part of the first-release vocabulary now so extraction and query code can grow into it without renaming the contract later
 
@@ -192,6 +280,101 @@ Modeling decisions for Milestone 6:
 - unsupported cases should degrade into absent events or explicit risk markers, not guessed propagation paths
 - agent-facing propagation queries should prefer compact summaries and bounded traversals rather than full raw graphs
 
+### First-Release Multi-Language Capability Model
+
+This is the Milestone 8 contract for extending CodeAtlas beyond C++ without diluting its large-repository and agent-usable focus.
+
+Design intent:
+
+- multi-language support exists to help agents answer real workspace structure, flow, and impact questions
+- the contract prefers bounded shared capabilities over shallow promises of semantic parity
+- the C/C++ family remains the deepest native language surface in first release
+
+Mixed-workspace operating assumption:
+
+- a single workspace may contain C++, Lua, Python, TypeScript, and Rust together
+- this mixed-language state is a first-class target, not an exception path
+- file discovery and parsing may dispatch by language, but stored symbols, relations, and query surfaces must still compose into one language-aware workspace model
+- when a query crosses a language boundary, the response should preserve the shared workflow and surface explicit boundary notes when direct structural continuity is unavailable
+
+Explicit first-release format boundary:
+
+- `.c` is included with the existing C/C++ family support because large native repositories commonly mix C and C++
+- XML is out of scope for Milestone 8 first release because it is not yet shown to be a consistently high-value structural code-intelligence format for the product's target questions
+
+Shared first-release language metadata:
+
+| Field               | Type   | Description |
+|---------------------|--------|-------------|
+| language            | string | One of: `cpp`, `lua`, `python`, `typescript`, `rust` |
+| symbolRole          | string? | Language-specific structural role such as `module`, `class`, `method`, `function`, `trait`, `tableMember`, `interface` |
+| modulePath          | string? | Normalized module or container path when the language has one |
+| exportVisibility    | string? | Visibility or export hint when structurally meaningful |
+| languageVersionHint | string? | Reserved optional version hint when a parser or workspace adapter can provide it cheaply |
+
+Shared first-release capabilities:
+
+| Capability       | C++ | Lua | Python | TypeScript | Rust | Notes |
+|------------------|-----|-----|--------|------------|------|-------|
+| exactLookup      | yes | yes | yes | yes | yes | Exact lookup remains the anchor workflow across all languages. |
+| search           | yes | yes | yes | yes | yes | Name-oriented exploration remains available everywhere. |
+| directCallers    | yes | yes | yes | yes | yes | Only direct structurally recoverable call edges are required in first release. |
+| references       | yes | yes | yes | yes | yes | Categories vary by language but the query surface remains shared. |
+| impactAnalysis   | yes | yes | yes | yes | yes | Summary-first responses remain required even when depth is language-limited. |
+| fileOrModuleOverview | yes | yes | yes | yes | yes | Agents must be able to browse structure without opening raw files. |
+
+Shared capability requirements for all first-release languages:
+
+- exact symbol targeting must exist
+- exploratory search must exist
+- direct caller queries must exist for supported direct-call shapes
+- generalized reference queries must exist for the language's supported structural relations
+- impact analysis must return bounded summary-first results
+- file or module overview must let the agent browse structure progressively
+
+Language-specific structural reference focus:
+
+| Language   | First-release emphasis |
+|------------|------------------------|
+| C++        | calls, type usage, inheritance, propagation-aware navigation |
+| Lua        | module functions, table-attached functions, `require(...)` relations, direct calls |
+| Python     | imports, free functions, classes, methods, simple direct calls |
+| TypeScript | import/export chains, exported functions, classes, methods, interfaces where cheap |
+| Rust       | modules, `use` relations, functions, structs, enums, traits, impl-attached methods |
+
+Intentional C++-only advanced capabilities for now:
+
+- advanced propagation depth
+- build-metadata-driven refinement
+- macro and include risk semantics
+- compiler-adjacent confidence shaping that depends on C++-specific structure
+
+Language-specific confidence boundaries:
+
+- Lua:
+  - strong for module-level functions, table members when syntactically obvious, and `require(...)`
+  - weak or unsupported for metatable-driven resolution, dynamic globals, and runtime-generated code
+- Python:
+  - strong for imports, free functions, classes, simple methods, and direct call shapes that stay structurally obvious
+  - weak or unsupported for monkey patching, reflection-driven imports, and heavy dynamic dispatch
+- TypeScript:
+  - strong for import/export structure, direct callable/class structure, and simple namespace or `this`-based call shapes
+  - weak or unsupported for full typechecker-grade meaning, complex module-resolution certainty, and runtime-dynamic patterns
+- Rust:
+  - strong for module trees, traits, impl blocks, impl methods, `use` structure, and simple path-qualified or `self`-based direct calls
+  - weak or unsupported for macro expansion semantics, full trait resolution, and compiler-grade type inference
+
+Agent-facing contract implications:
+
+- every multi-language response should surface `language`
+- shared query names stay stable even when per-language capability depth differs
+- unsupported semantic depth must degrade into bounded omission, lower confidence, or explicit limits rather than false certainty
+- mixed-workspace support is successful only if it reduces fallback-to-raw-code behavior in large real repositories
+- mixed-workspace query integration should also expose:
+  - optional `language` filters on shared query surfaces
+  - grouped language summaries where result sets span multiple languages
+  - workspace-level language distribution summaries for files and symbols
+
 ---
 
 ## Endpoints
@@ -234,6 +417,34 @@ Depending on symbol kind, the payload may also include:
 - `callers`
 - `callees`
 - `members`
+
+Representative-symbol direction:
+
+- future exact-lookup responses may also include representative metadata such as:
+  - `representativeConfidence`
+  - `representativeSelectionReasons`
+  - `alternateCanonicalCandidateCount`
+
+Current Milestone 9 status:
+
+- exact symbol lookup now may include representative metadata when available
+- this metadata is separate from exact symbol identity and lookup confidence
+- `alternateCanonicalCandidateCount` is only present when multiple top-ranked representative candidates remain plausible
+
+Optional repository-tunable representative rules:
+
+- first release supports an optional workspace-root `.codeatlasrepresentative.json`
+- the file is not required for normal operation
+- it applies a bounded repository-specific bias on top of the generic representative scorer
+- supported first-release inputs:
+  - `preferredPathPrefixes`
+  - `demotedPathPrefixes`
+  - `favoredArtifactKinds`
+  - `favoredHeaderRoles`
+- repository-specific tuning must not replace structural preference:
+  - out-of-line definition vs inline definition vs declaration fallback remains primary
+  - repository rules only help on structurally similar or duplicate-heavy cases
+- this metadata is intended to explain the quality of the chosen anchor, not the existence of the symbol itself
 
 **Response 400:**
 
@@ -566,6 +777,13 @@ In Milestone 1, name-based lookup remains intentionally backward compatible and 
   - multiple candidates share the top score
 - `unresolved`
   - no viable candidate was found
+
+Representative quality is separate from this lookup-confidence taxonomy:
+
+- lookup confidence answers:
+  - "did CodeAtlas identify the symbol or relation confidently?"
+- representative confidence answers:
+  - "is the chosen default file/line anchor the canonical place a human would most likely start?"
 
 Milestone 1 match-reason vocabulary:
 

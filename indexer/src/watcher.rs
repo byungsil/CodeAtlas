@@ -14,9 +14,10 @@ use rusqlite::ErrorCode;
 use crate::build_metadata;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS};
 use crate::discovery;
-use crate::indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict};
+use crate::indexing::{default_language_registry, make_relative, parse_file_strict, parse_files, parse_files_strict};
 use crate::ignore::IgnoreRules;
 use crate::incremental;
+use crate::representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
 use crate::resolver;
 use crate::storage::{self, Database};
 
@@ -155,6 +156,10 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     let workspace_root = workspace_root
         .canonicalize()
         .map_err(|e| format!("Failed to resolve workspace root: {}", e))?;
+    match load_workspace_representative_rules(&workspace_root) {
+        Ok(config) => set_active_representative_rules(config),
+        Err(error) => eprintln!("Warning: {}", error),
+    }
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
@@ -273,10 +278,12 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
     }
 
     let db = open_database_with_retry(&staging_db_path, "watch open staging sqlite database")?;
-    let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
+    let registry = default_language_registry();
+    let supported_languages = registry.supported_languages();
+    let files = discovery::find_source_files_with_feedback(workspace_root, verbose, &supported_languages);
     let all_relative: Vec<String> = files
         .iter()
-        .map(|p| make_relative(workspace_root, p))
+        .map(|entry| make_relative(workspace_root, &entry.path))
         .collect();
 
     println!("Initial index: {} files", all_relative.len());
@@ -468,10 +475,12 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         }
     };
     let db = open_database_with_retry(db_path, "watch open incremental sqlite database")?;
-    let files = discovery::find_cpp_files_with_feedback(workspace_root, verbose);
+    let registry = default_language_registry();
+    let supported_languages = registry.supported_languages();
+    let files = discovery::find_source_files_with_feedback(workspace_root, verbose, &supported_languages);
     let all_relative: Vec<String> = files
         .iter()
-        .map(|p| make_relative(workspace_root, p))
+        .map(|entry| make_relative(workspace_root, &entry.path))
         .collect();
 
     let stored = db.read_file_records().unwrap_or_default();
@@ -720,6 +729,7 @@ mod tests {
 
     #[test]
     fn is_tracked_accepts_cpp_extensions() {
+        assert!(is_tracked(Path::new("foo.c")));
         assert!(is_tracked(Path::new("foo.cpp")));
         assert!(is_tracked(Path::new("bar.h")));
         assert!(is_tracked(Path::new("baz.inl")));

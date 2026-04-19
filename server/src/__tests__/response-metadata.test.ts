@@ -12,6 +12,7 @@ function makeSymbol(overrides: Partial<Symbol> = {}): Symbol {
     id: "Game::GameObject::Update",
     name: "Update",
     qualifiedName: "Game::GameObject::Update",
+    language: "cpp",
     type: "method",
     filePath: "src/game_object.h",
     line: 10,

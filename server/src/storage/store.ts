@@ -1,4 +1,4 @@
-import { Symbol } from "../models/symbol";
+import { SourceLanguage, Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import {
   BaseMethodRecord,
@@ -10,16 +10,24 @@ import {
 } from "../models/responses";
 
 export interface MetadataFilters {
+  language?: SourceLanguage;
   subsystem?: string;
   module?: string;
   projectArea?: string;
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
 }
 
+export interface WorkspaceLanguageSummaryRecord {
+  language: SourceLanguage;
+  fileCount: number;
+  symbolCount: number;
+}
+
 export interface Store {
   getSymbolsByName(name: string): Symbol[];
   getSymbolById(id: string): Symbol | undefined;
   getSymbolsByIds(ids: string[]): Symbol[];
+  getRepresentativeCandidates(symbolId: string): Symbol[];
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined;
   searchSymbols(query: string, type?: string, limit?: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number };
   getFileSymbols(filePath: string): Symbol[];
@@ -34,4 +42,5 @@ export interface Store {
   getOverrides(symbolId: string): OverrideRecord[];
   getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
   getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
+  getWorkspaceLanguageSummary(): WorkspaceLanguageSummaryRecord[];
 }

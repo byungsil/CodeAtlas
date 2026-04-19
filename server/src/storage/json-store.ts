@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { deriveLanguageFromPath } from "../language";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
@@ -14,7 +15,7 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { MetadataFilters } from "./store";
+import { MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
 
 export interface IndexData {
   symbols: Symbol[];
@@ -43,12 +44,20 @@ export class JsonStore {
   }
 
   load(): IndexData {
+    const symbols = (this.readJson(this.symbolsPath(), []) as Symbol[]).map((symbol) => ({
+      ...symbol,
+      language: symbol.language ?? deriveLanguageFromPath(symbol.filePath),
+    }));
+    const files = (this.readJson(this.filesPath(), []) as FileRecord[]).map((file) => ({
+      ...file,
+      language: file.language ?? deriveLanguageFromPath(file.path),
+    }));
     return {
-      symbols: this.readJson(this.symbolsPath(), []),
+      symbols,
       calls: this.readJson(this.callsPath(), []),
       references: this.readJson(this.referencesPath(), []),
       propagationEvents: this.readJson(this.propagationPath(), []),
-      files: this.readJson(this.filesPath(), []),
+      files,
     };
   }
 
@@ -69,6 +78,11 @@ export class JsonStore {
     const wanted = new Set(ids);
     const data = this.load();
     return data.symbols.filter((symbol) => wanted.has(symbol.id));
+  }
+
+  getRepresentativeCandidates(symbolId: string): Symbol[] {
+    const data = this.load();
+    return data.symbols.filter((symbol) => symbol.id === symbolId);
   }
 
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
@@ -226,6 +240,27 @@ export class JsonStore {
       .sort(comparePropagationEvents);
   }
 
+  getWorkspaceLanguageSummary(): WorkspaceLanguageSummaryRecord[] {
+    const data = this.load();
+    const summary = new Map<WorkspaceLanguageSummaryRecord["language"], WorkspaceLanguageSummaryRecord>();
+
+    for (const file of data.files) {
+      const language = file.language ?? deriveLanguageFromPath(file.path);
+      const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
+      current.fileCount += 1;
+      summary.set(language, current);
+    }
+
+    for (const symbol of data.symbols) {
+      const language = symbol.language ?? deriveLanguageFromPath(symbol.filePath);
+      const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
+      current.symbolCount += 1;
+      summary.set(language, current);
+    }
+
+    return Array.from(summary.values()).sort((a, b) => a.language.localeCompare(b.language));
+  }
+
   private symbolsPath(): string {
     return path.join(this.dataDir, "symbols.json");
   }
@@ -260,6 +295,7 @@ function compareSymbolsForOverview(a: Symbol, b: Symbol): number {
 }
 
 function matchesMetadataFilters(symbol: Symbol, filters: MetadataFilters): boolean {
+  if (filters.language && symbol.language !== filters.language) return false;
   if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
   if (filters.module && symbol.module !== filters.module) return false;
   if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;

@@ -11,6 +11,7 @@ import {
 } from "./constants";
 import { Store } from "./storage/store";
 import { MetadataFilters } from "./storage/store";
+import { SourceLanguage } from "./models/symbol";
 import { SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
 import {
@@ -38,10 +39,12 @@ import {
   TraceVariableFlowResponse,
   TraceCallPathResponse,
   TypeHierarchyResponse,
+  WorkspaceSummaryResponse,
 } from "./models/responses";
 import {
   buildClassResponse,
   buildCallerQueryResponse,
+  deriveRepresentativeMetadata,
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
@@ -105,6 +108,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   function matchesMetadataFilters(symbol: ReturnType<Store["getSymbolById"]>, filters?: MetadataFilters): boolean {
     if (!filters) return true;
     if (!symbol) return false;
+    if (filters.language && symbol.language !== filters.language) return false;
     if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
     if (filters.module && symbol.module !== filters.module) return false;
     if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
@@ -126,6 +130,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     return Array.from(counts.entries())
       .map(([key, count]) => ({ key, count }))
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  }
+
+  function buildWorkspaceSummary(): WorkspaceSummaryResponse {
+    const languages = store.getWorkspaceLanguageSummary();
+    return {
+      languages,
+      totalFiles: languages.reduce((sum, entry) => sum + entry.fileCount, 0),
+      totalSymbols: languages.reduce((sum, entry) => sum + entry.symbolCount, 0),
+    };
   }
 
   function buildUniqueCallReferences(
@@ -185,7 +198,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     const { symbol, matchedBy } = params;
     if (!symbol) return null;
 
-    const base = buildExactLookupResponse({ symbol, matchedBy });
+    const representativeMetadata = deriveRepresentativeMetadata(symbol, store.getRepresentativeCandidates(symbol.id));
+    const base = buildExactLookupResponse({ symbol, matchedBy, representativeMetadata });
 
     if (symbol.type === "function" || symbol.type === "method") {
       return {
@@ -597,6 +611,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       ...metadataFilterEcho(metadataFilters),
       affectedSubsystems: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.subsystem),
       affectedModules: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.module),
+      affectedLanguages: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.language),
       suggestedFollowUpQueries: [
         `find_callers qualifiedName=${symbol.qualifiedName}`,
         `get_callgraph name=${symbol.name} depth=${Math.min(maxDepth + 1, CALLGRAPH_MAX_DEPTH)}`,
@@ -836,14 +851,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       name: z.string().describe("Function or method name to inspect"),
       limit: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Maximum deduplicated callers to return"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to caller symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to caller symbols"),
       module: z.string().optional().describe("Optional module filter applied to caller symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to caller symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to caller symbols"),
     },
-    async ({ name, limit, subsystem, module, projectArea, artifactKind }) => {
-      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
-        ? { subsystem, module, projectArea, artifactKind }
+    async ({ name, limit, language, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
+        ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       const { symbol: sym, candidateCount } = resolveFunctionSymbol(name);
 
@@ -863,6 +879,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       Object.assign(payload, metadataFilterEcho(metadataFilters), {
         groupedBySubsystem: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.subsystem),
         groupedByModule: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.module),
+        groupedByLanguage: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.language),
       });
 
       return {
@@ -905,17 +922,18 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       id: z.string().optional().describe("Canonical exact target symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
-      category: z.enum(["functionCall", "methodCall", "classInstantiation", "typeUsage", "inheritanceMention"]).optional().describe("Optional reference category filter"),
+      category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention"]).optional().describe("Optional reference category filter"),
       filePath: z.string().optional().describe("Optional exact file path filter"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum references to return"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to source symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to source symbols"),
       module: z.string().optional().describe("Optional module filter applied to source symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to source symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to source symbols"),
     },
-    async ({ id, qualifiedName, category, filePath, limit, subsystem, module, projectArea, artifactKind }) => {
-      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
-        ? { subsystem, module, projectArea, artifactKind }
+    async ({ id, qualifiedName, category, filePath, limit, language, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
+        ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       if (!id && !qualifiedName) {
         return badRequestPayload();
@@ -953,6 +971,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         ...metadataFilterEcho(metadataFilters),
         groupedBySubsystem: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.subsystem),
         groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
+        groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
       };
 
       return {
@@ -1071,14 +1090,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(2).describe("Maximum caller/callee traversal depth"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum result items per summarized section"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to impacted symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to impacted symbols"),
       module: z.string().optional().describe("Optional module filter applied to impacted symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to impacted symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to impacted symbols"),
     },
-    async ({ id, qualifiedName, depth, limit, subsystem, module, projectArea, artifactKind }) => {
-      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
-        ? { subsystem, module, projectArea, artifactKind }
+    async ({ id, qualifiedName, depth, limit, language, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
+        ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       if (!id && !qualifiedName) {
         return badRequestPayload();
@@ -1289,14 +1309,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       query: z.string().describe(`Search query (minimum ${SEARCH_MIN_QUERY_LENGTH} characters; shorter queries return an empty result set)`),
       type: z.enum(["function", "method", "class", "struct", "enum", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum results to return"),
+      language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to result symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to result symbols"),
       module: z.string().optional().describe("Optional module filter applied to result symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to result symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to result symbols"),
     },
-    async ({ query, type, limit, subsystem, module, projectArea, artifactKind }) => {
-      const metadataFilters: MetadataFilters | undefined = subsystem || module || projectArea || artifactKind
-        ? { subsystem, module, projectArea, artifactKind }
+    async ({ query, type, limit, language, subsystem, module, projectArea, artifactKind }) => {
+      const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
+        ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       const { results, totalCount } = store.searchSymbols(query, type, limit, metadataFilters);
       const truncated = totalCount > limit;
@@ -1310,11 +1331,22 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
             results,
             totalCount,
             truncated,
+            language: metadataFilters?.language,
             ...metadataFilterEcho(metadataFilters),
+            groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
           }, null, 2),
         }],
       };
     },
+  );
+
+  server.tool(
+    "workspace_summary",
+    "Summarize the mixed-language workspace with per-language file and symbol counts.",
+    {},
+    async () => ({
+      content: [{ type: "text", text: JSON.stringify(buildWorkspaceSummary(), null, 2) }],
+    }),
   );
 
   function expandCallees(symbolId: string, currentDepth: number, maxDepth: number, visited: Set<string>): { edges: CallGraphEdge[]; truncated: boolean } {

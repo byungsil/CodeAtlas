@@ -916,6 +916,7 @@ fn reference_category_key(category: &ReferenceCategory) -> &'static str {
         ReferenceCategory::FunctionCall => "functionCall",
         ReferenceCategory::MethodCall => "methodCall",
         ReferenceCategory::ClassInstantiation => "classInstantiation",
+        ReferenceCategory::ModuleImport => "moduleImport",
         ReferenceCategory::TypeUsage => "typeUsage",
         ReferenceCategory::InheritanceMention => "inheritanceMention",
     }

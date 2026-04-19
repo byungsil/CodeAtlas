@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import Database from "better-sqlite3";
+import { deriveLanguageFromPath } from "../language";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import {
@@ -17,7 +18,7 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { MetadataFilters } from "./store";
+import { MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
 
 export class SqliteStore {
   private db: Database.Database;
@@ -53,6 +54,21 @@ export class SqliteStore {
     const rows = this.db
       .prepare(`SELECT * FROM symbols WHERE id IN (${placeholders})`)
       .all(...uniqueIds) as RawRow[];
+    return rows.map(toSymbol);
+  }
+
+  getRepresentativeCandidates(symbolId: string): Symbol[] {
+    if (!this.hasTable("symbols_raw")) {
+      const symbol = this.getSymbolById(symbolId);
+      return symbol ? [symbol] : [];
+    }
+    const rows = this.db
+      .prepare("SELECT * FROM symbols_raw WHERE id = ?")
+      .all(symbolId) as RawRow[];
+    if (rows.length === 0) {
+      const symbol = this.getSymbolById(symbolId);
+      return symbol ? [symbol] : [];
+    }
     return rows.map(toSymbol);
   }
 
@@ -104,13 +120,17 @@ export class SqliteStore {
 
   private hasFts(): boolean {
     try {
-      const row = this.db
-        .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='symbols_fts'")
-        .get() as { cnt: number };
-      return row.cnt > 0;
+      return this.hasTable("symbols_fts");
     } catch {
       return false;
     }
+  }
+
+  private hasTable(name: string): boolean {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name = ?")
+      .get(name) as { cnt: number };
+    return row.cnt > 0;
   }
 
   private searchWithFts(query: string, type: string | undefined, limit: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
@@ -293,6 +313,32 @@ export class SqliteStore {
 
   getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
     return this.getPropagation(symbolId, "outgoing", propagationKinds, filePath);
+  }
+
+  getWorkspaceLanguageSummary(): WorkspaceLanguageSummaryRecord[] {
+    const fileRows = this.db
+      .prepare("SELECT path, symbol_count FROM files")
+      .all() as Array<{ path: string; symbol_count: number }>;
+    const symbolRows = this.db
+      .prepare("SELECT file_path FROM symbols")
+      .all() as Array<{ file_path: string }>;
+    const summary = new Map<WorkspaceLanguageSummaryRecord["language"], WorkspaceLanguageSummaryRecord>();
+
+    for (const row of fileRows) {
+      const language = deriveLanguageFromPath(row.path);
+      const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
+      current.fileCount += 1;
+      summary.set(language, current);
+    }
+
+    for (const row of symbolRows) {
+      const language = deriveLanguageFromPath(row.file_path);
+      const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
+      current.symbolCount += 1;
+      summary.set(language, current);
+    }
+
+    return Array.from(summary.values()).sort((a, b) => a.language.localeCompare(b.language));
   }
 
   private hasReferencesTable(): boolean {
@@ -510,6 +556,7 @@ function toSymbol(row: RawRow): Symbol {
     id: row.id,
     name: row.name,
     qualifiedName: row.qualified_name,
+    language: deriveLanguageFromPath(row.file_path),
     type: row.type as any,
     filePath: row.file_path,
     line: row.line,
@@ -653,6 +700,9 @@ function appendMetadataFilters(
   }
 
   const prefix = alias ? `${alias}.` : "";
+  if (metadataFilters.language) {
+    appendLanguageFilter(whereClauses, values, metadataFilters.language, prefix);
+  }
   if (metadataFilters.subsystem) {
     whereClauses.push(`${prefix}subsystem = ?`);
     values.push(metadataFilters.subsystem);
@@ -669,4 +719,26 @@ function appendMetadataFilters(
     whereClauses.push(`${prefix}artifact_kind = ?`);
     values.push(metadataFilters.artifactKind);
   }
+}
+
+function appendLanguageFilter(
+  whereClauses: string[],
+  values: Array<string | number>,
+  language: MetadataFilters["language"],
+  prefix: string,
+): void {
+  const filePathColumn = `${prefix}file_path`;
+  if (language === "cpp") {
+    whereClauses.push(`(${filePathColumn} LIKE '%.c' OR ${filePathColumn} LIKE '%.cpp' OR ${filePathColumn} LIKE '%.h' OR ${filePathColumn} LIKE '%.hpp' OR ${filePathColumn} LIKE '%.cc' OR ${filePathColumn} LIKE '%.cxx' OR ${filePathColumn} LIKE '%.inl' OR ${filePathColumn} LIKE '%.inc')`);
+    return;
+  }
+  if (language === "typescript") {
+    whereClauses.push(`(${filePathColumn} LIKE ? OR ${filePathColumn} LIKE ?)`);
+    values.push("%.ts", "%.tsx");
+    return;
+  }
+
+  const extension = language === "python" ? "py" : language === "rust" ? "rs" : "lua";
+  whereClauses.push(`${filePathColumn} LIKE ?`);
+  values.push(`%.${extension}`);
 }

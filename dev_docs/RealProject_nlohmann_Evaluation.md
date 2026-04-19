@@ -75,6 +75,14 @@ The selected representative came from `tests/abi/include/...`, which is technica
 
 This is a good sign for Milestone 1 correctness, but a weak default experience for real repositories.
 
+Representative regression target:
+
+- see `dev_docs/RepresentativeRegressionList.md`
+- tracked symbol:
+  - `parse_error`
+- current representative status:
+  - `weak`
+
 ## Filtering With `.codeatlasignore`
 
 To focus the index on the actual library, the following ignore file was added to the target workspace:

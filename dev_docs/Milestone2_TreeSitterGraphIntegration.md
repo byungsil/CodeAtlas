@@ -104,7 +104,7 @@ Expected touch points:
 - `indexer/Cargo.toml`
 - `indexer/src/parser.rs`
 - `indexer/src/indexing.rs`
-- `dev_docs/NextTask.md`
+- milestone planning documents under `dev_docs/`
 
 Validation checklist:
 

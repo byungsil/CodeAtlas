@@ -1,8 +1,11 @@
+import { SourceLanguage } from "./symbol";
+
 export interface FileRecord {
   path: string;
   contentHash: string;
   lastIndexed: string;
   symbolCount: number;
+  language: SourceLanguage;
   module?: string;
   subsystem?: string;
   projectArea?: string;

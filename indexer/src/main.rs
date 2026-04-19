@@ -5,11 +5,17 @@ mod graph_rules;
 mod ignore;
 mod incremental;
 mod indexing;
+mod language;
+mod lua_parser;
 mod metadata;
 mod models;
 mod parser;
+mod python_parser;
+mod representative_rules;
 mod resolver;
+mod rust_parser;
 mod storage;
+mod typescript_parser;
 mod watcher;
 
 use std::collections::HashSet;
@@ -23,8 +29,12 @@ use std::time::Duration;
 use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME};
-use indexing::{make_relative, parse_file_strict, parse_files, parse_files_strict};
+use indexing::{
+    default_language_registry, make_relative, parse_discovered_files, parse_file_strict,
+    parse_files_strict,
+};
 use models::ParseMetrics;
+use representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
 use rusqlite::ErrorCode;
 
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
@@ -87,6 +97,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    match load_workspace_representative_rules(&workspace_root) {
+        Ok(config) => set_active_representative_rules(config),
+        Err(error) => eprintln!("Warning: {}", error),
+    }
+
     if watch_mode {
         if let Err(e) = watcher::watch(&workspace_root, verbose_mode) {
             eprintln!("Watch error: {}", e);
@@ -136,14 +151,17 @@ fn main() {
         println!("Indexing: {}", workspace_root.display());
         let start = Instant::now();
 
+        let registry = default_language_registry();
+        let supported_languages = registry.supported_languages();
         let discovery_start = Instant::now();
-        let all_files = discovery::find_cpp_files_with_feedback(&workspace_root, verbose_mode);
+        let discovered_files =
+            discovery::find_source_files_with_feedback(&workspace_root, verbose_mode, &supported_languages);
         let discovery_elapsed = discovery_start.elapsed().as_millis();
-        let all_relative: Vec<String> = all_files
+        let all_relative: Vec<String> = discovered_files
             .iter()
-            .map(|p| make_relative(&workspace_root, p))
+            .map(|entry| make_relative(&workspace_root, &entry.path))
             .collect();
-        println!("Found {} C++ files", all_relative.len());
+        println!("Found {} source files", all_relative.len());
 
         if effective_full_mode {
             println!("Mode: full rebuild");
@@ -151,7 +169,7 @@ fn main() {
                 run_full(
                     &db,
                     &workspace_root,
-                    &all_relative,
+                    &discovered_files,
                     json_mode,
                     verbose_mode,
                     &data_dir,
@@ -184,7 +202,7 @@ fn main() {
                 run_full(
                     &db,
                     &workspace_root,
-                    &all_relative,
+                    &discovered_files,
                     json_mode,
                     verbose_mode,
                     &data_dir,
@@ -318,6 +336,11 @@ fn print_help() {
     println!("  --json       Write JSON snapshots alongside the SQLite database");
     println!("  -h, --help   Show this help message");
     println!();
+    println!("Large-repository stack safety:");
+    println!("  CodeAtlas uses a larger internal worker-thread stack by default for indexing.");
+    println!("  Override with `CODEATLAS_INDEXER_STACK_BYTES=<bytes>` if a larger stack is needed.");
+    println!("  If `CODEATLAS_INDEXER_STACK_BYTES` is unset, `RUST_MIN_STACK` is honored when present.");
+    println!();
     println!("Optional build metadata:");
     println!("  If a workspace contains `compile_commands.json`, CodeAtlas auto-detects it");
     println!("  and uses include directories, output paths, and cheap define hints to");
@@ -325,7 +348,7 @@ fn print_help() {
     println!();
     println!("Output:");
     println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
-    println!("  Supported file extensions: .cpp, .h, .hpp, .cc, .cxx, .inl, .inc");
+    println!("  Supported file extensions: .c, .cpp, .h, .hpp, .cc, .cxx, .inl, .inc, .lua, .py, .ts, .tsx");
 }
 
 fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
@@ -486,7 +509,7 @@ fn run_attrib(flags: &[&str], path: &Path) -> std::io::Result<()> {
 fn run_full(
     db: &storage::Database,
     workspace_root: &Path,
-    all_relative: &[String],
+    discovered_files: &[language::DiscoveredSourceFile],
     json_mode: bool,
     verbose: bool,
     data_dir: &Path,
@@ -494,6 +517,7 @@ fn run_full(
 ) -> IndexStageTimings {
     let mut timings = IndexStageTimings::default();
     let mut resolve_breakdown = ResolveBreakdownTimings::default();
+    let registry = default_language_registry();
 
     let parse_start = Instant::now();
     let (
@@ -504,7 +528,13 @@ fn run_full(
         callable_flow_summaries,
         file_records,
         parse_metrics,
-    ) = parse_files(workspace_root, all_relative, verbose, build_metadata);
+    ) = parse_discovered_files(
+        workspace_root,
+        discovered_files,
+        verbose,
+        build_metadata,
+        &registry,
+    );
     timings.parse_ms = parse_start.elapsed().as_millis();
 
     let resolve_start = Instant::now();
@@ -533,7 +563,7 @@ fn run_full(
     resolve_breakdown.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
     timings.resolve_ms = resolve_start.elapsed().as_millis();
 
-    let raw_count: usize = all_relative.len();
+    let raw_count: usize = discovered_files.len();
     let persist_start = Instant::now();
     db.write_all(
         &raw_symbols,
@@ -926,9 +956,11 @@ mod tests {
     }
 
     fn discover_relative_paths(workspace_root: &Path) -> Vec<String> {
-        discovery::find_cpp_files_with_feedback(workspace_root, false)
+        let registry = default_language_registry();
+        let supported_languages = registry.supported_languages();
+        discovery::find_source_files_with_feedback(workspace_root, false, &supported_languages)
             .iter()
-            .map(|p| make_relative(workspace_root, p))
+            .map(|entry| make_relative(workspace_root, &entry.path))
             .collect()
     }
 
@@ -936,8 +968,11 @@ mod tests {
         let data_dir = workspace_root.join(DATA_DIR_NAME);
         fs::create_dir_all(&data_dir).unwrap();
         let db = storage::Database::open(db_path).unwrap();
-        let all_relative = discover_relative_paths(workspace_root);
-        run_full(&db, workspace_root, &all_relative, false, false, &data_dir, None);
+        let registry = default_language_registry();
+        let supported_languages = registry.supported_languages();
+        let discovered =
+            discovery::find_source_files_with_feedback(workspace_root, false, &supported_languages);
+        run_full(&db, workspace_root, &discovered, false, false, &data_dir, None);
         db.checkpoint().unwrap();
     }
 

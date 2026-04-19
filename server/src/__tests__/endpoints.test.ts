@@ -28,6 +28,8 @@ describe("GET /symbol", () => {
     expect(res.body.lookupMode).toBe("exact");
     expect(res.body.confidence).toBe("exact");
     expect(res.body.matchReasons).toEqual(["exact_id_match"]);
+    expect(["canonical", "acceptable", "weak"]).toContain(res.body.representativeConfidence);
+    expect(Array.isArray(res.body.representativeSelectionReasons)).toBe(true);
     expect(res.body.symbol.qualifiedName).toBe("Game::AIComponent::UpdateAI");
     expect(res.body.callers).toBeInstanceOf(Array);
     expect(res.body.callees).toBeInstanceOf(Array);
@@ -42,6 +44,8 @@ describe("GET /symbol", () => {
     expect(res.body.lookupMode).toBe("exact");
     expect(res.body.confidence).toBe("exact");
     expect(res.body.matchReasons).toEqual(["exact_qualified_name_match"]);
+    expect(["canonical", "acceptable", "weak"]).toContain(res.body.representativeConfidence);
+    expect(Array.isArray(res.body.representativeSelectionReasons)).toBe(true);
     expect(res.body.symbol.qualifiedName).toBe("Game::GameObject");
     expect(res.body.members).toBeInstanceOf(Array);
     expect(res.body.members.length).toBeGreaterThan(0);
@@ -142,6 +146,7 @@ describe("Heuristic ambiguity metadata", () => {
       id,
       name: "Tick",
       qualifiedName: id,
+      language: "cpp",
       type: "method",
       filePath,
       line: 1,
@@ -163,6 +168,9 @@ describe("Heuristic ambiguity metadata", () => {
       },
       getSymbolsByIds(ids: string[]) {
         return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
       },
       getSymbolByQualifiedName(qualifiedName: string) {
         return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
@@ -204,6 +212,9 @@ describe("Heuristic ambiguity metadata", () => {
         return [];
       },
       getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
         return [];
       },
     };

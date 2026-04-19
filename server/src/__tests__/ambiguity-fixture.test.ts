@@ -11,10 +11,25 @@ import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import { FileRecord } from "../models/file-record";
 import { PropagationEventRecord, ReferenceRecord } from "../models/responses";
+import { deriveLanguageFromPath } from "../language";
+
+function withLanguage<T extends { filePath: string }>(record: T): T & { language: ReturnType<typeof deriveLanguageFromPath> } {
+  return {
+    ...record,
+    language: deriveLanguageFromPath(record.filePath),
+  };
+}
+
+function withFileLanguage<T extends { path: string }>(record: T): T & { language: ReturnType<typeof deriveLanguageFromPath> } {
+  return {
+    ...record,
+    language: deriveLanguageFromPath(record.path),
+  };
+}
 
 function fixtureSymbols(): Symbol[] {
   return [
-    {
+    withLanguage({
       id: "Gameplay::Update",
       name: "Update",
       qualifiedName: "Gameplay::Update",
@@ -28,8 +43,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "UI::Update",
       name: "Update",
       qualifiedName: "UI::Update",
@@ -43,8 +58,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "ui",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Gameplay",
       name: "Gameplay",
       qualifiedName: "Gameplay",
@@ -56,8 +71,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "UI",
       name: "UI",
       qualifiedName: "UI",
@@ -69,8 +84,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "ui",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "AI::Controller",
       name: "Controller",
       qualifiedName: "AI::Controller",
@@ -82,8 +97,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "ai",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "AI::Controller::Update",
       name: "Update",
       qualifiedName: "AI::Controller::Update",
@@ -96,8 +111,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "ai",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Worker",
       name: "Worker",
       qualifiedName: "Game::Worker",
@@ -109,8 +124,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Worker::Update",
       name: "Update",
       qualifiedName: "Game::Worker::Update",
@@ -123,8 +138,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Worker::Tick",
       name: "Tick",
       qualifiedName: "Game::Worker::Tick",
@@ -137,8 +152,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Actor",
       name: "Actor",
       qualifiedName: "Game::Actor",
@@ -150,8 +165,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Player",
       name: "Player",
       qualifiedName: "Game::Player",
@@ -163,8 +178,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Enemy",
       name: "Enemy",
       qualifiedName: "Game::Enemy",
@@ -176,8 +191,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Actor::Tick",
       name: "Tick",
       qualifiedName: "Game::Actor::Tick",
@@ -192,8 +207,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Player::Tick",
       name: "Tick",
       qualifiedName: "Game::Player::Tick",
@@ -208,8 +223,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Enemy::Tick",
       name: "Tick",
       qualifiedName: "Game::Enemy::Tick",
@@ -224,8 +239,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Bootstrap",
       name: "Bootstrap",
       qualifiedName: "Game::Bootstrap",
@@ -237,8 +252,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::Dispatch",
       name: "Dispatch",
       qualifiedName: "Game::Dispatch",
@@ -250,8 +265,8 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withLanguage({
       id: "Game::ApplyDamage",
       name: "ApplyDamage",
       qualifiedName: "Game::ApplyDamage",
@@ -263,7 +278,7 @@ function fixtureSymbols(): Symbol[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
+    }),
   ];
 }
 
@@ -310,7 +325,7 @@ function fixtureCalls(): Call[] {
 
 function fixtureFiles(): FileRecord[] {
   return [
-    {
+    withFileLanguage({
       path: "samples/ambiguity/src/namespace_dupes.h",
       contentHash: "fixture-namespace-dupes-h",
       lastIndexed: "2026-04-18T00:00:00Z",
@@ -319,8 +334,8 @@ function fixtureFiles(): FileRecord[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withFileLanguage({
       path: "samples/ambiguity/src/namespace_dupes.cpp",
       contentHash: "fixture-namespace-dupes-cpp",
       lastIndexed: "2026-04-18T00:00:00Z",
@@ -329,8 +344,8 @@ function fixtureFiles(): FileRecord[] {
       subsystem: "runtime",
       projectArea: "ai",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withFileLanguage({
       path: "samples/ambiguity/src/split_update.h",
       contentHash: "fixture-split-update-h",
       lastIndexed: "2026-04-18T00:00:00Z",
@@ -339,8 +354,8 @@ function fixtureFiles(): FileRecord[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withFileLanguage({
       path: "samples/ambiguity/src/split_update.cpp",
       contentHash: "fixture-split-update-cpp",
       lastIndexed: "2026-04-18T00:00:00Z",
@@ -349,8 +364,8 @@ function fixtureFiles(): FileRecord[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
-    {
+    }),
+    withFileLanguage({
       path: "samples/ambiguity/src/path_trace.cpp",
       contentHash: "fixture-path-trace-cpp",
       lastIndexed: "2026-04-18T00:00:00Z",
@@ -359,7 +374,7 @@ function fixtureFiles(): FileRecord[] {
       subsystem: "runtime",
       projectArea: "gameplay",
       artifactKind: "runtime",
-    },
+    }),
   ];
 }
 
@@ -730,6 +745,7 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(references.body.window.returnedCount).toBe(2);
       expect(references.body.references[0].sourceQualifiedName).toBe("Game::Worker::Tick");
       expect(references.body.references[0].category).toBe("methodCall");
+      expect(references.body.groupedByLanguage).toEqual([{ key: "cpp", count: 1 }]);
 
       const filteredReferences = await request(app)
         .get("/references")
@@ -757,6 +773,7 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(filteredImpact.body.module).toBe("ai");
       expect(filteredImpact.body.directCallers).toHaveLength(1);
       expect(filteredImpact.body.affectedModules).toEqual([{ key: "ai", count: 1 }]);
+      expect(filteredImpact.body.affectedLanguages).toEqual([{ key: "cpp", count: 1 }]);
 
       const fileSymbols = await request(app)
         .get("/file-symbols")
@@ -865,6 +882,14 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(metadataSearch.body.module).toBe("ui");
       expect(metadataSearch.body.results).toHaveLength(1);
       expect(metadataSearch.body.results[0].qualifiedName).toBe("UI::Update");
+      expect(metadataSearch.body.groupedByLanguage).toEqual([{ key: "cpp", count: 1 }]);
+
+      const workspaceSummary = await request(app)
+        .get("/workspace-summary")
+        .expect(200);
+      expect(workspaceSummary.body.totalFiles).toBe(5);
+      expect(workspaceSummary.body.totalSymbols).toBe(18);
+      expect(workspaceSummary.body.languages).toEqual([{ language: "cpp", fileCount: 5, symbolCount: 18 }]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1022,6 +1047,7 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(filteredImpact.module).toBe("ai");
       expect(filteredImpact.directCallers).toHaveLength(1);
       expect(filteredImpact.affectedModules).toEqual([{ key: "ai", count: 1 }]);
+      expect(filteredImpact.affectedLanguages).toEqual([{ key: "cpp", count: 1 }]);
 
       const fileResponses = await mcpCall([
         INIT,
@@ -1198,6 +1224,22 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(metadataSearch.module).toBe("ui");
       expect(metadataSearch.results).toHaveLength(1);
       expect(metadataSearch.results[0].qualifiedName).toBe("UI::Update");
+      expect(metadataSearch.groupedByLanguage).toEqual([{ key: "cpp", count: 1 }]);
+
+      const workspaceSummaryResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 20,
+          method: "tools/call",
+          params: { name: "workspace_summary", arguments: {} },
+        },
+      ], dir);
+      const workspaceSummary = JSON.parse(workspaceSummaryResponses.find((r) => r.id === 20).result.content[0].text);
+      expect(workspaceSummary.totalFiles).toBe(5);
+      expect(workspaceSummary.totalSymbols).toBe(18);
+      expect(workspaceSummary.languages).toEqual([{ language: "cpp", fileCount: 5, symbolCount: 18 }]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

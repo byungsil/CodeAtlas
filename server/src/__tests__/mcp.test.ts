@@ -7,11 +7,11 @@ const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVe
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 describe("MCP payload contracts", () => {
-  it("tools/list returns 17 tools", async () => {
+  it("tools/list returns 18 tools", async () => {
     const responses = await mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }], DATA_DIR);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(17);
+    expect(toolList.result.tools).toHaveLength(18);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([
       "explain_symbol_propagation",
@@ -31,6 +31,7 @@ describe("MCP payload contracts", () => {
       "search_symbols",
       "trace_call_path",
       "trace_variable_flow",
+      "workspace_summary",
     ]);
   });
 
@@ -51,6 +52,8 @@ describe("MCP payload contracts", () => {
     expect(payload.lookupMode).toBe("exact");
     expect(payload.confidence).toBe("exact");
     expect(payload.matchReasons).toEqual(["exact_id_match"]);
+    expect(["canonical", "acceptable", "weak"]).toContain(payload.representativeConfidence);
+    expect(Array.isArray(payload.representativeSelectionReasons)).toBe(true);
     expect(payload.symbol.qualifiedName).toBe("Game::AIComponent::UpdateAI");
     expect(payload.callers).toBeInstanceOf(Array);
     expect(payload.callees).toBeInstanceOf(Array);
@@ -71,6 +74,8 @@ describe("MCP payload contracts", () => {
     expect(payload.lookupMode).toBe("exact");
     expect(payload.confidence).toBe("exact");
     expect(payload.matchReasons).toEqual(["exact_qualified_name_match"]);
+    expect(["canonical", "acceptable", "weak"]).toContain(payload.representativeConfidence);
+    expect(Array.isArray(payload.representativeSelectionReasons)).toBe(true);
     expect(payload.symbol.qualifiedName).toBe("Game::GameObject");
     expect(payload.members).toBeInstanceOf(Array);
     expect(payload.members.length).toBeGreaterThan(0);

@@ -1,4 +1,4 @@
-import { Symbol } from "./symbol";
+import { SourceLanguage, Symbol } from "./symbol";
 import { Call } from "./call";
 
 export type LookupMode = "exact" | "heuristic";
@@ -27,6 +27,28 @@ export type MatchReason =
   | "ambiguous_top_score"
   | "no_viable_candidate";
 
+export type RepresentativeConfidence =
+  | "canonical"
+  | "acceptable"
+  | "weak";
+
+export type RepresentativeSelectionReason =
+  | "outOfLineDefinitionPreferred"
+  | "inlineDefinitionFallback"
+  | "declarationOnlyFallback"
+  | "runtimeArtifactPreferred"
+  | "publicHeaderPreferred"
+  | "nonTestPathPreferred"
+  | "nonGeneratedPathPreferred"
+  | "scopeCanonicalityPreferred"
+  | "duplicateClusterWeakCanonicality";
+
+export interface RepresentativeMetadata {
+  representativeConfidence: RepresentativeConfidence;
+  representativeSelectionReasons: RepresentativeSelectionReason[];
+  alternateCanonicalCandidateCount?: number;
+}
+
 export interface AmbiguityInfo {
   candidateCount: number;
 }
@@ -40,6 +62,9 @@ export interface ConfidenceMetadata {
 export interface SymbolLookupResponse extends ConfidenceMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
+  representativeConfidence?: RepresentativeConfidence;
+  representativeSelectionReasons?: RepresentativeSelectionReason[];
+  alternateCanonicalCandidateCount?: number;
   callers?: CallReference[];
   callees?: CallReference[];
   members?: Symbol[];
@@ -71,6 +96,7 @@ export interface CallerQueryResponse {
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
   groupedBySubsystem?: MetadataGroupSummary[];
   groupedByModule?: MetadataGroupSummary[];
+  groupedByLanguage?: MetadataGroupSummary[];
 }
 
 export interface ClassResponse {
@@ -88,10 +114,12 @@ export interface SearchResponse {
   results: Symbol[];
   totalCount: number;
   truncated: boolean;
+  language?: SourceLanguage;
   subsystem?: string;
   module?: string;
   projectArea?: string;
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  groupedByLanguage?: MetadataGroupSummary[];
 }
 
 export interface CallGraphNode {
@@ -130,6 +158,7 @@ export type ReferenceCategory =
   | "functionCall"
   | "methodCall"
   | "classInstantiation"
+  | "moduleImport"
   | "typeUsage"
   | "inheritanceMention";
 
@@ -167,6 +196,7 @@ export interface ReferenceQueryResponse extends ConfidenceMetadata {
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
   groupedBySubsystem?: MetadataGroupSummary[];
   groupedByModule?: MetadataGroupSummary[];
+  groupedByLanguage?: MetadataGroupSummary[];
 }
 
 export interface ImpactedSymbolSummary {
@@ -202,6 +232,7 @@ export interface ImpactAnalysisResponse extends ConfidenceMetadata {
   artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
   affectedSubsystems?: MetadataGroupSummary[];
   affectedModules?: MetadataGroupSummary[];
+  affectedLanguages?: MetadataGroupSummary[];
 }
 
 export interface StructureOverviewSummary {
@@ -387,4 +418,16 @@ export interface TraceCallPathResponse {
 export interface ErrorResponse {
   error: string;
   code: string;
+}
+
+export interface WorkspaceLanguageSummary {
+  language: SourceLanguage;
+  fileCount: number;
+  symbolCount: number;
+}
+
+export interface WorkspaceSummaryResponse {
+  languages: WorkspaceLanguageSummary[];
+  totalFiles: number;
+  totalSymbols: number;
 }

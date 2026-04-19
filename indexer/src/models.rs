@@ -108,6 +108,30 @@ pub enum IncludeHeaviness {
     Heavy,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepresentativeConfidence {
+    Canonical,
+    Acceptable,
+    Weak,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepresentativeSelectionReason {
+    OutOfLineDefinitionPreferred,
+    InlineDefinitionFallback,
+    DeclarationOnlyFallback,
+    RuntimeArtifactPreferred,
+    PublicHeaderPreferred,
+    NonTestPathPreferred,
+    NonGeneratedPathPreferred,
+    ScopeCanonicalityPreferred,
+    DuplicateClusterWeakCanonicality,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileRiskSignals {
@@ -161,6 +185,7 @@ pub enum ReferenceCategory {
     FunctionCall,
     MethodCall,
     ClassInstantiation,
+    ModuleImport,
     TypeUsage,
     InheritanceMention,
 }

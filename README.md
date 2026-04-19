@@ -114,6 +114,7 @@ All configuration is through environment variables, set in the MCP client config
 | `CODEATLAS_DASHBOARD_AUTOOPEN` | `false` | Auto-open dashboard in browser on MCP start |
 | `CODEATLAS_WATCHER` | `false` | Auto-start watcher as child process on MCP start |
 | `CODEATLAS_INDEXER_PATH` | `codeatlas-indexer` | Path to the Rust indexer binary |
+| `CODEATLAS_INDEXER_STACK_BYTES` | `67108864` | Worker-thread stack size for the Rust indexer thread pool |
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory (fallback if no CLI arg) |
 
 ## Indexer CLI
@@ -128,7 +129,19 @@ codeatlas-indexer <workspace-root> --full --json  # full rebuild + JSON output
 codeatlas-indexer watch <workspace-root>          # watch mode
 ```
 
-Supported file extensions: `.cpp`, `.h`, `.hpp`, `.cc`, `.cxx`, `.inl`, `.inc`
+Supported file extensions: `.c`, `.cpp`, `.h`, `.hpp`, `.cc`, `.cxx`, `.inl`, `.inc`, `.lua`, `.py`, `.ts`, `.tsx`, `.rs`
+
+Large-repository stack safety:
+
+- the Rust indexer now uses a larger internal worker-thread stack by default to survive LLVM-scale repositories without requiring manual `RUST_MIN_STACK` tuning
+- override with `CODEATLAS_INDEXER_STACK_BYTES=<bytes>` if a still larger stack is needed for Unreal-engine-class projects
+- if `CODEATLAS_INDEXER_STACK_BYTES` is not set, the indexer still honors `RUST_MIN_STACK` when present
+
+Mixed-workspace query behavior:
+
+- shared query surfaces such as lookup, search, callers, references, impact, and overview now operate across mixed workspaces
+- responses can expose `language` and grouped language summaries so agents can keep one structured workflow across C/C++, Lua, Python, TypeScript, and Rust
+- MCP and HTTP also expose workspace-level language distribution through `workspace_summary` / `GET /workspace-summary`
 
 Optional build metadata:
 
@@ -249,6 +262,27 @@ Recommended onboarding flow for large C++ repositories:
 1. Run one full index.
 2. Inspect which top-level directories dominate the symbol count.
 3. Add `.codeatlasignore` entries for irrelevant trees such as tests, docs, generated code, vendored mirrors, and build output.
+
+Optional representative tuning:
+
+- For unusually large or structurally eccentric monorepos, you can place a workspace-root `.codeatlasrepresentative.json` file to apply a small bounded bias to representative symbol selection.
+- This does not replace the default structural scorer. It only nudges tie-breaking.
+- Supported first-release fields:
+  - `preferredPathPrefixes`
+  - `demotedPathPrefixes`
+  - `favoredArtifactKinds`
+  - `favoredHeaderRoles`
+
+Example:
+
+```json
+{
+  "preferredPathPrefixes": ["Engine/Source/Runtime", "Game/Source"],
+  "demotedPathPrefixes": ["Engine/Source/Editor", "Tests", "Generated"],
+  "favoredArtifactKinds": ["runtime"],
+  "favoredHeaderRoles": ["public"]
+}
+```
 4. Reindex before evaluating heuristic lookup quality.
 
 Windows stability guidance for `.codeatlas/`:

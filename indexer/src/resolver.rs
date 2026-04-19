@@ -3,8 +3,10 @@ use std::collections::{HashMap, HashSet};
 use crate::models::{
     Call, CallableFlowSummary, InheritanceEdge, OverrideCandidate, OverrideMatchReason,
     PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
-    RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind, Symbol,
+    RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
+    RepresentativeSelectionReason, Symbol,
 };
+use crate::representative_rules::{active_representative_rules, repository_rule_score};
 use crate::storage::Database;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,9 +296,11 @@ pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
 }
 
 fn merge_symbol_variant(existing: &mut Symbol, incoming: &Symbol) {
+    let incoming_becomes_representative = incoming_replaces_representative(existing, incoming);
+
     merge_dual_locations(existing, incoming);
 
-    if incoming_replaces_representative(existing, incoming) {
+    if incoming_becomes_representative {
         existing.name = incoming.name.clone();
         existing.qualified_name = incoming.qualified_name.clone();
         existing.symbol_type = incoming.symbol_type.clone();
@@ -403,28 +407,190 @@ fn incoming_replaces_representative(existing: &Symbol, incoming: &Symbol) -> boo
         return incoming_rank > existing_rank;
     }
 
-    let existing_cpp = existing.file_path.ends_with(".cpp");
-    let incoming_cpp = incoming.file_path.ends_with(".cpp");
-    if incoming_cpp != existing_cpp {
-        return incoming_cpp;
+    let existing_tie = representative_tie_break_key(existing);
+    let incoming_tie = representative_tie_break_key(incoming);
+    if incoming_tie != existing_tie {
+        return incoming_tie > existing_tie;
     }
 
-    false
+    incoming.file_path < existing.file_path
+        || (incoming.file_path == existing.file_path && incoming.line < existing.line)
 }
 
 fn representative_rank(symbol: &Symbol) -> i32 {
+    representative_selection_reasons(symbol)
+        .into_iter()
+        .map(reason_score)
+        .sum::<i32>()
+        + repository_rule_score(symbol, &active_representative_rules())
+}
+
+fn representative_tie_break_key(symbol: &Symbol) -> (i32, i32, i32, i32) {
+    (
+        role_tie_break_priority(symbol),
+        implementation_path_priority(symbol),
+        dual_location_priority(symbol),
+        -(symbol.line as i32),
+    )
+}
+
+fn representative_selection_reasons(symbol: &Symbol) -> Vec<RepresentativeSelectionReason> {
+    let mut reasons = Vec::new();
+
     match symbol.symbol_role.as_deref() {
+        Some("definition") if is_out_of_line_definition(symbol) => {
+            reasons.push(RepresentativeSelectionReason::OutOfLineDefinitionPreferred);
+        }
+        Some("definition") | Some("inline_definition") => {
+            reasons.push(RepresentativeSelectionReason::InlineDefinitionFallback);
+        }
+        Some("declaration") => {
+            reasons.push(RepresentativeSelectionReason::DeclarationOnlyFallback);
+        }
+        _ if has_definition_anchor(symbol) && !looks_like_header_path(symbol.file_path.as_str()) => {
+            reasons.push(RepresentativeSelectionReason::OutOfLineDefinitionPreferred);
+        }
+        _ if has_definition_anchor(symbol) => {
+            reasons.push(RepresentativeSelectionReason::InlineDefinitionFallback);
+        }
+        _ => {
+            reasons.push(RepresentativeSelectionReason::DeclarationOnlyFallback);
+        }
+    }
+
+    if symbol.artifact_kind.as_deref() == Some("runtime") {
+        reasons.push(RepresentativeSelectionReason::RuntimeArtifactPreferred);
+    }
+
+    if symbol.header_role.as_deref() == Some("public") {
+        reasons.push(RepresentativeSelectionReason::PublicHeaderPreferred);
+    }
+
+    if is_non_test_like_path(symbol) {
+        reasons.push(RepresentativeSelectionReason::NonTestPathPreferred);
+    }
+
+    if is_non_generated_path(symbol) {
+        reasons.push(RepresentativeSelectionReason::NonGeneratedPathPreferred);
+    }
+
+    reasons
+}
+
+fn reason_score(reason: RepresentativeSelectionReason) -> i32 {
+    match reason {
+        RepresentativeSelectionReason::OutOfLineDefinitionPreferred => 400,
+        RepresentativeSelectionReason::InlineDefinitionFallback => 280,
+        RepresentativeSelectionReason::DeclarationOnlyFallback => 160,
+        RepresentativeSelectionReason::RuntimeArtifactPreferred => 25,
+        RepresentativeSelectionReason::PublicHeaderPreferred => 20,
+        RepresentativeSelectionReason::NonTestPathPreferred => 10,
+        RepresentativeSelectionReason::NonGeneratedPathPreferred => 10,
+        RepresentativeSelectionReason::ScopeCanonicalityPreferred => 10,
+        RepresentativeSelectionReason::DuplicateClusterWeakCanonicality => -20,
+    }
+}
+
+fn role_tie_break_priority(symbol: &Symbol) -> i32 {
+    match symbol.symbol_role.as_deref() {
+        Some("definition") if is_out_of_line_definition(symbol) => 4,
         Some("definition") => 3,
         Some("inline_definition") => 2,
         Some("declaration") => 1,
-        _ => {
-            if symbol.file_path.ends_with(".cpp") {
-                2
-            } else {
-                1
-            }
-        }
+        _ if has_definition_anchor(symbol) && !looks_like_header_path(symbol.file_path.as_str()) => 3,
+        _ => 0,
     }
+}
+
+fn implementation_path_priority(symbol: &Symbol) -> i32 {
+    if looks_like_implementation_path(symbol.file_path.as_str()) {
+        2
+    } else if looks_like_header_path(symbol.file_path.as_str()) {
+        1
+    } else {
+        0
+    }
+}
+
+fn dual_location_priority(symbol: &Symbol) -> i32 {
+    match (
+        symbol.declaration_file_path.is_some(),
+        symbol.definition_file_path.is_some(),
+    ) {
+        (true, true) => 2,
+        (false, true) => 1,
+        _ => 0,
+    }
+}
+
+fn has_definition_anchor(symbol: &Symbol) -> bool {
+    symbol.definition_file_path.is_some()
+        || matches!(
+            symbol.symbol_role.as_deref(),
+            Some("definition") | Some("inline_definition")
+        )
+}
+
+fn is_out_of_line_definition(symbol: &Symbol) -> bool {
+    matches!(symbol.symbol_role.as_deref(), Some("definition"))
+        && !looks_like_header_path(symbol.file_path.as_str())
+}
+
+fn is_non_test_like_path(symbol: &Symbol) -> bool {
+    !is_test_like_path(symbol)
+}
+
+fn is_non_generated_path(symbol: &Symbol) -> bool {
+    !is_generated_like_path(symbol)
+}
+
+fn is_test_like_path(symbol: &Symbol) -> bool {
+    if matches!(symbol.artifact_kind.as_deref(), Some("test")) {
+        return true;
+    }
+
+    let lower = symbol.file_path.to_ascii_lowercase();
+    lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("/spec/")
+        || lower.contains("/specs/")
+        || lower.contains("/sample/")
+        || lower.contains("/samples/")
+        || lower.contains("/benchmark/")
+        || lower.contains("/benchmarks/")
+        || lower.contains("_test.")
+        || lower.contains(".test.")
+}
+
+fn is_generated_like_path(symbol: &Symbol) -> bool {
+    if matches!(symbol.artifact_kind.as_deref(), Some("generated")) {
+        return true;
+    }
+
+    let lower = symbol.file_path.to_ascii_lowercase();
+    lower.contains("/generated/")
+        || lower.contains("/gen/")
+        || lower.contains("/autogen/")
+}
+
+fn looks_like_header_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".h")
+        || lower.ends_with(".hh")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".hxx")
+        || lower.ends_with(".inl")
+        || lower.ends_with(".inc")
+}
+
+fn looks_like_implementation_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".c")
+        || lower.ends_with(".cc")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".cxx")
+        || lower.ends_with(".m")
+        || lower.ends_with(".mm")
 }
 
 pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], db: &Database) -> Vec<Call> {
@@ -1165,6 +1331,283 @@ mod tests {
         assert_eq!(merged[0].file_path, "worker.cpp");
         assert_eq!(merged[0].symbol_role.as_deref(), Some("definition"));
         assert_eq!(merged[0].definition_file_path.as_deref(), Some("worker.cpp"));
+    }
+
+    #[test]
+    fn merge_prefers_inline_definition_over_declaration_only_anchor() {
+        let declaration = Symbol {
+            id: "Game::Worker::Tick".into(),
+            name: "Tick".into(),
+            qualified_name: "Game::Worker::Tick".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.h".into(),
+            line: 4,
+            end_line: 4,
+            signature: Some("void Tick()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("worker.h".into()),
+            declaration_line: Some(4),
+            declaration_end_line: Some(4),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+        let inline = Symbol {
+            id: "Game::Worker::Tick".into(),
+            name: "Tick".into(),
+            qualified_name: "Game::Worker::Tick".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.h".into(),
+            line: 8,
+            end_line: 11,
+            signature: Some("inline void Tick()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("inline_definition".into()),
+            declaration_file_path: Some("worker.h".into()),
+            declaration_line: Some(4),
+            declaration_end_line: Some(4),
+            definition_file_path: Some("worker.h".into()),
+            definition_line: Some(8),
+            definition_end_line: Some(11),
+            parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+
+        let merged = merge_symbols(&[declaration, inline]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "worker.h");
+        assert_eq!(merged[0].line, 8);
+        assert_eq!(merged[0].symbol_role.as_deref(), Some("inline_definition"));
+        assert_eq!(merged[0].declaration_line, Some(4));
+        assert_eq!(merged[0].definition_line, Some(8));
+    }
+
+    #[test]
+    fn merge_is_stable_when_definition_arrives_before_declaration() {
+        let definition = Symbol {
+            id: "Game::Worker::Update".into(),
+            name: "Update".into(),
+            qualified_name: "Game::Worker::Update".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.cpp".into(),
+            line: 12,
+            end_line: 18,
+            signature: Some("void Worker::Update()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: Some("worker.cpp".into()),
+            definition_line: Some(12),
+            definition_end_line: Some(18),
+            parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+        let declaration = Symbol {
+            id: "Game::Worker::Update".into(),
+            name: "Update".into(),
+            qualified_name: "Game::Worker::Update".into(),
+            symbol_type: "method".into(),
+            file_path: "worker.h".into(),
+            line: 4,
+            end_line: 4,
+            signature: Some("void Update()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("worker.h".into()),
+            declaration_line: Some(4),
+            declaration_end_line: Some(4),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: Some("Game::Worker".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+
+        let merged = merge_symbols(&[definition, declaration]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "worker.cpp");
+        assert_eq!(merged[0].line, 12);
+        assert_eq!(merged[0].declaration_file_path.as_deref(), Some("worker.h"));
+        assert_eq!(merged[0].definition_file_path.as_deref(), Some("worker.cpp"));
+    }
+
+    #[test]
+    fn merge_prefers_runtime_anchor_over_test_shadow_when_structure_matches() {
+        let runtime = Symbol {
+            id: "Game::StringRef".into(),
+            name: "StringRef".into(),
+            qualified_name: "Game::StringRef".into(),
+            symbol_type: "class".into(),
+            file_path: "src/runtime/string_ref.h".into(),
+            line: 8,
+            end_line: 24,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("src/runtime/string_ref.h".into()),
+            declaration_line: Some(8),
+            declaration_end_line: Some(24),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: Some("core".into()),
+            subsystem: Some("runtime".into()),
+            project_area: Some("core".into()),
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("public".into()),
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+        let test_shadow = Symbol {
+            id: "Game::StringRef".into(),
+            name: "StringRef".into(),
+            qualified_name: "Game::StringRef".into(),
+            symbol_type: "class".into(),
+            file_path: "tests/core/string_ref.h".into(),
+            line: 3,
+            end_line: 18,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("tests/core/string_ref.h".into()),
+            declaration_line: Some(3),
+            declaration_end_line: Some(18),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: Some("core".into()),
+            subsystem: Some("tests".into()),
+            project_area: Some("tests".into()),
+            artifact_kind: Some("test".into()),
+            header_role: Some("public".into()),
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+
+        let merged = merge_symbols(&[test_shadow, runtime]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "src/runtime/string_ref.h");
+        assert_eq!(merged[0].artifact_kind.as_deref(), Some("runtime"));
+    }
+
+    #[test]
+    fn merge_prefers_public_header_over_private_header_when_structure_matches() {
+        let private_header = Symbol {
+            id: "Game::Panel".into(),
+            name: "Panel".into(),
+            qualified_name: "Game::Panel".into(),
+            symbol_type: "class".into(),
+            file_path: "src/ui/private/panel.h".into(),
+            line: 6,
+            end_line: 20,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("src/ui/private/panel.h".into()),
+            declaration_line: Some(6),
+            declaration_end_line: Some(20),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: Some("ui".into()),
+            subsystem: Some("runtime".into()),
+            project_area: Some("ui".into()),
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("private".into()),
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+        let public_header = Symbol {
+            id: "Game::Panel".into(),
+            name: "Panel".into(),
+            qualified_name: "Game::Panel".into(),
+            symbol_type: "class".into(),
+            file_path: "include/ui/panel.h".into(),
+            line: 4,
+            end_line: 18,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("declaration".into()),
+            declaration_file_path: Some("include/ui/panel.h".into()),
+            declaration_line: Some(4),
+            declaration_end_line: Some(18),
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: Some("ui".into()),
+            subsystem: Some("runtime".into()),
+            project_area: Some("ui".into()),
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("public".into()),
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        };
+
+        let merged = merge_symbols(&[private_header, public_header]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].file_path, "include/ui/panel.h");
+        assert_eq!(merged[0].header_role.as_deref(), Some("public"));
     }
 
     #[test]

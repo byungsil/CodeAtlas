@@ -1,6 +1,6 @@
 import * as path from "path";
 import express from "express";
-import { Symbol as CodeSymbol } from "./models/symbol";
+import { SourceLanguage, Symbol as CodeSymbol } from "./models/symbol";
 import { Store } from "./storage/store";
 import { MetadataFilters } from "./storage/store";
 import {
@@ -38,10 +38,12 @@ import {
   TraceVariableFlowResponse,
   TraceCallPathResponse,
   TypeHierarchyResponse,
+  WorkspaceSummaryResponse,
 } from "./models/responses";
 import {
   buildClassResponse,
   buildCallerQueryResponse,
+  deriveRepresentativeMetadata,
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
@@ -84,6 +86,7 @@ export function createApp(store: Store): express.Express {
   }
 
   function parseMetadataFilters(source: Record<string, unknown>): MetadataFilters | undefined {
+    const language = typeof source.language === "string" ? source.language as SourceLanguage : undefined;
     const subsystem = typeof source.subsystem === "string" ? source.subsystem : undefined;
     const module = typeof source.module === "string" ? source.module : undefined;
     const projectArea = typeof source.projectArea === "string" ? source.projectArea : undefined;
@@ -91,11 +94,11 @@ export function createApp(store: Store): express.Express {
       ? source.artifactKind as MetadataFilters["artifactKind"]
       : undefined;
 
-    if (!subsystem && !module && !projectArea && !artifactKind) {
+    if (!language && !subsystem && !module && !projectArea && !artifactKind) {
       return undefined;
     }
 
-    return { subsystem, module, projectArea, artifactKind };
+    return { language, subsystem, module, projectArea, artifactKind };
   }
 
   function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
@@ -105,6 +108,7 @@ export function createApp(store: Store): express.Express {
   function matchesMetadataFilters(symbol: CodeSymbol | undefined, filters?: MetadataFilters): boolean {
     if (!filters) return true;
     if (!symbol) return false;
+    if (filters.language && symbol.language !== filters.language) return false;
     if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
     if (filters.module && symbol.module !== filters.module) return false;
     if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
@@ -126,6 +130,15 @@ export function createApp(store: Store): express.Express {
     return Array.from(counts.entries())
       .map(([key, count]) => ({ key, count }))
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  }
+
+  function buildWorkspaceSummary(): WorkspaceSummaryResponse {
+    const languages = store.getWorkspaceLanguageSummary();
+    return {
+      languages,
+      totalFiles: languages.reduce((sum, entry) => sum + entry.fileCount, 0),
+      totalSymbols: languages.reduce((sum, entry) => sum + entry.symbolCount, 0),
+    };
   }
 
   function buildCallRefs(calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[], targetField: "callerId" | "calleeId"): CallReference[] {
@@ -592,6 +605,7 @@ export function createApp(store: Store): express.Express {
       ...metadataFilterEcho(metadataFilters),
       affectedSubsystems: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.subsystem),
       affectedModules: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.module),
+      affectedLanguages: buildMetadataGroupSummary(affectedSymbolIds, (affected) => affected.language),
       truncated:
         directCallers.truncated
         || directCallees.truncated
@@ -737,7 +751,8 @@ export function createApp(store: Store): express.Express {
     const { symbol, matchedBy } = params;
     if (!symbol) return null;
 
-    const base = buildExactLookupResponse({ symbol, matchedBy });
+    const representativeMetadata = deriveRepresentativeMetadata(symbol, store.getRepresentativeCandidates(symbol.id));
+    const base = buildExactLookupResponse({ symbol, matchedBy, representativeMetadata });
 
     if (symbol.type === "function" || symbol.type === "method") {
       return {
@@ -835,6 +850,7 @@ export function createApp(store: Store): express.Express {
     Object.assign(response, metadataFilterEcho(metadataFilters), {
       groupedBySubsystem: buildMetadataGroupSummary(callerIds, (caller) => caller.subsystem),
       groupedByModule: buildMetadataGroupSummary(callerIds, (caller) => caller.module),
+      groupedByLanguage: buildMetadataGroupSummary(callerIds, (caller) => caller.language),
     });
     return res.json(response);
   });
@@ -900,6 +916,7 @@ export function createApp(store: Store): express.Express {
       ...metadataFilterEcho(metadataFilters),
       groupedBySubsystem: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.subsystem),
       groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
+      groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
     };
     return res.json(response);
   });
@@ -1006,6 +1023,10 @@ export function createApp(store: Store): express.Express {
     }
 
     return res.json(buildImpactAnalysis(symbol, maxDepth, limit, metadataFilters));
+  });
+
+  app.get("/workspace-summary", (_req, res) => {
+    return res.json(buildWorkspaceSummary());
   });
 
   app.get("/file-symbols", (req, res) => {
@@ -1150,7 +1171,9 @@ export function createApp(store: Store): express.Express {
       results,
       totalCount,
       truncated: totalCount > limit,
+      language: metadataFilters?.language,
       ...metadataFilterEcho(metadataFilters),
+      groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
     };
     return res.json(response);
   });
