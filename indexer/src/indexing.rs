@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use rayon::prelude::*;
@@ -26,7 +28,15 @@ use std::collections::HashMap;
 
 const DEFAULT_INDEXER_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
 const MIN_INDEXER_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
+const PARSE_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(15);
+const PARSE_SLOW_FILE_THRESHOLD: Duration = Duration::from_secs(20);
 static INDEXER_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+#[derive(Clone)]
+struct ActiveParseEntry {
+    language: SourceLanguage,
+    started_at: Instant,
+}
 
 pub trait LanguageAdapter: Send + Sync {
     fn language(&self) -> SourceLanguage;
@@ -208,20 +218,61 @@ pub fn parse_discovered_files(
     ParseMetrics,
 ) {
     let total = discovered_files.len();
-    let progress = AtomicUsize::new(0);
+    let progress = Arc::new(AtomicUsize::new(0));
+    let active_files = Arc::new(Mutex::new(HashMap::<String, ActiveParseEntry>::new()));
+    let parsing_complete = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let monitor_handle = if !verbose && total > 0 {
+        Some(spawn_parse_progress_monitor(
+            total,
+            Arc::clone(&active_files),
+            Arc::clone(&parsing_complete),
+            Arc::clone(&progress),
+        ))
+    } else {
+        None
+    };
 
     let results: Vec<(String, Result<ParseResult, String>, String, bool)> = indexing_thread_pool().install(|| {
         discovered_files
             .par_iter()
             .map(|discovered| {
                 let rel_path = make_relative(workspace_root, &discovered.path);
+                {
+                    let mut active = active_files.lock().expect("active parse tracker poisoned");
+                    active.insert(
+                        rel_path.clone(),
+                        ActiveParseEntry {
+                            language: discovered.language,
+                            started_at: Instant::now(),
+                        },
+                    );
+                }
                 let (content, hash, lossy) = match read_source_file(&discovered.path) {
                     Ok(result) => result,
-                    Err(e) => return (rel_path.clone(), Err(format!("Read error: {}", e)), String::new(), false),
+                    Err(e) => {
+                        let _ = active_files
+                            .lock()
+                            .map(|mut active| active.remove(&rel_path));
+                        let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                        if !verbose {
+                            eprintln!(
+                                "  Parsing: {}/{} | read error in {}",
+                                current, total, rel_path
+                            );
+                        }
+                        return (rel_path.clone(), Err(format!("Read error: {}", e)), String::new(), false);
+                    }
                 };
                 let result = registry.parse_file(discovered.language, &rel_path, &content);
+                let elapsed = {
+                    let mut active = active_files.lock().expect("active parse tracker poisoned");
+                    active
+                        .remove(&rel_path)
+                        .map(|entry| entry.started_at.elapsed())
+                        .unwrap_or_default()
+                };
+                let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
                 if verbose {
-                    let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
                     match &result {
                         Ok(pr) => {
                             if lossy {
@@ -240,11 +291,41 @@ pub fn parse_discovered_files(
                             println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
                         }
                     }
+                } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
+                    match &result {
+                        Ok(pr) => {
+                            eprintln!(
+                                "  Slow parse: {}/{} done in {} | {} ({:?}) | {} symbols, {} raw calls",
+                                current,
+                                total,
+                                format_elapsed_ms(elapsed),
+                                rel_path,
+                                discovered.language,
+                                pr.symbols.len(),
+                                pr.raw_calls.len()
+                            );
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "  Slow failure: {}/{} after {} | {} ({:?}) | {}",
+                                current,
+                                total,
+                                format_elapsed_ms(elapsed),
+                                rel_path,
+                                discovered.language,
+                                err
+                            );
+                        }
+                    }
                 }
                 (rel_path, result, hash, lossy)
             })
             .collect()
     });
+    parsing_complete.store(true, Ordering::Relaxed);
+    if let Some(handle) = monitor_handle {
+        let _ = handle.join();
+    }
 
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
@@ -318,6 +399,66 @@ pub fn parse_discovered_files(
         file_records,
         metrics,
     )
+}
+
+fn spawn_parse_progress_monitor(
+    total: usize,
+    active_files: Arc<Mutex<HashMap<String, ActiveParseEntry>>>,
+    parsing_complete: Arc<std::sync::atomic::AtomicBool>,
+    progress: Arc<AtomicUsize>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(PARSE_PROGRESS_LOG_INTERVAL);
+            if parsing_complete.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let completed = progress.load(Ordering::Relaxed);
+            let snapshot = {
+                let active = active_files.lock().expect("active parse tracker poisoned");
+                let mut entries: Vec<_> = active
+                    .iter()
+                    .map(|(path, entry)| {
+                        (
+                            path.clone(),
+                            entry.language,
+                            entry.started_at.elapsed(),
+                        )
+                    })
+                    .collect();
+                entries.sort_by(|a, b| b.2.cmp(&a.2));
+                entries.truncate(3);
+                entries
+            };
+
+            if snapshot.is_empty() {
+                eprintln!("  Parsing: {}/{} | waiting for worker completion...", completed, total);
+                continue;
+            }
+
+            let active_summary = snapshot
+                .iter()
+                .map(|(path, language, elapsed)| {
+                    format!("{} ({:?}, {})", path, language, format_elapsed_ms(*elapsed))
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            eprintln!(
+                "  Parsing: {}/{} | active slow files: {}",
+                completed, total, active_summary
+            );
+        }
+    })
+}
+
+fn format_elapsed_ms(elapsed: Duration) -> String {
+    let elapsed_ms = elapsed.as_millis();
+    if elapsed_ms >= 1_000 {
+        format!("{}ms ({:.2}s)", elapsed_ms, elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{}ms", elapsed_ms)
+    }
 }
 
 pub fn parse_file_strict(
