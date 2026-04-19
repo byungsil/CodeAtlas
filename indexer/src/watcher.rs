@@ -642,7 +642,11 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
                 continue;
             }
 
-            let (result, _, lossy) = parse_file_strict(workspace_root, path, build_metadata.as_ref())?;
+            let (result, _, lossy, skipped) = parse_file_strict(workspace_root, path, build_metadata.as_ref())?;
+            if skipped {
+                println!("  SKIP: {}: oversized file", path);
+                continue;
+            }
             if verbose && lossy {
                 println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
             }

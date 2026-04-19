@@ -16,6 +16,13 @@ codeatlas-indexer <workspace-root> --full  # full rebuild
 codeatlas-indexer watch <workspace-root>   # auto-reindex on file changes
 ```
 
+Operational notes:
+
+- For large game repositories, keep a workspace-local `.codeatlasignore` so vendor mirrors, generated code, tests, and tools do not drown the index in low-value symbols.
+- Full rebuilds now print stage-level progress (`parse files`, `merge symbols`, `resolve calls`, `persist sqlite`) so long tails are easier to diagnose.
+- Non-verbose full rebuilds report active slow files during parsing.
+- C/C++ files that look like embedded binary dumps or giant numeric blobs are skipped before parsing. The default size threshold is `2097152` bytes and can be overridden with `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES`.
+
 ### 2. Start the MCP server
 
 Add to your Claude Code MCP config (`.claude/settings.json`):
@@ -37,6 +44,16 @@ Add to your Claude Code MCP config (`.claude/settings.json`):
   }
 }
 ```
+
+Equivalent MCP config locations commonly used with CodeAtlas:
+
+- Claude Code: `.claude/settings.json` or `.claude/settings.local.json`
+- VS Code: `.vscode/mcp.json`
+- Visual Studio: `.mcp.json`, `.vs/mcp.json`, or `%USERPROFILE%/.mcp.json`
+- Codex CLI / Codex IDE extension: `~/.codex/config.toml`
+- Antigravity: `%APPDATA%/Antigravity/User/mcp.json`
+
+When possible, prefer repo-local MCP config that points at `<workspace-root>/.codeatlas` so each workspace keeps its own index and watcher state.
 
 ## Available Tools
 

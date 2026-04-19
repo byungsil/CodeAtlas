@@ -340,6 +340,9 @@ fn print_help() {
     println!("  CodeAtlas uses a larger internal worker-thread stack by default for indexing.");
     println!("  Override with `CODEATLAS_INDEXER_STACK_BYTES=<bytes>` if a larger stack is needed.");
     println!("  If `CODEATLAS_INDEXER_STACK_BYTES` is unset, `RUST_MIN_STACK` is honored when present.");
+    println!("  C/C++ files larger than 2097152 bytes are skipped by default to avoid");
+    println!("  pathological embedded-data headers blocking indexing.");
+    println!("  Override with `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES=<bytes>` or set it to `0` to disable.");
     println!();
     println!("Optional build metadata:");
     println!("  If a workspace contains `compile_commands.json`, CodeAtlas auto-detects it");
@@ -519,6 +522,7 @@ fn run_full(
     let mut resolve_breakdown = ResolveBreakdownTimings::default();
     let registry = default_language_registry();
 
+    println!("  Stage: parse files");
     let parse_start = Instant::now();
     let (
         raw_symbols,
@@ -536,16 +540,31 @@ fn run_full(
         &registry,
     );
     timings.parse_ms = parse_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: parse files in {}",
+        format_elapsed(timings.parse_ms)
+    );
 
+    println!("  Stage: merge symbols");
     let resolve_start = Instant::now();
     let merge_symbols_start = Instant::now();
     let symbols = resolver::merge_symbols(&raw_symbols);
     resolve_breakdown.merge_symbols_ms = merge_symbols_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: merge symbols in {}",
+        format_elapsed(resolve_breakdown.merge_symbols_ms)
+    );
 
+    println!("  Stage: resolve calls");
     let resolve_calls_start = Instant::now();
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
     resolve_breakdown.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: resolve calls in {}",
+        format_elapsed(resolve_breakdown.resolve_calls_ms)
+    );
 
+    println!("  Stage: derive boundary propagation");
     let boundary_start = Instant::now();
     let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
         &raw_calls,
@@ -554,7 +573,12 @@ fn run_full(
         &symbols,
     );
     resolve_breakdown.boundary_propagation_ms = boundary_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: derive boundary propagation in {}",
+        format_elapsed(resolve_breakdown.boundary_propagation_ms)
+    );
 
+    println!("  Stage: merge propagation");
     let propagation_merge_start = Instant::now();
     let propagation_events = resolver::merge_propagation_events(
         &local_propagation_events,
@@ -562,8 +586,13 @@ fn run_full(
     );
     resolve_breakdown.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
     timings.resolve_ms = resolve_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: merge propagation in {}",
+        format_elapsed(resolve_breakdown.propagation_merge_ms)
+    );
 
     let raw_count: usize = discovered_files.len();
+    println!("  Stage: persist sqlite");
     let persist_start = Instant::now();
     db.write_all(
         &raw_symbols,
@@ -576,8 +605,13 @@ fn run_full(
     )
         .expect("Failed to write to SQLite");
     timings.persist_ms = persist_start.elapsed().as_millis();
+    println!(
+        "  Stage complete: persist sqlite in {}",
+        format_elapsed(timings.persist_ms)
+    );
 
     if json_mode {
+        println!("  Stage: write json");
         let json_start = Instant::now();
         write_json(&data_dir.join("symbols.json"), &symbols);
         write_json(&data_dir.join("calls.json"), &calls);
@@ -585,6 +619,10 @@ fn run_full(
         write_json(&data_dir.join("propagation.json"), &propagation_events);
         write_json(&data_dir.join("files.json"), &file_records);
         timings.json_ms = json_start.elapsed().as_millis();
+        println!(
+            "  Stage complete: write json in {}",
+            format_elapsed(timings.json_ms)
+        );
     }
 
     println!(
@@ -734,7 +772,11 @@ fn run_incremental(
                 continue;
             }
 
-            let (result, _, lossy) = parse_file_strict(workspace_root, path, build_metadata)?;
+            let (result, _, lossy, skipped) = parse_file_strict(workspace_root, path, build_metadata)?;
+            if skipped {
+                println!("  SKIP: {}: oversized file", path);
+                continue;
+            }
             if verbose && lossy {
                 println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
             }

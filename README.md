@@ -68,6 +68,8 @@ On Windows, large freshly written SQLite files can be touched briefly by file in
 
 For large real-world C++ repositories, indexing scope matters a lot. If the workspace contains heavy `tests/`, `docs/`, `dev_docs/`, generated code, or vendored mirrors, add a `.codeatlasignore` before relying on heuristic lookup. This keeps the symbol set focused on the code agents actually need to reason about.
 
+CodeAtlas also protects full and incremental indexing from pathological C/C++ files that are technically parseable text files but are not useful source inputs, such as embedded binary dumps or giant numeric lookup-table headers. By default, C/C++ files larger than `2 MB` are skipped when they do not show enough real source-structure markers, and smaller files can also be skipped when they look like binary-like or numeric-blob payloads instead of code. Override the size threshold with `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES=<bytes>`, or set it to `0` to disable the threshold entirely.
+
 ### 4. Start the HTTP server (standalone)
 
 ```bash
@@ -103,6 +105,16 @@ With `CODEATLAS_WATCHER=true`, the MCP server automatically launches the Rust wa
 
 Set `CODEATLAS_DASHBOARD_AUTOOPEN` to `"true"` to auto-open the dashboard in a browser when the MCP server starts.
 
+Common MCP client locations:
+
+- Claude Code: `.claude/settings.json` or `.claude/settings.local.json`
+- VS Code workspace: `.vscode/mcp.json`
+- Visual Studio: `<solution>/.mcp.json`, `<solution>/.vs/mcp.json`, or `%USERPROFILE%/.mcp.json`
+- Codex CLI / Codex IDE extension: `~/.codex/config.toml`
+- Antigravity: `%APPDATA%/Antigravity/User/mcp.json`
+
+For workspace-specific setup, prefer keeping the server pointed at `<workspace-root>/.codeatlas` from a repo-local config such as `.vscode/mcp.json` or `<solution>/.mcp.json` so different projects do not accidentally share the wrong index.
+
 ## Configuration
 
 All configuration is through environment variables, set in the MCP client config or shell:
@@ -115,6 +127,7 @@ All configuration is through environment variables, set in the MCP client config
 | `CODEATLAS_WATCHER` | `false` | Auto-start watcher as child process on MCP start |
 | `CODEATLAS_INDEXER_PATH` | `codeatlas-indexer` | Path to the Rust indexer binary |
 | `CODEATLAS_INDEXER_STACK_BYTES` | `67108864` | Worker-thread stack size for the Rust indexer thread pool |
+| `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES` | `2097152` | Default oversized C/C++ skip threshold. Set to `0` to disable the threshold. |
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory (fallback if no CLI arg) |
 
 ## Indexer CLI
@@ -136,6 +149,13 @@ Large-repository stack safety:
 - the Rust indexer now uses a larger internal worker-thread stack by default to survive LLVM-scale repositories without requiring manual `RUST_MIN_STACK` tuning
 - override with `CODEATLAS_INDEXER_STACK_BYTES=<bytes>` if a still larger stack is needed for Unreal-engine-class projects
 - if `CODEATLAS_INDEXER_STACK_BYTES` is not set, the indexer still honors `RUST_MIN_STACK` when present
+
+Large-repository parse protection:
+
+- full rebuilds now emit stage-level progress so long no-output windows are easier to distinguish from a true hang
+- slow-file monitoring remains active in non-verbose runs and reports the currently active long-tail parse files
+- oversized or blob-like C/C++ files are skipped before Tree-sitter parsing to prevent a small number of pathological headers from stalling the whole run
+- the same skip protection applies consistently to full rebuilds, incremental runs, and watch mode
 
 Mixed-workspace query behavior:
 
