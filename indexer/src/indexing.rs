@@ -374,16 +374,46 @@ pub fn parse_discovered_files(
     Vec<FileRecord>,
     ParseMetrics,
 ) {
-    let total = discovered_files.len();
+    parse_discovered_files_with_progress(
+        workspace_root,
+        discovered_files,
+        verbose,
+        build_metadata,
+        registry,
+        0,
+        discovered_files.len(),
+    )
+}
+
+pub fn parse_discovered_files_with_progress(
+    workspace_root: &Path,
+    discovered_files: &[DiscoveredSourceFile],
+    verbose: bool,
+    build_metadata: Option<&BuildMetadataContext>,
+    registry: &LanguageRegistry,
+    progress_offset: usize,
+    overall_total: usize,
+) -> (
+    Vec<Symbol>,
+    Vec<RawCallSite>,
+    Vec<NormalizedReference>,
+    Vec<PropagationEvent>,
+    Vec<CallableFlowSummary>,
+    Vec<FileRecord>,
+    ParseMetrics,
+) {
+    let batch_total = discovered_files.len();
+    let total = overall_total.max(batch_total);
     let progress = Arc::new(AtomicUsize::new(0));
     let active_files = Arc::new(Mutex::new(HashMap::<String, ActiveParseEntry>::new()));
     let parsing_complete = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let monitor_handle = if !verbose && total > 0 {
+    let monitor_handle = if !verbose && batch_total > 0 {
         Some(spawn_parse_progress_monitor(
             total,
             Arc::clone(&active_files),
             Arc::clone(&parsing_complete),
             Arc::clone(&progress),
+            progress_offset,
         ))
     } else {
         None
@@ -410,7 +440,7 @@ pub fn parse_discovered_files(
                         let _ = active_files
                             .lock()
                             .map(|mut active| active.remove(&rel_path));
-                        let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                        let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
                         if !verbose {
                             eprintln!(
                                 "  Parsing: {}/{} | read error in {}",
@@ -424,7 +454,7 @@ pub fn parse_discovered_files(
                     let _ = active_files
                         .lock()
                         .map(|mut active| active.remove(&rel_path));
-                    let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                    let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
                     if verbose {
                         println!(
                             "  [{}/{}] SKIP: {}: {} ({} bytes)",
@@ -454,7 +484,7 @@ pub fn parse_discovered_files(
                         .map(|entry| entry.started_at.elapsed())
                         .unwrap_or_default()
                 };
-                let current = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
                 if verbose {
                     match &result {
                         Ok(pr) => {
@@ -610,6 +640,7 @@ fn spawn_parse_progress_monitor(
     active_files: Arc<Mutex<HashMap<String, ActiveParseEntry>>>,
     parsing_complete: Arc<std::sync::atomic::AtomicBool>,
     progress: Arc<AtomicUsize>,
+    progress_offset: usize,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut waited = Duration::ZERO;
@@ -624,7 +655,7 @@ fn spawn_parse_progress_monitor(
             }
             waited = Duration::ZERO;
 
-            let completed = progress.load(Ordering::Relaxed);
+            let completed = (progress_offset + progress.load(Ordering::Relaxed)).min(total);
             let snapshot = {
                 let active = active_files.lock().expect("active parse tracker poisoned");
                 let mut entries: Vec<_> = active

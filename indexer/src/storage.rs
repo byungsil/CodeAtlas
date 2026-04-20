@@ -2,10 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use crate::models::{
-    Call, CallableFlowSummary, FileRecord, InheritanceEdge, NormalizedReference,
-    PropagationAnchorKind, PropagationEvent, PropagationKind, RawExtractionConfidence,
-    RawCallKind, RawCallSite, RawQualifierKind, RawReceiverKind, ReferenceCategory, Symbol,
+    Call, CallableFlowSummary, FileRecord, NormalizedReference, PropagationAnchorKind,
+    PropagationEvent, PropagationKind, RawExtractionConfidence, RawCallKind, RawCallSite,
+    RawQualifierKind, RawReceiverKind, ReferenceCategory, Symbol,
 };
+#[cfg(test)]
+use crate::models::InheritanceEdge;
 use crate::resolver;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
@@ -443,6 +445,11 @@ impl Database {
         Ok(())
     }
 
+    pub fn replace_references(&self, references: &[NormalizedReference]) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM symbol_references", [])?;
+        self.write_references(references)
+    }
+
     pub fn write_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT INTO propagation_events (
@@ -605,41 +612,6 @@ impl Database {
         rows.collect()
     }
 
-    pub fn read_all_raw_calls(&self) -> SqlResult<Vec<RawCallSite>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, file_path, line
-             FROM raw_calls
-             ORDER BY file_path, line, caller_id, called_name",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let argument_texts_json: String = row.get(4)?;
-            let result_target_json: Option<String> = row.get(5)?;
-            Ok(RawCallSite {
-                caller_id: row.get(0)?,
-                called_name: row.get(1)?,
-                call_kind: raw_call_kind_from_key(&row.get::<_, String>(2)?),
-                argument_count: row.get(3)?,
-                argument_texts: serde_json::from_str(&argument_texts_json).unwrap_or_default(),
-                result_target: result_target_json
-                    .as_deref()
-                    .and_then(|json| serde_json::from_str(json).ok()),
-                receiver: row.get(6)?,
-                receiver_kind: row
-                    .get::<_, Option<String>>(7)?
-                    .as_deref()
-                    .map(raw_receiver_kind_from_key),
-                qualifier: row.get(8)?,
-                qualifier_kind: row
-                    .get::<_, Option<String>>(9)?
-                    .as_deref()
-                    .map(raw_qualifier_kind_from_key),
-                file_path: row.get(10)?,
-                line: row.get(11)?,
-            })
-        })?;
-        rows.collect()
-    }
-
     pub fn read_raw_calls_for_paths(&self, file_paths: &[String]) -> SqlResult<Vec<RawCallSite>> {
         if file_paths.is_empty() {
             return Ok(Vec::new());
@@ -744,6 +716,25 @@ impl Database {
         rows.collect()
     }
 
+    pub fn read_all_symbol_ids(&self) -> SqlResult<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM symbols ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    pub fn read_all_symbol_types(&self) -> SqlResult<HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT id, type FROM symbols ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut result = HashMap::new();
+        for row in rows {
+            let (id, symbol_type) = row?;
+            result.insert(id, symbol_type);
+        }
+        Ok(result)
+    }
+
     pub fn read_all_propagation_events(&self) -> SqlResult<Vec<PropagationEvent>> {
         let mut stmt = self.conn.prepare(
             "SELECT
@@ -801,23 +792,6 @@ impl Database {
         rows.collect()
     }
 
-    pub fn read_all_callable_flow_summaries(&self) -> SqlResult<Vec<CallableFlowSummary>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT callable_symbol_id, parameter_anchors_json, return_anchors_json
-             FROM callable_flow_summaries",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let parameter_json: String = row.get(1)?;
-            let return_json: String = row.get(2)?;
-            Ok(CallableFlowSummary {
-                callable_symbol_id: row.get(0)?,
-                parameter_anchors: serde_json::from_str(&parameter_json).unwrap_or_default(),
-                return_anchors: serde_json::from_str(&return_json).unwrap_or_default(),
-            })
-        })?;
-        rows.collect()
-    }
-
     pub fn delete_file_record(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM files WHERE path = ?1", params![file_path])?;
         Ok(())
@@ -848,7 +822,14 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT file_path FROM symbol_references
              WHERE source_symbol_id NOT IN (SELECT id FROM symbols)
-                OR target_symbol_id NOT IN (SELECT id FROM symbols)",
+                OR target_symbol_id NOT IN (SELECT id FROM symbols)
+                OR (
+                    category = 'inheritanceMention'
+                    AND target_symbol_id IN (SELECT id FROM symbols)
+                    AND target_symbol_id NOT IN (
+                        SELECT id FROM symbols WHERE type IN ('class', 'struct')
+                    )
+                )",
         )?;
         let affected: Vec<String> = stmt.query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -857,7 +838,14 @@ impl Database {
         self.conn.execute(
             "DELETE FROM symbol_references
              WHERE source_symbol_id NOT IN (SELECT id FROM symbols)
-                OR target_symbol_id NOT IN (SELECT id FROM symbols)",
+                OR target_symbol_id NOT IN (SELECT id FROM symbols)
+                OR (
+                    category = 'inheritanceMention'
+                    AND target_symbol_id IN (SELECT id FROM symbols)
+                    AND target_symbol_id NOT IN (
+                        SELECT id FROM symbols WHERE type IN ('class', 'struct')
+                    )
+                )",
             [],
         )?;
 
@@ -899,27 +887,6 @@ impl Database {
     pub fn delete_propagation_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute("DELETE FROM propagation_events WHERE file_path = ?1", params![file_path])?;
         Ok(())
-    }
-
-    pub fn replace_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM propagation_events", [])?;
-        self.write_propagation_events(events)
-    }
-
-    pub fn append_unique_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<usize> {
-        let mut existing = self.read_all_propagation_event_keys()?;
-        let mut unique = Vec::new();
-        for event in events {
-            let key = propagation_event_storage_key(event);
-            if existing.insert(key) {
-                unique.push(event.clone());
-            }
-        }
-        let appended = unique.len();
-        if appended > 0 {
-            self.write_propagation_events(&unique)?;
-        }
-        Ok(appended)
     }
 
     pub fn clear_raw_calls(&self) -> SqlResult<()> {
@@ -1052,6 +1019,7 @@ impl Database {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn get_direct_base_edges(&self, derived_symbol_id: &str) -> SqlResult<Vec<InheritanceEdge>> {
         let mut stmt = self.conn.prepare(
             "SELECT source_symbol_id, target_symbol_id, file_path, line, confidence
@@ -1071,6 +1039,7 @@ impl Database {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn get_direct_derived_edges(&self, base_symbol_id: &str) -> SqlResult<Vec<InheritanceEdge>> {
         let mut stmt = self.conn.prepare(
             "SELECT source_symbol_id, target_symbol_id, file_path, line, confidence
@@ -1300,6 +1269,29 @@ pub fn propagation_event_storage_key(event: &PropagationEvent) -> String {
         event.file_path.as_str(),
         event.line,
     )
+}
+
+pub fn filter_persistable_references(
+    references: &mut Vec<NormalizedReference>,
+    valid_symbol_ids: &HashSet<String>,
+    symbol_types: &HashMap<String, String>,
+) -> usize {
+    let before = references.len();
+    references.retain(|reference| {
+        if !valid_symbol_ids.contains(&reference.source_symbol_id)
+            || !valid_symbol_ids.contains(&reference.target_symbol_id)
+        {
+            return false;
+        }
+        if reference.category == ReferenceCategory::InheritanceMention {
+            return matches!(
+                symbol_types.get(&reference.target_symbol_id).map(|value| value.as_str()),
+                Some("class" | "struct")
+            );
+        }
+        true
+    });
+    before.saturating_sub(references.len())
 }
 
 fn propagation_event_key_from_parts(
@@ -1766,6 +1758,151 @@ mod tests {
         assert_eq!(count, 1);
         let category: String = db.conn.query_row("SELECT category FROM symbol_references LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(category, "typeUsage");
+    }
+
+    #[test]
+    fn cleanup_dangling_references_removes_non_workspace_targets() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let symbols = vec![
+            make_sym("Game::Controller", "Controller"),
+            make_sym("Game::Actor", "Actor"),
+        ];
+        db.write_symbols(&symbols).unwrap();
+        db.write_references(&[
+            NormalizedReference {
+                source_symbol_id: "Game::Controller".into(),
+                target_symbol_id: "Game::Actor".into(),
+                category: ReferenceCategory::TypeUsage,
+                file_path: "controller.cpp".into(),
+                line: 7,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "Game::Controller".into(),
+                target_symbol_id: "python::json".into(),
+                category: ReferenceCategory::ModuleImport,
+                file_path: "controller.py".into(),
+                line: 3,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "Game::Controller".into(),
+                target_symbol_id: "Game::Action".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "controller.cpp".into(),
+                line: 9,
+                confidence: RawExtractionConfidence::High,
+            },
+        ]).unwrap();
+        db.write_symbols(&[Symbol {
+            id: "Game::Action".into(),
+            name: "Action".into(),
+            qualified_name: "Game::Action".into(),
+            symbol_type: "function".into(),
+            file_path: "controller.cpp".into(),
+            line: 8,
+            end_line: 8,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        }]).unwrap();
+
+        let mut affected = db.cleanup_dangling_references().unwrap();
+        affected.sort();
+        assert_eq!(affected, vec!["controller.cpp".to_string(), "controller.py".to_string()]);
+
+        let remaining = db.read_all_references().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].target_symbol_id, "Game::Actor");
+        assert_eq!(remaining[0].category, ReferenceCategory::TypeUsage);
+    }
+
+    #[test]
+    fn filter_persistable_references_drops_unresolved_targets() {
+        let mut references = vec![
+            NormalizedReference {
+                source_symbol_id: "Game::Controller".into(),
+                target_symbol_id: "Game::Actor".into(),
+                category: ReferenceCategory::TypeUsage,
+                file_path: "controller.cpp".into(),
+                line: 7,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "python::scripts::main".into(),
+                target_symbol_id: "python::tools::build".into(),
+                category: ReferenceCategory::ModuleImport,
+                file_path: "scripts/main.py".into(),
+                line: 1,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "python::scripts::main".into(),
+                target_symbol_id: "python::json".into(),
+                category: ReferenceCategory::ModuleImport,
+                file_path: "scripts/main.py".into(),
+                line: 2,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "python::game::test::Runner".into(),
+                target_symbol_id: "python::unittest::TestCase".into(),
+                category: ReferenceCategory::InheritanceMention,
+                file_path: "game/test_runner.py".into(),
+                line: 4,
+                confidence: RawExtractionConfidence::High,
+            },
+        ];
+        let valid_symbol_ids = HashSet::from([
+            "Game::Actor".to_string(),
+            "python::tools::build".to_string(),
+            "Game::Controller".to_string(),
+            "python::scripts::main".to_string(),
+        ]);
+        let symbol_types = HashMap::from([
+            ("Game::Actor".to_string(), "class".to_string()),
+            ("Game::Controller".to_string(), "class".to_string()),
+            ("python::tools::build".to_string(), "namespace".to_string()),
+            ("python::scripts::main".to_string(), "namespace".to_string()),
+        ]);
+
+        let dropped = filter_persistable_references(&mut references, &valid_symbol_ids, &symbol_types);
+
+        assert_eq!(dropped, 2);
+        assert_eq!(references.len(), 2);
+        assert!(references.iter().any(|reference| {
+            reference.category == ReferenceCategory::TypeUsage
+                && reference.target_symbol_id == "Game::Actor"
+        }));
+        assert!(references.iter().any(|reference| {
+            reference.category == ReferenceCategory::ModuleImport
+                && reference.target_symbol_id == "python::tools::build"
+        }));
+        assert!(!references.iter().any(|reference| {
+            reference.category == ReferenceCategory::ModuleImport
+                && reference.target_symbol_id == "python::json"
+        }));
+        assert!(!references.iter().any(|reference| {
+            reference.category == ReferenceCategory::InheritanceMention
+                && reference.target_symbol_id == "python::unittest::TestCase"
+        }));
     }
 
     #[test]

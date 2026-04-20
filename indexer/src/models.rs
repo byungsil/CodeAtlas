@@ -321,6 +321,11 @@ impl RawRelationEvent {
     }
 }
 
+/// Persisted generalized reference between two exact symbols discovered in the
+/// current indexing run's workspace scope.
+///
+/// MS11 keeps this model internal-only: unresolved or out-of-workspace targets
+/// must be dropped before persistence rather than stored in a degraded form.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -333,6 +338,7 @@ pub struct NormalizedReference {
     pub confidence: RawExtractionConfidence,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InheritanceEdge {
@@ -343,6 +349,7 @@ pub struct InheritanceEdge {
     pub confidence: RawExtractionConfidence,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OverrideMatchReason {
@@ -352,6 +359,7 @@ pub enum OverrideMatchReason {
     SignatureArityMatch,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OverrideCandidate {
@@ -447,9 +455,9 @@ pub struct ParseMetrics {
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub file_risk_signals: FileRiskSignals,
+    #[allow(dead_code)]
     pub relation_events: Vec<RawRelationEvent>,
     pub normalized_references: Vec<NormalizedReference>,
-    #[allow(dead_code)]
     pub propagation_events: Vec<PropagationEvent>,
     pub callable_flow_summaries: Vec<CallableFlowSummary>,
     pub raw_calls: Vec<RawCallSite>,

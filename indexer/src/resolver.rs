@@ -1,21 +1,23 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{
-    Call, CallableFlowSummary, InheritanceEdge, OverrideCandidate, OverrideMatchReason,
-    PropagationAnchor, PropagationAnchorKind, PropagationEvent, PropagationKind, PropagationRisk,
-    compact_propagation_event,
-    RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
-    RepresentativeSelectionReason, Symbol,
+    Call, CallableFlowSummary, PropagationAnchor, PropagationAnchorKind, PropagationEvent,
+    PropagationKind, PropagationRisk, RawCallKind, RawCallSite, RawExtractionConfidence,
+    RawQualifierKind, RepresentativeSelectionReason, Symbol, compact_propagation_event,
 };
+#[cfg(test)]
+use crate::models::{InheritanceEdge, OverrideCandidate, OverrideMatchReason};
 use crate::representative_rules::{active_representative_rules, repository_rule_score};
 use crate::storage::Database;
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RankingReason {
     kind: &'static str,
     score: i32,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct RankedCandidate<'a> {
     symbol: &'a Symbol,
@@ -23,6 +25,7 @@ struct RankedCandidate<'a> {
     reasons: Vec<RankingReason>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 struct ResolutionDecision<'a> {
     ranked: Vec<RankedCandidate<'a>>,
@@ -677,6 +680,7 @@ fn infer_parameter_count_from_signature(signature: Option<&str>) -> Option<usize
     Some(params.split(',').count())
 }
 
+#[cfg(test)]
 pub fn find_override_candidates(
     symbols: &[Symbol],
     inheritance_edges: &[InheritanceEdge],
@@ -972,6 +976,7 @@ fn raw_call_site_key(caller_id: &str, file_path: &str, line: usize) -> String {
     format!("{}|{}|{}", caller_id, file_path, line)
 }
 
+#[cfg(test)]
 fn build_methods_by_parent<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
     let mut methods_by_parent: HashMap<&str, Vec<&Symbol>> = HashMap::new();
     for symbol in symbols {

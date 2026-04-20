@@ -185,6 +185,12 @@ Intentional first-release limits:
 - template-dependent compiler-grade meaning is out of scope
 - unresolved name mentions are not promoted to first-release references
 - only resolved source and target symbol identities qualify for persisted references
+- out-of-workspace names are not preserved as external reference records in first release
+
+Workspace-scope interpretation:
+
+- "in-workspace" means symbols discovered under the workspace root passed to the current indexing run
+- any name that does not resolve to a symbol discovered within that indexing scope is out-of-workspace for persistence purposes
 
 Normalized reference payload:
 
@@ -205,6 +211,7 @@ Modeling decisions for Milestone 3:
 - `moduleImport` is the first shared non-call structural relation added for mixed-language workspace support
 - `typeUsage` and `inheritanceMention` will be promoted from normalized extraction events into persisted references in later Milestone 3 steps
 - `classInstantiation` is part of the first-release vocabulary now so extraction and query code can grow into it without renaming the contract later
+- persisted `symbol_references` remain internal-only in first release; unresolved imports or other out-of-workspace targets are dropped instead of stored
 
 ### First-Release Propagation Model
 

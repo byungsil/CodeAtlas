@@ -30,7 +30,7 @@ use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS, INDEX_EXTENSIONS_ENV, parse_extension_list};
 use indexing::{
-    default_language_registry, make_relative, parse_discovered_files, parse_file_strict,
+    default_language_registry, make_relative, parse_discovered_files_with_progress, parse_file_strict,
     parse_files_strict,
 };
 use models::ParseMetrics;
@@ -40,6 +40,7 @@ use rusqlite::ErrorCode;
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
 const FULL_REBUILD_PARSE_BATCH_SIZE: usize = 2048;
 const FULL_REBUILD_PARSE_BATCH_SIZE_ENV: &str = "CODEATLAS_FULL_REBUILD_PARSE_BATCH_SIZE";
+const LOG_DIAGNOSTICS_ENV: &str = "CODEATLAS_LOG_DIAGNOSTICS";
 
 #[derive(Debug, Clone, Copy)]
 struct MemorySnapshot {
@@ -187,12 +188,15 @@ fn main() {
         let start = Instant::now();
 
         let registry = default_language_registry();
+        let log_diagnostics = should_log_diagnostics(verbose_mode);
         let supported_languages = registry.supported_languages();
         let discovery_start = Instant::now();
         let discovered_files =
             discovery::find_source_files_with_feedback(&workspace_root, verbose_mode, &supported_languages);
         let discovery_elapsed = discovery_start.elapsed().as_millis();
-        print_memory_snapshot("after discovery");
+        if log_diagnostics {
+            print_memory_snapshot("after discovery");
+        }
         let all_relative: Vec<String> = discovered_files
             .iter()
             .map(|entry| make_relative(&workspace_root, &entry.path))
@@ -208,6 +212,7 @@ fn main() {
                     &discovered_files,
                     json_mode,
                     verbose_mode,
+                    log_diagnostics,
                     &data_dir,
                     build_metadata.as_ref(),
                 );
@@ -241,6 +246,7 @@ fn main() {
                     &discovered_files,
                     json_mode,
                     verbose_mode,
+                    log_diagnostics,
                     &data_dir,
                     build_metadata.as_ref(),
                 );
@@ -253,7 +259,7 @@ fn main() {
                     return;
                 }
 
-                if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode, build_metadata.as_ref()) {
+                if let Err(e) = run_incremental(&db, &workspace_root, &plan, verbose_mode, log_diagnostics, build_metadata.as_ref()) {
                     eprintln!("Incremental indexing failed: {}", e);
                     std::process::exit(1);
                 }
@@ -329,6 +335,20 @@ fn format_memory_bytes(bytes: u64) -> String {
         format!("{:.2} GiB", bytes as f64 / GIB)
     } else {
         format!("{:.1} MiB", bytes as f64 / MIB)
+    }
+}
+
+fn should_log_diagnostics(verbose: bool) -> bool {
+    if verbose {
+        return true;
+    }
+
+    match std::env::var(LOG_DIAGNOSTICS_ENV) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
     }
 }
 
@@ -455,6 +475,8 @@ fn print_help() {
     println!("  --extensions Comma-separated extension allowlist, e.g. cpp,h,hpp,py");
     println!("  --parse-timeout-ms  Per-file C/C++ parse timeout in milliseconds");
     println!("               Applies to watch mode too.");
+    println!("  Diagnostics such as memory snapshots and parse/resolve breakdowns are");
+    println!("  shown for `--verbose` or when `CODEATLAS_LOG_DIAGNOSTICS=1` is set.");
     println!("  -h, --help   Show this help message");
     println!();
     println!("Large-repository stack safety:");
@@ -730,6 +752,7 @@ fn run_full(
     discovered_files: &[language::DiscoveredSourceFile],
     json_mode: bool,
     verbose: bool,
+    log_diagnostics: bool,
     data_dir: &Path,
     build_metadata: Option<&build_metadata::BuildMetadataContext>,
 ) -> IndexStageTimings {
@@ -737,7 +760,9 @@ fn run_full(
     let mut resolve_breakdown = ResolveBreakdownTimings::default();
     let registry = default_language_registry();
     let batch_size = configured_full_rebuild_parse_batch_size();
-    print_memory_snapshot("full rebuild start");
+    if log_diagnostics {
+        print_memory_snapshot("full rebuild start");
+    }
 
     println!("  Stage: parse files");
     let parse_start = Instant::now();
@@ -748,6 +773,7 @@ fn run_full(
         .chunks(batch_size)
         .enumerate()
     {
+        let batch_start = batch_index * batch_size;
         let (
             raw_symbols,
             raw_calls,
@@ -756,12 +782,14 @@ fn run_full(
             callable_flow_summaries,
             file_records,
             batch_metrics,
-        ) = parse_discovered_files(
+        ) = parse_discovered_files_with_progress(
             workspace_root,
             batch,
             verbose,
             build_metadata,
             &registry,
+            batch_start,
+            discovered_files.len(),
         );
         db.write_raw_symbols(&raw_symbols)
             .expect("Failed to write batch raw symbols");
@@ -783,7 +811,9 @@ fn run_full(
                 discovered_files.len().div_ceil(batch_size),
                 batch.len()
             );
-            print_memory_snapshot("after parse batch flush");
+            if log_diagnostics {
+                print_memory_snapshot("after parse batch flush");
+            }
         }
     }
     timings.parse_ms = parse_start.elapsed().as_millis();
@@ -791,7 +821,9 @@ fn run_full(
         "  Stage complete: parse files in {}",
         format_elapsed(timings.parse_ms)
     );
-    print_memory_snapshot("after parse files");
+    if log_diagnostics {
+        print_memory_snapshot("after parse files");
+    }
 
     println!("  Stage: merge symbols");
     let resolve_start = Instant::now();
@@ -799,7 +831,7 @@ fn run_full(
     let raw_symbols = db
         .read_all_raw_symbols()
         .expect("Failed to read staged raw symbols");
-    let mut symbols = resolver::merge_symbols(&raw_symbols);
+    let symbols = resolver::merge_symbols(&raw_symbols);
     drop(raw_symbols);
     db.write_symbols(&symbols)
         .expect("Failed to write merged representative symbols");
@@ -819,12 +851,43 @@ fn run_full(
         .iter()
         .map(|symbol| (symbol.id.clone(), symbol.name.clone()))
         .collect();
+    let valid_symbol_ids: HashSet<String> = symbols.iter().map(|symbol| symbol.id.clone()).collect();
+    let symbol_types: HashMap<String, String> = symbols
+        .iter()
+        .map(|symbol| (symbol.id.clone(), symbol.symbol_type.clone()))
+        .collect();
+    let mut staged_references = db
+        .read_all_references()
+        .expect("Failed to read staged references");
+    let dropped_references =
+        storage::filter_persistable_references(&mut staged_references, &valid_symbol_ids, &symbol_types);
+    if dropped_references > 0 {
+        db.replace_references(&staged_references)
+            .expect("Failed to rewrite filtered references");
+        if verbose {
+            println!(
+                "  FILTER: dropped {} unresolved reference(s)",
+                dropped_references
+            );
+        }
+    }
+    let cleaned_references = db
+        .cleanup_dangling_references()
+        .expect("Failed to cleanup invalid references after symbol merge");
+    if !cleaned_references.is_empty() && verbose {
+        println!(
+            "  FILTER: removed invalid references from {} file(s) after symbol merge",
+            cleaned_references.len()
+        );
+    }
     resolve_breakdown.merge_symbols_ms = merge_symbols_start.elapsed().as_millis();
     println!(
         "  Stage complete: merge symbols in {}",
         format_elapsed(resolve_breakdown.merge_symbols_ms)
     );
-    print_memory_snapshot("after merge symbols");
+    if log_diagnostics {
+        print_memory_snapshot("after merge symbols");
+    }
 
     println!("  Stage: resolve calls");
     let resolve_calls_start = Instant::now();
@@ -858,7 +921,9 @@ fn run_full(
         "  Stage complete: resolve calls in {}",
         format_elapsed(resolve_breakdown.resolve_calls_ms)
     );
-    print_memory_snapshot("after resolve calls");
+    if log_diagnostics {
+        print_memory_snapshot("after resolve calls");
+    }
     let symbols_for_json = if json_mode { Some(symbols.clone()) } else { None };
     drop(symbols);
 
@@ -913,7 +978,9 @@ fn run_full(
         "  Stage complete: derive boundary propagation in {}",
         format_elapsed(resolve_breakdown.boundary_propagation_ms)
     );
-    print_memory_snapshot("after boundary propagation");
+    if log_diagnostics {
+        print_memory_snapshot("after boundary propagation");
+    }
 
     println!("  Stage: merge propagation");
     let propagation_merge_start = Instant::now();
@@ -927,7 +994,9 @@ fn run_full(
         "  Propagation merge: appended {} boundary event(s)",
         appended_boundary_propagation
     );
-    print_memory_snapshot("after merge propagation");
+    if log_diagnostics {
+        print_memory_snapshot("after merge propagation");
+    }
 
     let raw_count: usize = discovered_files.len();
     println!("  Stage: persist sqlite");
@@ -939,7 +1008,9 @@ fn run_full(
         "  Stage complete: persist sqlite in {}",
         format_elapsed(timings.persist_ms)
     );
-    print_memory_snapshot("after persist sqlite");
+    if log_diagnostics {
+        print_memory_snapshot("after persist sqlite");
+    }
 
     if json_mode {
         println!("  Stage: write json");
@@ -969,7 +1040,9 @@ fn run_full(
             "  Stage complete: write json in {}",
             format_elapsed(timings.json_ms)
         );
-        print_memory_snapshot("after write json");
+        if log_diagnostics {
+            print_memory_snapshot("after write json");
+        }
     }
     db.commit()
         .expect("Failed to commit full rebuild transaction");
@@ -981,8 +1054,10 @@ fn run_full(
         db.count_propagation_events().unwrap_or(0),
         raw_count
     );
-    print_parse_breakdown("Parse breakdown", &parse_metrics);
-    print_resolve_breakdown("Resolve breakdown", &resolve_breakdown);
+    if log_diagnostics {
+        print_parse_breakdown("Parse breakdown", &parse_metrics);
+        print_resolve_breakdown("Resolve breakdown", &resolve_breakdown);
+    }
 
     timings
 }
@@ -992,10 +1067,13 @@ fn run_incremental(
     workspace_root: &Path,
     plan: &incremental::IncrementalPlan,
     verbose: bool,
+    log_diagnostics: bool,
     build_metadata: Option<&build_metadata::BuildMetadataContext>,
 ) -> Result<(), String> {
     let mut timings = IncrementalStageTimings::default();
-    print_memory_snapshot("incremental start");
+    if log_diagnostics {
+        print_memory_snapshot("incremental start");
+    }
     let initial_parse_start = Instant::now();
     let (
         parsed_symbols,
@@ -1019,8 +1097,10 @@ fn run_incremental(
         )
     };
     timings.initial_parse_ms = initial_parse_start.elapsed().as_millis();
-    print_memory_snapshot("after incremental initial parse");
-    if parse_metrics != ParseMetrics::default() {
+    if log_diagnostics {
+        print_memory_snapshot("after incremental initial parse");
+    }
+    if log_diagnostics && parse_metrics != ParseMetrics::default() {
         print_parse_breakdown("Incremental parse breakdown", &parse_metrics);
     }
 
@@ -1083,6 +1163,14 @@ fn run_incremental(
         let refreshed_symbols = db
             .find_symbols_by_ids(&affected_symbol_ids)
             .map_err(|e| format!("Failed to read refreshed symbols: {}", e))?;
+        let valid_symbol_ids: HashSet<String> = db
+            .read_all_symbol_ids()
+            .map_err(|e| format!("Failed to read symbol ids: {}", e))?
+            .into_iter()
+            .collect();
+        let symbol_types = db
+            .read_all_symbol_types()
+            .map_err(|e| format!("Failed to read symbol types: {}", e))?;
 
         let affected_calls = db
             .cleanup_dangling_calls()
@@ -1091,7 +1179,9 @@ fn run_incremental(
             .cleanup_dangling_references()
             .map_err(|e| format!("Failed to cleanup dangling references: {}", e))?;
         timings.cleanup_refresh_ms = cleanup_refresh_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental cleanup/refresh");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental cleanup/refresh");
+        }
 
         let mut all_calls = new_raw_calls;
         let mut all_references = new_references;
@@ -1143,13 +1233,25 @@ fn run_incremental(
             all_local_propagation.extend(result.propagation_events);
             all_callable_summaries.extend(result.callable_flow_summaries);
         }
+        let dropped_references =
+            storage::filter_persistable_references(&mut all_references, &valid_symbol_ids, &symbol_types);
+        if dropped_references > 0 && verbose {
+            println!(
+                "  FILTER: dropped {} unresolved reference(s)",
+                dropped_references
+            );
+        }
         timings.affected_reparse_ms = affected_reparse_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental affected reparse");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental affected reparse");
+        }
 
         let resolve_calls_start = Instant::now();
         let resolved = resolver::resolve_calls_with_db(&all_calls, &refreshed_symbols, db);
         timings.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental resolve calls");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental resolve calls");
+        }
 
         let summary_load_start = Instant::now();
         let callable_summaries = merge_callable_summaries(
@@ -1158,7 +1260,9 @@ fn run_incremental(
                 .map_err(|e| format!("Failed to read callable summaries: {}", e))?,
         );
         timings.summary_load_ms = summary_load_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental summary load");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental summary load");
+        }
 
         let boundary_start = Instant::now();
         let boundary_propagation = resolver::derive_function_boundary_propagation_events(
@@ -1168,13 +1272,17 @@ fn run_incremental(
             &refreshed_symbols,
         );
         timings.boundary_propagation_ms = boundary_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental boundary propagation");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental boundary propagation");
+        }
 
         let propagation_merge_start = Instant::now();
         let propagation_events =
             resolver::merge_propagation_events(&all_local_propagation, &boundary_propagation);
         timings.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental propagation merge");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental propagation merge");
+        }
 
         let persist_start = Instant::now();
         if !resolved.is_empty() {
@@ -1202,7 +1310,9 @@ fn run_incremental(
         db.refresh_fts_for_symbol_ids(&affected_symbol_ids)
             .map_err(|e| format!("Failed to refresh FTS: {}", e))?;
         timings.persist_ms = persist_start.elapsed().as_millis();
-        print_memory_snapshot("after incremental persist");
+        if log_diagnostics {
+            print_memory_snapshot("after incremental persist");
+        }
 
         let total_syms: i64 = db.count_symbols().unwrap_or(0);
         let total_calls: i64 = db.count_calls().unwrap_or(0);
@@ -1225,8 +1335,10 @@ fn run_incremental(
     db.commit()
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
     timings.commit_ms = commit_start.elapsed().as_millis();
-    print_memory_snapshot("after incremental commit");
-    print_incremental_timings(&timings);
+    if log_diagnostics {
+        print_memory_snapshot("after incremental commit");
+        print_incremental_timings(&timings);
+    }
 
     if plan.to_index.is_empty() && !plan.to_delete.is_empty() {
         println!("  Deleted {} file(s)", plan.to_delete.len());
@@ -1373,7 +1485,7 @@ mod tests {
         let supported_languages = registry.supported_languages();
         let discovered =
             discovery::find_source_files_with_feedback(workspace_root, false, &supported_languages);
-        run_full(&db, workspace_root, &discovered, false, false, &data_dir, None);
+        run_full(&db, workspace_root, &discovered, false, false, false, &data_dir, None);
         db.checkpoint().unwrap();
     }
 
@@ -1385,7 +1497,7 @@ mod tests {
         let all_relative = discover_relative_paths(workspace_root);
         let stored = db.read_file_records().unwrap();
         let plan = incremental::plan(&all_relative, &stored, workspace_root);
-        run_incremental(&db, workspace_root, &plan, false, None).unwrap();
+        run_incremental(&db, workspace_root, &plan, false, false, None).unwrap();
         db.checkpoint().unwrap();
         plan
     }

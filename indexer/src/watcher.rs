@@ -607,6 +607,14 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         let refreshed_symbols = db
             .find_symbols_by_ids(&affected_symbol_ids)
             .map_err(|e| format!("DB read refreshed symbols: {}", e))?;
+        let valid_symbol_ids: HashSet<String> = db
+            .read_all_symbol_ids()
+            .map_err(|e| format!("DB read symbol ids: {}", e))?
+            .into_iter()
+            .collect();
+        let symbol_types = db
+            .read_all_symbol_types()
+            .map_err(|e| format!("DB read symbol types: {}", e))?;
 
         let affected_calls = db.cleanup_dangling_calls()
             .map_err(|e| format!("DB cleanup: {}", e))?;
@@ -660,6 +668,14 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
             all_references.extend(result.normalized_references);
             all_local_propagation.extend(result.propagation_events);
             all_callable_summaries.extend(result.callable_flow_summaries);
+        }
+        let dropped_references =
+            storage::filter_persistable_references(&mut all_references, &valid_symbol_ids, &symbol_types);
+        if dropped_references > 0 && verbose {
+            println!(
+                "  FILTER: dropped {} unresolved reference(s)",
+                dropped_references
+            );
         }
 
         let resolved = resolver::resolve_calls_with_db(&all_raw_calls, &refreshed_symbols, &db);

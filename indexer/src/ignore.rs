@@ -19,6 +19,7 @@ impl IgnoreRules {
         IgnoreRules { patterns }
     }
 
+    #[cfg(test)]
     pub fn from_patterns(patterns: Vec<Regex>) -> Self {
         IgnoreRules { patterns }
     }

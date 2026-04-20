@@ -438,7 +438,7 @@ fn split_csv_like(value: &str) -> Vec<String> {
 
 fn resolve_python_name(
     name: &str,
-    module_id: &str,
+    _module_id: &str,
     known_classes: &HashMap<String, String>,
     module_aliases: &HashMap<String, String>,
     imported_symbol_aliases: &HashMap<String, String>,
@@ -453,9 +453,13 @@ fn resolve_python_name(
         return Some(value.clone());
     }
     if name.contains('.') {
-        return Some(module_name_to_symbol_id(name));
+        let (head, tail) = name.split_once('.')?;
+        if let Some(module_target) = module_aliases.get(head) {
+            return Some(format!("{}::{}", module_target, tail.replace('.', "::")));
+        }
+        return None;
     }
-    Some(format!("{}::{}", module_id, name))
+    None
 }
 
 fn strip_python_comment(line: &str) -> &str {
@@ -628,6 +632,25 @@ class Runner(BaseRunner):
             call.caller_id == "python::game::runner::Runner::create"
                 && call.called_name == "Runner"
                 && matches!(call.call_kind, RawCallKind::Unqualified)
+        }));
+    }
+
+    #[test]
+    fn emits_external_python_base_classes_as_candidates_for_later_filtering() {
+        let source = r#"
+import unittest
+
+class Runner(unittest.TestCase):
+    pass
+
+class Plain(object):
+    pass
+"#;
+
+        let result = parse_python_file("game/test_runner.py", source).unwrap();
+        assert!(result.normalized_references.iter().any(|reference| {
+            reference.category == ReferenceCategory::InheritanceMention
+                && reference.target_symbol_id == "python::unittest::TestCase"
         }));
     }
 }

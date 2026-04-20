@@ -294,6 +294,7 @@ fn enrich_graph_raw_calls_with_legacy_details(
     enriched
 }
 
+#[cfg(test)]
 pub fn cpp_call_graph_rule_source() -> &'static str {
     CPP_CALL_RELATIONS
 }
@@ -1589,6 +1590,13 @@ fn resolve_reference_target_id(
 ) -> Option<String> {
     let target_name = event.target_name.as_deref()?;
     let direct = symbol_index.get(target_name)?;
+    let direct: Vec<&Symbol> = direct
+        .iter()
+        .filter(|symbol| reference_target_allowed(event, symbol))
+        .collect();
+    if direct.is_empty() {
+        return None;
+    }
     if direct.len() == 1 {
         return Some(direct[0].id.clone());
     }
@@ -1597,6 +1605,7 @@ fn resolve_reference_target_id(
     let mut scored: Vec<(i32, &Symbol)> = direct
         .iter()
         .map(|symbol| {
+            let symbol = *symbol;
             let mut score = 0;
             if symbol.id == target_name || symbol.qualified_name == target_name {
                 score += 100;
@@ -1621,6 +1630,17 @@ fn resolve_reference_target_id(
     }
 
     Some(best.1.id.clone())
+}
+
+fn reference_target_allowed(event: &RawRelationEvent, symbol: &Symbol) -> bool {
+    match event.relation_kind {
+        RawRelationKind::Inheritance => is_type_like_symbol(symbol),
+        RawRelationKind::TypeUsage | RawRelationKind::Call => true,
+    }
+}
+
+fn is_type_like_symbol(symbol: &Symbol) -> bool {
+    matches!(symbol.symbol_type.as_str(), "class" | "struct")
 }
 
 fn symbol_namespace<'a>(symbol: &'a Symbol) -> Option<&'a str> {
@@ -1698,6 +1718,7 @@ fn raw_call_comparison_key(raw_call: &RawCallSite) -> String {
     )
 }
 
+#[cfg(test)]
 fn raw_call_comparison_keys(raw_calls: &[RawCallSite]) -> Vec<String> {
     let mut keys: Vec<String> = raw_calls.iter().map(raw_call_comparison_key).collect();
     keys.sort();
@@ -3515,6 +3536,118 @@ class Enemy : public Actor {};
             reference.source_symbol_id == "Game::Enemy"
                 && reference.target_symbol_id == "Game::Actor"
         }));
+    }
+
+    #[test]
+    fn inheritance_normalization_rejects_constructor_like_targets() {
+        let symbols = vec![
+            Symbol {
+                id: "Game::ThreadPoolProvider".into(),
+                name: "ThreadPoolProvider".into(),
+                qualified_name: "Game::ThreadPoolProvider".into(),
+                symbol_type: "class".into(),
+                file_path: "provider.h".into(),
+                line: 1,
+                end_line: 20,
+                signature: None,
+                parameter_count: None,
+                scope_qualified_name: Some("Game".into()),
+                scope_kind: Some("namespace".into()),
+                symbol_role: Some("definition".into()),
+                declaration_file_path: None,
+                declaration_line: None,
+                declaration_end_line: None,
+                definition_file_path: None,
+                definition_line: None,
+                definition_end_line: None,
+                parent_id: None,
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
+            },
+            Symbol {
+                id: "Game::ThreadPoolProvider::ThreadPoolProvider".into(),
+                name: "ThreadPoolProvider".into(),
+                qualified_name: "Game::ThreadPoolProvider::ThreadPoolProvider".into(),
+                symbol_type: "method".into(),
+                file_path: "provider.cpp".into(),
+                line: 22,
+                end_line: 22,
+                signature: Some("ThreadPoolProvider()".into()),
+                parameter_count: Some(0),
+                scope_qualified_name: Some("Game::ThreadPoolProvider".into()),
+                scope_kind: Some("class".into()),
+                symbol_role: Some("definition".into()),
+                declaration_file_path: None,
+                declaration_line: None,
+                declaration_end_line: None,
+                definition_file_path: None,
+                definition_line: None,
+                definition_end_line: None,
+                parent_id: Some("Game::ThreadPoolProvider".into()),
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
+            },
+            Symbol {
+                id: "Game::WorkerPool".into(),
+                name: "WorkerPool".into(),
+                qualified_name: "Game::WorkerPool".into(),
+                symbol_type: "class".into(),
+                file_path: "worker_pool.h".into(),
+                line: 30,
+                end_line: 50,
+                signature: None,
+                parameter_count: None,
+                scope_qualified_name: Some("Game".into()),
+                scope_kind: Some("namespace".into()),
+                symbol_role: Some("definition".into()),
+                declaration_file_path: None,
+                declaration_line: None,
+                declaration_end_line: None,
+                definition_file_path: None,
+                definition_line: None,
+                definition_end_line: None,
+                parent_id: None,
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
+            },
+        ];
+        let relation_events = vec![RawRelationEvent {
+            relation_kind: RawRelationKind::Inheritance,
+            source: RawEventSource::LegacyAst,
+            confidence: RawExtractionConfidence::Partial,
+            caller_id: Some("Game::WorkerPool".into()),
+            target_name: Some("Game::ThreadPoolProvider::ThreadPoolProvider".into()),
+            call_kind: None,
+            argument_count: None,
+            receiver: None,
+            receiver_kind: None,
+            qualifier: Some("Game::ThreadPoolProvider::ThreadPoolProvider".into()),
+            qualifier_kind: Some(RawQualifierKind::Type),
+            file_path: "worker_pool.h".into(),
+            line: 30,
+        }];
+
+        let normalized = extract_normalized_references(&relation_events, &symbols);
+
+        assert!(normalized.is_empty());
     }
 
     #[test]

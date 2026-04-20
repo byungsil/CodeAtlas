@@ -88,6 +88,7 @@ pub struct IncrementalPlan {
 }
 
 impl IncrementalPlan {
+    #[cfg(test)]
     pub fn entry_for_path(&self, path: &str) -> Option<&PlanEntry> {
         self.entries.iter().find(|entry| entry.path == path)
     }
