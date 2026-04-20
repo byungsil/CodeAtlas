@@ -94,6 +94,12 @@ impl IncrementalPlan {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChangedSetPlanResult {
+    Narrow(IncrementalPlan),
+    RequiresFullDiscovery { reason: String },
+}
+
 const MASS_CHANGE_ABSOLUTE_THRESHOLD: usize = 200;
 const MASS_CHANGE_PERCENT_THRESHOLD: usize = 40;
 const MASS_CHANGE_MIN_TOTAL_FILES: usize = 20;
@@ -195,6 +201,106 @@ pub fn plan(
         entries,
         rename_hints,
     }
+}
+
+pub fn plan_from_changed_paths(
+    changed_paths: &[String],
+    stored_records: &[FileRecord],
+    workspace_root: &Path,
+) -> ChangedSetPlanResult {
+    let mut unique_paths: Vec<String> = changed_paths.to_vec();
+    unique_paths.sort();
+    unique_paths.dedup();
+
+    if unique_paths.iter().any(|path| is_header_path(path)) {
+        return ChangedSetPlanResult::RequiresFullDiscovery {
+            reason: "header change requires wider incremental discovery".into(),
+        };
+    }
+
+    let stored_map: HashMap<&str, &FileRecord> = stored_records
+        .iter()
+        .map(|record| (record.path.as_str(), record))
+        .collect();
+
+    let mut to_index = Vec::new();
+    let mut to_delete = Vec::new();
+    let mut unchanged = Vec::new();
+    let mut entries = Vec::new();
+    let mut disk_hashes: HashMap<String, String> = HashMap::new();
+
+    for rel_path in unique_paths {
+        let abs_path = workspace_root.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if abs_path.exists() {
+            let current_hash = match hash_file_bytes(&abs_path) {
+                Ok(hash) => hash,
+                Err(_) => {
+                    to_index.push(rel_path.clone());
+                    entries.push(PlanEntry {
+                        path: rel_path,
+                        disposition: PlanDisposition::Index,
+                        reason: PlanReason::ReadFailed,
+                        content_hash: None,
+                        matched_path: None,
+                    });
+                    continue;
+                }
+            };
+            disk_hashes.insert(rel_path.clone(), current_hash.clone());
+
+            match stored_map.get(rel_path.as_str()) {
+                Some(stored_record) if stored_record.content_hash == current_hash => {
+                    unchanged.push(rel_path.clone());
+                    entries.push(PlanEntry {
+                        path: rel_path,
+                        disposition: PlanDisposition::Unchanged,
+                        reason: PlanReason::UnchangedContent,
+                        content_hash: Some(current_hash),
+                        matched_path: None,
+                    });
+                }
+                Some(_) => {
+                    to_index.push(rel_path.clone());
+                    entries.push(PlanEntry {
+                        path: rel_path,
+                        disposition: PlanDisposition::Index,
+                        reason: PlanReason::ContentChanged,
+                        content_hash: Some(current_hash),
+                        matched_path: None,
+                    });
+                }
+                None => {
+                    to_index.push(rel_path.clone());
+                    entries.push(PlanEntry {
+                        path: rel_path,
+                        disposition: PlanDisposition::Index,
+                        reason: PlanReason::NewPath,
+                        content_hash: Some(current_hash),
+                        matched_path: None,
+                    });
+                }
+            }
+        } else if let Some(stored_record) = stored_map.get(rel_path.as_str()) {
+            to_delete.push(rel_path.clone());
+            entries.push(PlanEntry {
+                path: rel_path,
+                disposition: PlanDisposition::Delete,
+                reason: PlanReason::RemovedPath,
+                content_hash: Some(stored_record.content_hash.clone()),
+                matched_path: None,
+            });
+        }
+    }
+
+    let rename_hints = attach_rename_hints(&mut entries, &disk_hashes, stored_records);
+
+    ChangedSetPlanResult::Narrow(IncrementalPlan {
+        to_index,
+        to_delete,
+        unchanged,
+        entries,
+        rename_hints,
+    })
 }
 
 pub fn assess_escalation(total_files: usize, plan: &IncrementalPlan) -> EscalationDecision {
@@ -700,5 +806,64 @@ mod tests {
         let decision = assess_escalation(51, &plan);
         assert_eq!(decision.level, EscalationLevel::Incremental);
         assert!(decision.reason.is_none());
+    }
+
+    #[test]
+    fn changed_set_plan_uses_only_touched_cpp_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("keep.cpp"), "void keep() {}\n").unwrap();
+        fs::write(dir.path().join("edit.cpp"), "void newer() {}\n").unwrap();
+        let keep_hash = hash_file_bytes(&dir.path().join("keep.cpp")).unwrap();
+
+        let stored = vec![
+            make_record("keep.cpp", &keep_hash),
+            make_record("edit.cpp", "stale_hash"),
+        ];
+
+        let result = plan_from_changed_paths(&["edit.cpp".into()], &stored, dir.path());
+        let ChangedSetPlanResult::Narrow(plan) = result else {
+            panic!("expected narrow plan");
+        };
+
+        assert_eq!(plan.to_index, vec!["edit.cpp"]);
+        assert!(plan.to_delete.is_empty());
+        assert!(plan.unchanged.is_empty());
+    }
+
+    #[test]
+    fn changed_set_plan_falls_back_for_header_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("api.h"), "void f();\n").unwrap();
+
+        let result = plan_from_changed_paths(&["api.h".into()], &[], dir.path());
+        assert_eq!(
+            result,
+            ChangedSetPlanResult::RequiresFullDiscovery {
+                reason: "header change requires wider incremental discovery".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn changed_set_plan_supports_cpp_rename_without_full_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("next")).unwrap();
+        let content = "void f() {}\n";
+        fs::write(dir.path().join("next").join("renamed.cpp"), content).unwrap();
+        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let stored = vec![make_record("old.cpp", &hash)];
+
+        let result = plan_from_changed_paths(
+            &["old.cpp".into(), "next/renamed.cpp".into()],
+            &stored,
+            dir.path(),
+        );
+        let ChangedSetPlanResult::Narrow(plan) = result else {
+            panic!("expected narrow plan");
+        };
+
+        assert_eq!(plan.to_index, vec!["next/renamed.cpp"]);
+        assert_eq!(plan.to_delete, vec!["old.cpp"]);
+        assert_eq!(plan.rename_hints.len(), 1);
     }
 }

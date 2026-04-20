@@ -463,7 +463,7 @@ export class SqliteStore {
     this.db.close();
     if (this.snapshotPath) {
       try {
-        fs.unlinkSync(this.snapshotPath);
+        deleteSnapshotDatabaseFamily(this.snapshotPath);
       } catch {
         // Best-effort cleanup for read-only snapshot fallback.
       }
@@ -504,7 +504,7 @@ function openReadonlyStore(dbPath: string): { db: Database.Database; snapshotPat
   }
 
   const snapshotPath = createSnapshotPath(dbPath);
-  fs.copyFileSync(dbPath, snapshotPath);
+  copySnapshotDatabaseFamily(dbPath, snapshotPath);
   const db = openReadonlyDatabase(snapshotPath);
   verifyDatabaseReadable(db);
   return { db, snapshotPath };
@@ -538,6 +538,11 @@ function normalizeDisplayPath(rawPath: string): string {
 
 function openReadonlyDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    db.pragma("busy_timeout = 1500");
+  } catch {
+    // Ignore pragma failures for read-only query workloads.
+  }
   // Read-only consumers do not need to force WAL mode, and some external
   // databases reject changing journal mode during open. Keep lookup usable.
   try {
@@ -559,9 +564,40 @@ function createSnapshotPath(dbPath: string): string {
   return path.join(snapshotDir, `${baseName}-${process.pid}-${Date.now()}.db`);
 }
 
+function snapshotCompanionPaths(dbPath: string): string[] {
+  return [`${dbPath}-wal`, `${dbPath}-shm`];
+}
+
+function copySnapshotDatabaseFamily(dbPath: string, snapshotPath: string): void {
+  fs.copyFileSync(dbPath, snapshotPath);
+  const sourceCompanions = snapshotCompanionPaths(dbPath);
+  const targetCompanions = snapshotCompanionPaths(snapshotPath);
+  for (let i = 0; i < sourceCompanions.length; i += 1) {
+    if (fs.existsSync(sourceCompanions[i])) {
+      fs.copyFileSync(sourceCompanions[i], targetCompanions[i]);
+    }
+  }
+}
+
+function deleteSnapshotDatabaseFamily(snapshotPath: string): void {
+  for (const filePath of [snapshotPath, ...snapshotCompanionPaths(snapshotPath)]) {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  }
+}
+
 function sleepMs(delayMs: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
 }
+
+export const __testables = {
+  copySnapshotDatabaseFamily,
+  createSnapshotPath,
+  deleteSnapshotDatabaseFamily,
+  normalizeDisplayPath,
+  snapshotCompanionPaths,
+};
 
 interface RawRow {
   id: string;

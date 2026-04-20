@@ -25,12 +25,126 @@ use chrono::Utc;
 
 const DEBOUNCE_MS: u64 = 500;
 const WATCHER_EVENT_BURST_REBUILD_THRESHOLD: usize = 64;
+const WATCHER_BURST_WINDOW_MS: u64 = 5_000;
+const WATCHER_BURST_WINDOW_REBUILD_THRESHOLD: usize = 96;
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NormalizedWatchEvent {
     kind_label: &'static str,
     paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+struct WatchRunState {
+    pending: HashSet<PathBuf>,
+    in_flight: HashSet<PathBuf>,
+    dirty_during_run: HashSet<PathBuf>,
+    last_event: Option<Instant>,
+    immediate_follow_up: bool,
+}
+
+#[derive(Debug, Default)]
+struct BurstWindow {
+    entries: Vec<(Instant, usize)>,
+}
+
+impl BurstWindow {
+    fn record(&mut self, count: usize, now: Instant) -> usize {
+        self.entries.push((now, count));
+        self.prune(now);
+        self.total()
+    }
+
+    fn total(&self) -> usize {
+        self.entries.iter().map(|(_, count)| *count).sum()
+    }
+
+    fn prune(&mut self, now: Instant) {
+        let window = Duration::from_millis(WATCHER_BURST_WINDOW_MS);
+        self.entries
+            .retain(|(timestamp, _)| now.saturating_duration_since(*timestamp) <= window);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WatcherBurstDecision {
+    rebuild_from_scratch: bool,
+    reason: Option<String>,
+}
+
+fn watcher_burst_decision(changed_count: usize, recent_window_total: usize) -> WatcherBurstDecision {
+    if changed_count >= WATCHER_EVENT_BURST_REBUILD_THRESHOLD {
+        return WatcherBurstDecision {
+            rebuild_from_scratch: true,
+            reason: Some(format!(
+                "watcher burst exceeded threshold ({} >= {})",
+                changed_count, WATCHER_EVENT_BURST_REBUILD_THRESHOLD
+            )),
+        };
+    }
+
+    if recent_window_total >= WATCHER_BURST_WINDOW_REBUILD_THRESHOLD {
+        return WatcherBurstDecision {
+            rebuild_from_scratch: true,
+            reason: Some(format!(
+                "sustained watcher churn exceeded recent-window threshold ({} >= {} over {}ms)",
+                recent_window_total,
+                WATCHER_BURST_WINDOW_REBUILD_THRESHOLD,
+                WATCHER_BURST_WINDOW_MS
+            )),
+        };
+    }
+
+    WatcherBurstDecision {
+        rebuild_from_scratch: false,
+        reason: None,
+    }
+}
+
+impl WatchRunState {
+    fn record_paths(&mut self, paths: Vec<PathBuf>, indexing_active: bool) {
+        let target = if indexing_active {
+            &mut self.dirty_during_run
+        } else {
+            &mut self.pending
+        };
+        for path in paths {
+            target.insert(path);
+        }
+        self.last_event = Some(Instant::now());
+    }
+
+    fn take_ready_batch(&mut self, debounce: Duration) -> Option<Vec<PathBuf>> {
+        if self.pending.is_empty() || !self.is_ready(debounce) {
+            return None;
+        }
+
+        self.immediate_follow_up = false;
+        self.in_flight = std::mem::take(&mut self.pending);
+        let mut changed: Vec<PathBuf> = self.in_flight.iter().cloned().collect();
+        changed.sort();
+        Some(changed)
+    }
+
+    fn complete_batch(&mut self) -> usize {
+        self.in_flight.clear();
+        let dirty_count = self.dirty_during_run.len();
+        if dirty_count > 0 {
+            self.pending.extend(self.dirty_during_run.drain());
+            self.immediate_follow_up = true;
+        }
+        dirty_count
+    }
+
+    fn is_ready(&self, debounce: Duration) -> bool {
+        if self.immediate_follow_up {
+            return true;
+        }
+        self.last_event
+            .map(|last| last.elapsed() >= debounce)
+            .unwrap_or(false)
+    }
 }
 
 fn is_tracked(path: &Path) -> bool {
@@ -180,7 +294,7 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
                 let db = open_database_with_retry(&db_path, "watch open sqlite database")?;
                 if db.has_data() {
                     println!("Existing index found, running incremental catch-up...");
-                    run_incremental_index(&workspace_root, &db_path, verbose)?;
+                    run_incremental_index(&workspace_root, &db_path, verbose, None)?;
                 } else {
                     println!("No existing index, running full initial index...");
                     run_full_index(&workspace_root, &db_path, verbose)?;
@@ -209,9 +323,9 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
         .watch(&workspace_root, RecursiveMode::Recursive)
         .map_err(|e| format!("Failed to watch directory: {}", e))?;
 
-    let mut pending: HashSet<PathBuf> = HashSet::new();
-    let mut last_event = Instant::now();
+    let mut state = WatchRunState::default();
     let debounce = Duration::from_millis(DEBOUNCE_MS);
+    let mut burst_window = BurstWindow::default();
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -231,42 +345,84 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
                             .join(", ");
                         println!("  WATCH: {} [{}]", normalized.kind_label, joined);
                     }
-                    for path in normalized.paths {
-                        pending.insert(path);
-                    }
-                    last_event = Instant::now();
+                    let indexing_active = !state.in_flight.is_empty();
+                    state.record_paths(normalized.paths, indexing_active);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if !pending.is_empty() && last_event.elapsed() >= debounce {
-            let changed: Vec<PathBuf> = pending.drain().collect();
+        if let Some(changed) = state.take_ready_batch(debounce) {
+            let now = Instant::now();
+            let recent_window_total = burst_window.record(changed.len(), now);
             println!(
                 "[{}] {} file(s) changed, re-indexing...",
                 Utc::now().format("%H:%M:%S"),
                 changed.len()
             );
+            let burst_decision = watcher_burst_decision(changed.len(), recent_window_total);
 
-            let result = if changed.len() >= WATCHER_EVENT_BURST_REBUILD_THRESHOLD {
-                println!(
-                    "  Escalation: watcher burst exceeded threshold ({} >= {}), rebuilding from scratch",
-                    changed.len(),
-                    WATCHER_EVENT_BURST_REBUILD_THRESHOLD
-                );
+            let result = if burst_decision.rebuild_from_scratch {
+                if let Some(reason) = &burst_decision.reason {
+                    println!("  Escalation: {}, rebuilding from scratch", reason);
+                }
                 run_full_index(&workspace_root, &db_path, verbose)
             } else {
-                run_incremental_index(&workspace_root, &db_path, verbose)
+                run_incremental_index(&workspace_root, &db_path, verbose, Some(&changed))
             };
 
             if let Err(e) = result {
                 eprintln!("  Indexing error: {}", e);
             }
+
+            drain_queued_events(
+                &rx,
+                &workspace_root,
+                &ignore_rules,
+                verbose,
+                &mut state,
+            );
+
+            let dirty_count = state.complete_batch();
+            if dirty_count > 0 {
+                println!(
+                    "  Watch follow-up: {} file(s) changed during indexing, scheduling compressed rerun",
+                    dirty_count
+                );
+            }
         }
     }
 
     Ok(())
+}
+
+fn drain_queued_events(
+    rx: &mpsc::Receiver<Event>,
+    workspace_root: &Path,
+    ignore_rules: &IgnoreRules,
+    verbose: bool,
+    state: &mut WatchRunState,
+) {
+    while let Ok(event) = rx.try_recv() {
+        if let Some(normalized) = normalize_watch_event(&event, workspace_root, ignore_rules) {
+            if verbose {
+                let joined = normalized
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        path.strip_prefix(workspace_root)
+                            .unwrap_or(path)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("  WATCH: {} [{}]", normalized.kind_label, joined);
+            }
+            state.record_paths(normalized.paths, true);
+        }
+    }
 }
 
 fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
@@ -475,7 +631,12 @@ fn merge_callable_summaries(
     merged
 }
 
-fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Result<(), String> {
+fn run_incremental_index(
+    workspace_root: &Path,
+    db_path: &Path,
+    verbose: bool,
+    changed_paths: Option<&[PathBuf]>,
+) -> Result<(), String> {
     let build_metadata = match build_metadata::load_build_metadata(workspace_root) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -485,17 +646,51 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
     };
     let expected_index_metadata = storage::expected_index_metadata(workspace_root);
     let db = open_database_with_retry(db_path, "watch open incremental sqlite database")?;
-    let registry = default_language_registry();
-    let supported_languages = registry.supported_languages();
-    let files = discovery::find_source_files_with_feedback(workspace_root, verbose, &supported_languages);
-    let all_relative: Vec<String> = files
-        .iter()
-        .map(|entry| make_relative(workspace_root, &entry.path))
-        .collect();
-
     let stored = db.read_file_records().unwrap_or_default();
-    let plan = incremental::plan(&all_relative, &stored, workspace_root);
-    let escalation = incremental::assess_escalation(all_relative.len(), &plan);
+    let (plan, total_files) = if let Some(changed_paths) = changed_paths {
+        let changed_relative: Vec<String> = changed_paths
+            .iter()
+            .map(|path| make_relative(workspace_root, path))
+            .collect();
+        match incremental::plan_from_changed_paths(&changed_relative, &stored, workspace_root) {
+            incremental::ChangedSetPlanResult::Narrow(plan) => {
+                if verbose {
+                    println!(
+                        "  Planner: changed-set mode ({} tracked path(s))",
+                        changed_relative.len()
+                    );
+                }
+                (plan, stored.len())
+            }
+            incremental::ChangedSetPlanResult::RequiresFullDiscovery { reason } => {
+                println!("  Planner fallback: {}", reason);
+                let registry = default_language_registry();
+                let supported_languages = registry.supported_languages();
+                let files = discovery::find_source_files_with_feedback(
+                    workspace_root,
+                    verbose,
+                    &supported_languages,
+                );
+                let all_relative: Vec<String> = files
+                    .iter()
+                    .map(|entry| make_relative(workspace_root, &entry.path))
+                    .collect();
+                let total_files = all_relative.len();
+                (incremental::plan(&all_relative, &stored, workspace_root), total_files)
+            }
+        }
+    } else {
+        let registry = default_language_registry();
+        let supported_languages = registry.supported_languages();
+        let files = discovery::find_source_files_with_feedback(workspace_root, verbose, &supported_languages);
+        let all_relative: Vec<String> = files
+            .iter()
+            .map(|entry| make_relative(workspace_root, &entry.path))
+            .collect();
+        let total_files = all_relative.len();
+        (incremental::plan(&all_relative, &stored, workspace_root), total_files)
+    };
+    let escalation = incremental::assess_escalation(total_files, &plan);
 
     if !plan.rename_hints.is_empty() {
         println!("  Planner: {} rename/move hint(s)", plan.rename_hints.len());
@@ -758,6 +953,7 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::mpsc;
 
     #[test]
     fn is_tracked_accepts_cpp_extensions() {
@@ -863,5 +1059,93 @@ mod tests {
         );
 
         assert!(should_retry_sqlite_open(&err));
+    }
+
+    #[test]
+    fn watch_run_state_coalesces_repeated_paths_during_active_run() {
+        let debounce = Duration::from_millis(500);
+        let first = PathBuf::from("/project/src/foo.cpp");
+        let second = PathBuf::from("/project/src/bar.cpp");
+        let mut state = WatchRunState::default();
+
+        state.record_paths(vec![first.clone(), second.clone()], false);
+        state.immediate_follow_up = true;
+        let batch = state.take_ready_batch(debounce).unwrap();
+        assert_eq!(batch, vec![second.clone(), first.clone()]);
+        assert!(state.pending.is_empty());
+        assert_eq!(state.in_flight.len(), 2);
+
+        state.record_paths(vec![first.clone(), first.clone()], true);
+        state.record_paths(vec![second.clone()], true);
+        let dirty_count = state.complete_batch();
+
+        assert_eq!(dirty_count, 2);
+        assert!(state.in_flight.is_empty());
+        assert!(state.immediate_follow_up);
+        assert_eq!(state.pending.len(), 2);
+        assert!(state.pending.contains(&first));
+        assert!(state.pending.contains(&second));
+    }
+
+    #[test]
+    fn watch_run_state_immediate_follow_up_bypasses_debounce() {
+        let path = PathBuf::from("/project/src/foo.cpp");
+        let mut state = WatchRunState::default();
+
+        state.record_paths(vec![path.clone()], false);
+        assert!(!state.is_ready(Duration::from_secs(60)));
+
+        state.immediate_follow_up = true;
+        let batch = state.take_ready_batch(Duration::from_secs(60)).unwrap();
+
+        assert_eq!(batch, vec![path]);
+    }
+
+    #[test]
+    fn burst_window_prunes_old_entries() {
+        let mut window = BurstWindow::default();
+        let base = Instant::now();
+
+        assert_eq!(window.record(10, base), 10);
+        assert_eq!(
+            window.record(5, base + Duration::from_millis(WATCHER_BURST_WINDOW_MS + 1)),
+            5
+        );
+    }
+
+    #[test]
+    fn watcher_burst_decision_rebuilds_for_sustained_recent_churn() {
+        let decision = watcher_burst_decision(20, WATCHER_BURST_WINDOW_REBUILD_THRESHOLD);
+        assert!(decision.rebuild_from_scratch);
+        assert!(decision
+            .reason
+            .unwrap()
+            .contains("sustained watcher churn exceeded recent-window threshold"));
+    }
+
+    #[test]
+    fn drain_queued_events_compresses_same_path_burst_into_dirty_set() {
+        let root = PathBuf::from("/project");
+        let ignore_rules = IgnoreRules::from_patterns(vec![]);
+        let (tx, rx) = mpsc::channel();
+        let mut state = WatchRunState::default();
+        let tracked = root.join("src").join("foo.cpp");
+
+        state.record_paths(vec![tracked.clone()], false);
+        state.immediate_follow_up = true;
+        assert!(state.take_ready_batch(Duration::from_millis(1)).is_some());
+
+        let modify = Event {
+            kind: EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+            paths: vec![tracked.clone()],
+            attrs: Default::default(),
+        };
+        tx.send(modify.clone()).unwrap();
+        tx.send(modify).unwrap();
+
+        drain_queued_events(&rx, &root, &ignore_rules, false, &mut state);
+
+        assert_eq!(state.dirty_during_run.len(), 1);
+        assert!(state.dirty_during_run.contains(&tracked));
     }
 }

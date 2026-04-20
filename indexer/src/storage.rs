@@ -226,7 +226,9 @@ impl IndexMetadata {
 impl Database {
     pub fn open(path: &Path) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=1500;",
+        )?;
         conn.execute_batch(SCHEMA)?;
         Self::migrate_symbol_storage(&conn)?;
         Self::migrate_symbol_metadata(&conn)?;
