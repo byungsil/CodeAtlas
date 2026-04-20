@@ -21,33 +21,19 @@ function openStore(dataDir: string): Store {
   console.log(`Using JSON: ${dataDir}`);
   return new JsonStore(dataDir);
 }
-
-function buildDashboardWorkspaceId(dataDir: string): string {
-  const normalized = path.resolve(dataDir);
-  const workspaceRoot = path.basename(path.resolve(normalized, ".."));
-  return workspaceRoot || path.basename(normalized) || "workspace";
-}
-
-function buildDashboardWorkspaceSource(dataDir: string) {
-  const id = buildDashboardWorkspaceId(dataDir);
-  return {
-    id,
-    label: path.basename(path.resolve(dataDir, "..")) || id,
-    dataDir,
-    store: openStore(dataDir),
-    statsPath: prepareRuntimeStatsPath(dataDir),
-  };
-}
-
-const dataDirs = Array.from(new Set([path.resolve(dataDir), ...config.dashboard.dataDirs]));
-const workspaceSources = dataDirs.map((dirPath) => buildDashboardWorkspaceSource(dirPath));
-const primary = workspaceSources[0];
-initRuntimeStats(primary.statsPath);
-const app = createApp(primary.store, {
-  dashboardWorkspaces: workspaceSources.map((source, index) => ({
-    ...source,
-    isPrimary: index === 0,
-  })),
+const resolvedDataDir = path.resolve(dataDir);
+const statsPath = prepareRuntimeStatsPath(resolvedDataDir);
+const store = openStore(resolvedDataDir);
+initRuntimeStats(statsPath);
+const app = createApp(store, {
+  dashboardWorkspaces: [{
+    id: "primary",
+    label: "primary",
+    dataDir: resolvedDataDir,
+    store,
+    statsPath,
+    isPrimary: true,
+  }],
 });
 
 const server = app.listen(PORT, () => {
@@ -65,10 +51,8 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 });
 
 function closeStores() {
-  for (const source of workspaceSources) {
-    const closable = source.store as Store & { close?: () => void };
-    closable.close?.();
-  }
+  const closable = store as Store & { close?: () => void };
+  closable.close?.();
 }
 
 process.on("SIGINT", () => { closeStores(); process.exit(0); });

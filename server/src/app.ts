@@ -90,14 +90,15 @@ interface AppOptions {
 
 export function createApp(store: Store, options?: AppOptions): express.Express {
   const app = express();
-  const dashboardWorkspaces = options?.dashboardWorkspaces ?? [{
+  const dashboardWorkspace = (options?.dashboardWorkspaces ?? [{
     id: "default",
     label: "default",
     dataDir: "",
     store,
     isPrimary: true,
-  }];
-  const primaryDashboardWorkspace = dashboardWorkspaces.find((workspace) => workspace.isPrimary) ?? dashboardWorkspaces[0];
+  }]).find((workspace) => workspace.isPrimary)?.store ?? store;
+  const dashboardStatsPath = (options?.dashboardWorkspaces ?? [])
+    .find((workspace) => workspace.isPrimary)?.statsPath;
 
   app.use("/dashboard", express.static(path.join(__dirname, "../public"), { index: "index.html" }));
   app.get("/dashboard", (_req, res) => res.redirect("/dashboard/"));
@@ -286,16 +287,8 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     };
   }
 
-  function getDashboardWorkspace(id: string | undefined): DashboardWorkspaceSource {
-    if (!id) {
-      return primaryDashboardWorkspace;
-    }
-    return dashboardWorkspaces.find((workspace) => workspace.id === id) ?? primaryDashboardWorkspace;
-  }
-
-  function buildDashboardOverview(workspaceId?: string) {
-    const workspaceSource = getDashboardWorkspace(workspaceId);
-    const activeStore = workspaceSource.store;
+  function buildDashboardOverview() {
+    const activeStore = dashboardWorkspace;
     const workspaceSummary = buildWorkspaceSummary(activeStore);
     const indexDetails = typeof activeStore.getIndexDetails === "function"
       ? activeStore.getIndexDetails()
@@ -317,16 +310,10 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       };
     return {
       generatedAt: new Date().toISOString(),
-      selectedWorkspaceId: workspaceSource.id,
-      availableWorkspaces: dashboardWorkspaces.map((workspace) => ({
-        id: workspace.id,
-        label: workspace.label,
-        dataDir: workspace.dataDir,
-      })),
       workspace: workspaceSummary,
       index: indexDetails,
-      mcp: workspaceSource.statsPath
-        ? readPersistedMcpRuntimeStatsSnapshot(workspaceSource.statsPath)
+      mcp: dashboardStatsPath
+        ? readPersistedMcpRuntimeStatsSnapshot(dashboardStatsPath)
         : getMcpRuntimeStatsSnapshot(),
     };
   }
@@ -1507,15 +1494,13 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   });
 
   app.get("/dashboard/api/overview", (req, res) => {
-    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
-    return res.json(buildDashboardOverview(workspaceId));
+    return res.json(buildDashboardOverview());
   });
 
   app.get("/dashboard/api/search", (req, res) => {
-    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
     const q = (req.query.q as string) || "";
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
-    const activeStore = getDashboardWorkspace(workspaceId).store;
+    const activeStore = dashboardWorkspace;
     if (!q) {
       return res.status(400).json({ error: "Missing query parameter 'q'", code: "BAD_REQUEST" } as ErrorResponse);
     }
@@ -1530,8 +1515,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   });
 
   app.get("/dashboard/api/function/:name", (req, res) => {
-    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
-    const payload = buildDashboardFunctionPayload(getDashboardWorkspace(workspaceId).store, req.params.name);
+    const payload = buildDashboardFunctionPayload(dashboardWorkspace, req.params.name);
     if (!payload) {
       return notFound(res);
     }
@@ -1539,8 +1523,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   });
 
   app.get("/dashboard/api/class/:name", (req, res) => {
-    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
-    const payload = buildDashboardClassPayload(getDashboardWorkspace(workspaceId).store, req.params.name);
+    const payload = buildDashboardClassPayload(dashboardWorkspace, req.params.name);
     if (!payload) {
       return notFound(res);
     }
@@ -1548,9 +1531,8 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   });
 
   app.get("/dashboard/api/callgraph/:name", (req, res) => {
-    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
     const maxDepth = Math.min(parseInt((req.query.depth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
-    const payload = buildDashboardCallGraphPayload(getDashboardWorkspace(workspaceId).store, req.params.name, maxDepth);
+    const payload = buildDashboardCallGraphPayload(dashboardWorkspace, req.params.name, maxDepth);
     if (!payload) {
       return notFound(res);
     }

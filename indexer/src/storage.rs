@@ -207,6 +207,7 @@ pub struct IndexMetadata {
     pub format_version: u32,
     pub indexer_version: String,
     pub workspace_root: String,
+    pub workspace_name: String,
     pub extensions_csv: String,
 }
 
@@ -222,6 +223,12 @@ impl IndexMetadata {
             return Some(format!(
                 "workspace root mismatch (db={}, current={})",
                 self.workspace_root, expected.workspace_root
+            ));
+        }
+        if self.workspace_name != expected.workspace_name {
+            return Some(format!(
+                "workspace name changed (db={}, current={})",
+                self.workspace_name, expected.workspace_name
             ));
         }
         if self.extensions_csv != expected.extensions_csv {
@@ -635,6 +642,7 @@ impl Database {
             ("format_version", metadata.format_version.to_string()),
             ("indexer_version", metadata.indexer_version.clone()),
             ("workspace_root", metadata.workspace_root.clone()),
+            ("workspace_name", metadata.workspace_name.clone()),
             ("extensions_csv", metadata.extensions_csv.clone()),
         ] {
             stmt.execute(params![key, value])?;
@@ -663,23 +671,27 @@ impl Database {
             .and_then(|value| value.parse::<u32>().ok());
         let indexer_version = values.get("indexer_version").cloned();
         let workspace_root = values.get("workspace_root").cloned();
+        let workspace_name = values.get("workspace_name").cloned();
         let extensions_csv = values.get("extensions_csv").cloned();
 
         match (
             format_version,
             indexer_version,
             workspace_root,
+            workspace_name,
             extensions_csv,
         ) {
             (
                 Some(format_version),
                 Some(indexer_version),
                 Some(workspace_root),
+                Some(workspace_name),
                 Some(extensions_csv),
             ) => Ok(Some(IndexMetadata {
                 format_version,
                 indexer_version,
                 workspace_root,
+                workspace_name,
                 extensions_csv,
             })),
             _ => Ok(None),
@@ -1423,13 +1435,14 @@ pub fn validate_existing_database(path: &Path) -> Result<(), String> {
     }
 }
 
-pub fn expected_index_metadata(workspace_root: &Path) -> IndexMetadata {
+pub fn expected_index_metadata(workspace_root: &Path, workspace_name: &str) -> IndexMetadata {
     let mut extensions: Vec<String> = crate::constants::configured_extensions().into_iter().collect();
     extensions.sort();
     IndexMetadata {
         format_version: INDEX_FORMAT_VERSION,
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         workspace_root: normalized_workspace_root(workspace_root),
+        workspace_name: workspace_name.trim().to_string(),
         extensions_csv: extensions.join(","),
     }
 }
@@ -2415,6 +2428,7 @@ mod tests {
             format_version: 1,
             indexer_version: "1.2.3".into(),
             workspace_root: "E:/Dev/project".into(),
+            workspace_name: "project".into(),
             extensions_csv: "cpp,h,hpp".into(),
         };
 
@@ -2433,6 +2447,7 @@ mod tests {
             format_version: 1,
             indexer_version: "1.2.3".into(),
             workspace_root: "E:/Dev/project".into(),
+            workspace_name: "project".into(),
             extensions_csv: "cpp,h,hpp".into(),
         };
 
@@ -2444,13 +2459,14 @@ mod tests {
         assert_eq!(healthy, None);
 
         let changed = IndexMetadata {
+            workspace_name: "project-renamed".into(),
             extensions_csv: "cpp,h,hpp,py".into(),
             ..expected.clone()
         };
         let mismatch = existing_database_metadata_issue(&db_path, &changed).unwrap();
         assert_eq!(
             mismatch,
-            Some("indexed extensions changed (db=cpp,h,hpp, current=cpp,h,hpp,py)".to_string())
+            Some("workspace name changed (db=project, current=project-renamed)".to_string())
         );
     }
 

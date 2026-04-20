@@ -64,6 +64,8 @@ a:hover { text-decoration: underline; }
   margin-top: 8px;
   font-size: 24px;
   line-height: 1.2;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .workspace-subtitle,
 .search-note {
@@ -71,6 +73,8 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .search-input {
   width: 100%;
@@ -341,10 +345,8 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
   <aside class="side-rail">
     <section class="panel side-panel">
       <div class="eyebrow">Workspace</div>
-      <div class="workspace-title">Choose Active Index</div>
-      <div class="workspace-subtitle">Select the workspace first. Every dashboard panel and symbol query follows this choice.</div>
-      <div class="control-label" style="margin-top: 16px;">Active Workspace</div>
-      <select id="workspaceSelect" class="search-input" style="margin-top: 8px;"></select>
+      <div class="workspace-title" id="workspaceName">Loading workspace...</div>
+      <div class="workspace-subtitle" id="workspaceSubtitle">Workspace metadata and DB health will appear here.</div>
     </section>
 
     <section class="panel side-panel">
@@ -367,7 +369,7 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
           <div class="eyebrow">Operations Console</div>
           <h1 class="hero-title">CodeAtlas Dashboard</h1>
           <p class="hero-subtitle">
-            Inspect index health, database metadata, and live MCP tool activity for the selected workspace.
+            Inspect index health, database metadata, and live MCP tool activity for the active workspace.
           </p>
           <div class="hero-meta" id="heroMeta">
             <span class="chip">Loading workspace...</span>
@@ -429,7 +431,7 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
         <div class="section-title">Symbol Explorer</div>
         <input type="text" id="searchInput" class="search-input" placeholder="Search symbols... (min 3 chars)" autofocus>
         <div class="search-note">
-          Search, symbol details, callers, callees, and call graph all operate against the active workspace selected on the left.
+          Search, symbol details, callers, callees, and call graph all operate against the active workspace shown on the left.
         </div>
       </section>
 
@@ -454,11 +456,9 @@ const API = window.location.origin;
 const sidebar = document.getElementById("sidebar");
 const main = document.getElementById("main");
 const searchInput = document.getElementById("searchInput");
-const workspaceSelect = document.getElementById("workspaceSelect");
 const searchStats = document.getElementById("searchStats");
 const tabButtons = Array.from(document.querySelectorAll(".tab-button"));
 const views = Array.from(document.querySelectorAll(".view"));
-let selectedWorkspaceId = "";
 let selectedSearchKey = "";
 
 let debounceTimer;
@@ -477,20 +477,9 @@ searchInput.addEventListener("input", () => {
   debounceTimer = setTimeout(() => doSearch(searchInput.value), 180);
 });
 
-workspaceSelect.addEventListener("change", () => {
-  selectedWorkspaceId = workspaceSelect.value;
-  selectedSearchKey = "";
-  loadOverview();
-  if (searchInput.value.length >= 3) {
-    doSearch(searchInput.value);
-  } else {
-    main.innerHTML = '<div class="empty">Select a symbol from search results to inspect callers, callees, and call graph details.</div>';
-  }
-});
-
 async function loadOverview() {
   try {
-    const res = await fetch(API + "/dashboard/api/overview" + withWorkspaceQuery());
+    const res = await fetch(API + "/dashboard/api/overview");
     const data = await res.json();
     renderOverview(data);
   } catch {
@@ -500,25 +489,18 @@ async function loadOverview() {
 
 function renderOverview(data) {
   const heroMeta = document.getElementById("heroMeta");
+  const workspaceName = document.getElementById("workspaceName");
+  const workspaceSubtitle = document.getElementById("workspaceSubtitle");
   const index = data.index || {};
   const workspace = data.workspace || {};
   const mcp = data.mcp || {};
+  const activeWorkspaceName = index.workspaceName || index.workspaceRoot || "Workspace";
 
-  if (Array.isArray(data.availableWorkspaces) && data.availableWorkspaces.length > 0) {
-    if (!selectedWorkspaceId) {
-      selectedWorkspaceId = data.selectedWorkspaceId || data.availableWorkspaces[0].id;
-    }
-    workspaceSelect.innerHTML = data.availableWorkspaces.map((workspaceInfo) =>
-      '<option value="' + escAttr(workspaceInfo.id) + '"' + (workspaceInfo.id === selectedWorkspaceId ? ' selected' : '') + '>' +
-      escHtml(workspaceInfo.label) +
-      '</option>'
-    ).join("");
-  } else {
-    workspaceSelect.innerHTML = '<option value="">Default workspace</option>';
-  }
+  workspaceName.textContent = activeWorkspaceName;
+  workspaceSubtitle.textContent = index.workspaceRoot || "Workspace path unavailable";
 
   heroMeta.innerHTML = [
-    chip(index.workspaceRoot || "Workspace root unavailable"),
+    chip(activeWorkspaceName),
     chip((index.backend || "unknown").toUpperCase() + " backend"),
     chip("Updated " + (index.updatedAt ? formatDateTime(index.updatedAt) : "unknown")),
     chip("Generated " + formatDateTime(data.generatedAt)),
@@ -533,6 +515,7 @@ function renderOverview(data) {
     { label: "Propagation", value: formatNumber(index.counts?.propagation), foot: "Flow and boundary propagation rows" },
     { label: "MCP Calls", value: formatNumber(mcp.totalToolCalls), foot: "Observed since runtime start" },
   ];
+
   statCards.forEach((card, idx) => {
     const spec = cardData[idx];
     card.innerHTML =
@@ -542,6 +525,7 @@ function renderOverview(data) {
   });
 
   document.getElementById("indexMeta").innerHTML = [
+    metaRow("Workspace Name", index.workspaceName || "-"),
     metaRow("Workspace", index.workspaceRoot || "-"),
     metaRow("Data Path", index.dataPath || "-"),
     metaRow("Format Version", index.formatVersion || "-"),
@@ -574,7 +558,7 @@ function renderOverview(data) {
   document.getElementById("toolTable").innerHTML = toolRows || '<tr><td colspan="4" class="hint">No MCP calls observed yet.</td></tr>';
 
   const recentRows = (mcp.recentCalls || []).map((call) =>
-    "<li><span class='key'>" + escHtml(call.toolName) + " • " + escHtml(call.ok ? "ok" : "error") + "</span><span class='value'>" + escHtml(formatMs(call.elapsedMs)) + " • " + escHtml(formatDateTime(call.timestamp)) + "</span></li>"
+    "<li><span class='key'>" + escHtml(call.toolName) + " · " + escHtml(call.ok ? "ok" : "error") + "</span><span class='value'>" + escHtml(formatMs(call.elapsedMs)) + " · " + escHtml(formatDateTime(call.timestamp)) + "</span></li>"
   ).join("");
   document.getElementById("recentCalls").innerHTML = recentRows || '<li><span class="key">No recent activity</span><span class="value"></span></li>';
 }
@@ -586,7 +570,7 @@ async function doSearch(query) {
     return;
   }
   try {
-    const res = await fetch(API + '/dashboard/api/search?q=' + encodeURIComponent(query) + '&limit=100' + withWorkspaceQuery('&'));
+    const res = await fetch(API + '/dashboard/api/search?q=' + encodeURIComponent(query) + '&limit=100');
     const data = await res.json();
     renderSearchResults(data);
   } catch {
@@ -595,7 +579,7 @@ async function doSearch(query) {
 }
 
 function renderSearchResults(data) {
-  searchStats.textContent = formatNumber(data.totalCount) + ' result(s)' + (data.truncated ? ' • truncated' : '');
+  searchStats.textContent = formatNumber(data.totalCount) + ' result(s)' + (data.truncated ? ' · truncated' : '');
   if (!data.results || data.results.length === 0) {
     sidebar.innerHTML = '<div class="empty">No matching symbols found.</div>';
     return;
@@ -620,7 +604,7 @@ async function loadSymbol(name, type, searchKey) {
 
 async function loadFunction(name) {
   try {
-    const res = await fetch(API + '/dashboard/api/function/' + encodeURIComponent(name) + withWorkspaceQuery());
+    const res = await fetch(API + '/dashboard/api/function/' + encodeURIComponent(name));
     if (!res.ok) {
       main.innerHTML = '<div class="empty">Symbol not found.</div>';
       return;
@@ -633,7 +617,7 @@ async function loadFunction(name) {
 
 async function loadClass(name) {
   try {
-    const res = await fetch(API + '/dashboard/api/class/' + encodeURIComponent(name) + withWorkspaceQuery());
+    const res = await fetch(API + '/dashboard/api/class/' + encodeURIComponent(name));
     if (!res.ok) {
       main.innerHTML = '<div class="empty">Symbol not found.</div>';
       return;
@@ -651,7 +635,7 @@ function renderFunction(data) {
   html += '<div class="detail-heading">Function / Method</div>';
   html += '<div class="detail-title"><span class="badge badge-' + escAttr(s.type) + '">' + escHtml(s.type) + '</span>' + escHtml(s.qualifiedName) + '</div>';
   html += '<div class="location">' + escHtml(s.filePath) + ':' + s.line + '-' + s.endLine + '</div>';
-  html += '<div class="hint" style="margin-top:8px;">Reliability: ' + escHtml(data.reliability?.level || 'unknown') + (data.coverageWarning ? ' • ' + escHtml(data.coverageWarning) : '') + '</div>';
+  html += '<div class="hint" style="margin-top:8px;">Reliability: ' + escHtml(data.reliability?.level || 'unknown') + (data.coverageWarning ? ' · ' + escHtml(data.coverageWarning) : '') + '</div>';
   if (s.signature) html += '<div class="signature">' + escHtml(s.signature) + '</div>';
   html += '</div>';
 
@@ -701,7 +685,7 @@ async function loadCallGraph(name) {
   const host = document.getElementById('callgraph');
   if (!host) return;
   try {
-    const res = await fetch(API + '/dashboard/api/callgraph/' + encodeURIComponent(name) + '?depth=3' + withWorkspaceQuery('&'));
+    const res = await fetch(API + '/dashboard/api/callgraph/' + encodeURIComponent(name) + '?depth=3');
     if (!res.ok) {
       host.innerHTML = '<div class="empty">No call graph available.</div>';
       return;
@@ -751,11 +735,6 @@ function syncActiveSearchResult() {
   items.forEach((item) => {
     item.classList.toggle("active", selectedSearchKey !== "" && item.getAttribute("data-search-key") === selectedSearchKey);
   });
-}
-
-function withWorkspaceQuery(prefix) {
-  const actualPrefix = prefix || '?';
-  return selectedWorkspaceId ? actualPrefix + 'workspace=' + encodeURIComponent(selectedWorkspaceId) : '';
 }
 
 function formatNumber(value) {

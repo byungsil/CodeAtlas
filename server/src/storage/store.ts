@@ -41,6 +41,7 @@ export interface IndexDetailsRecord {
   backend: "sqlite" | "json";
   dataPath: string;
   workspaceRoot?: string;
+  workspaceName?: string;
   formatVersion?: string;
   indexerVersion?: string;
   extensionsCsv?: string;

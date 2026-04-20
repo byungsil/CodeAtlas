@@ -365,6 +365,7 @@ export class SqliteStore {
       backend: "sqlite",
       dataPath: this.sourcePath,
       ...(metadata.workspace_root ? { workspaceRoot: normalizeDisplayPath(metadata.workspace_root) } : {}),
+      ...(metadata.workspace_name ? { workspaceName: metadata.workspace_name } : {}),
       ...(metadata.format_version ? { formatVersion: metadata.format_version } : {}),
       ...(metadata.indexer_version ? { indexerVersion: metadata.indexer_version } : {}),
       ...(metadata.extensions_csv ? { extensionsCsv: metadata.extensions_csv } : {}),

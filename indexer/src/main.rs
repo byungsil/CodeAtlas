@@ -82,6 +82,7 @@ struct IncrementalStageTimings {
 #[derive(Debug, Clone)]
 struct CliOptions {
     workspace_root: PathBuf,
+    workspace_name: Option<String>,
     watch_mode: bool,
     requested_full_mode: bool,
     json_mode: bool,
@@ -107,6 +108,7 @@ fn main() {
     };
     let CliOptions {
         workspace_root,
+        workspace_name,
         watch_mode,
         requested_full_mode,
         json_mode,
@@ -138,17 +140,25 @@ fn main() {
         Err(error) => eprintln!("Warning: {}", error),
     }
 
+    let data_dir = workspace_root.join(DATA_DIR_NAME);
+    fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    mark_codeatlas_artifacts(&data_dir, None);
+    let current_active_db_path = storage::resolve_active_database_path(&data_dir)
+        .unwrap_or(None);
+    let resolved_workspace_name = resolve_workspace_name(
+        &workspace_root,
+        workspace_name.as_deref(),
+        current_active_db_path.as_deref(),
+    );
+    println!("Workspace name: {}", resolved_workspace_name);
+
     if watch_mode {
-        if let Err(e) = watcher::watch(&workspace_root, verbose_mode) {
+        if let Err(e) = watcher::watch(&workspace_root, &resolved_workspace_name, verbose_mode) {
             eprintln!("Watch error: {}", e);
             std::process::exit(1);
         }
         return;
     }
-
-    let data_dir = workspace_root.join(DATA_DIR_NAME);
-    fs::create_dir_all(&data_dir).expect("Failed to create data directory");
-    mark_codeatlas_artifacts(&data_dir, None);
 
     let build_metadata = match build_metadata::load_build_metadata(&workspace_root) {
         Ok(metadata) => metadata,
@@ -157,7 +167,8 @@ fn main() {
             None
         }
     };
-    let expected_index_metadata = storage::expected_index_metadata(&workspace_root);
+    let expected_index_metadata =
+        storage::expected_index_metadata(&workspace_root, &resolved_workspace_name);
     if let Some(metadata) = &build_metadata {
         println!(
             "Build metadata: {} translation unit(s), {} workspace include dir(s)",
@@ -167,8 +178,6 @@ fn main() {
     }
     let mut effective_full_mode =
         determine_effective_full_mode(&data_dir, requested_full_mode, &expected_index_metadata);
-    let current_active_db_path = storage::resolve_active_database_path(&data_dir)
-        .unwrap_or(None);
     let staging_db_path = make_staging_db_path(&data_dir, "main");
     if let Err(err) = prepare_staging_db(current_active_db_path.as_deref(), &staging_db_path, effective_full_mode) {
         if !effective_full_mode {
@@ -467,11 +476,11 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  codeatlas-indexer <workspace-root>");
-    println!("  codeatlas-indexer <workspace-root> --full");
+    println!("  codeatlas-indexer <workspace-root> --full --workspace-name <name>");
     println!("  codeatlas-indexer <workspace-root> --full --json");
-    println!("  codeatlas-indexer <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000");
+    println!("  codeatlas-indexer <workspace-root> --workspace-name opencv --extensions cpp,h,hpp --parse-timeout-ms 60000");
     println!("  codeatlas-indexer watch <workspace-root>");
-    println!("  codeatlas-indexer watch <workspace-root> --extensions cpp,h,hpp --parse-timeout-ms 60000");
+    println!("  codeatlas-indexer watch <workspace-root> --workspace-name opencv --extensions cpp,h,hpp --parse-timeout-ms 60000");
     println!("  codeatlas-indexer --help");
     println!();
     println!("Modes:");
@@ -482,6 +491,7 @@ fn print_help() {
     println!("Options:");
     println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");
     println!("  --json       Write JSON snapshots alongside the SQLite database");
+    println!("  --workspace-name  Friendly workspace name stored in DB metadata and shown in the dashboard");
     println!("  --extensions Comma-separated extension allowlist, e.g. cpp,h,hpp,py");
     println!("  --parse-timeout-ms  Per-file C/C++ parse timeout in milliseconds");
     println!("               Applies to watch mode too.");
@@ -521,6 +531,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
     let mut json_mode = false;
     let mut verbose_mode = false;
     let mut workspace_root: Option<PathBuf> = None;
+    let mut workspace_name: Option<String> = None;
     let mut index_extensions: Option<Vec<String>> = None;
     let mut parse_timeout_ms: Option<u64> = None;
 
@@ -536,6 +547,13 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
             "--full" => requested_full_mode = true,
             "--json" => json_mode = true,
             "--verbose" => verbose_mode = true,
+            "--workspace-name" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "Missing value for --workspace-name".to_string())?;
+                workspace_name = Some(parse_workspace_name_arg(value)?);
+            }
             "--extensions" => {
                 index += 1;
                 let value = args
@@ -549,6 +567,9 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
                     .get(index)
                     .ok_or_else(|| "Missing value for --parse-timeout-ms".to_string())?;
                 parse_timeout_ms = Some(parse_timeout_ms_arg(value)?);
+            }
+            _ if let Some(value) = arg.strip_prefix("--workspace-name=") => {
+                workspace_name = Some(parse_workspace_name_arg(value)?);
             }
             _ if let Some(value) = arg.strip_prefix("--extensions=") => {
                 index_extensions = Some(parse_cli_extensions(value)?);
@@ -575,6 +596,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
 
     Ok(CliOptions {
         workspace_root,
+        workspace_name,
         watch_mode,
         requested_full_mode,
         json_mode,
@@ -600,6 +622,46 @@ fn parse_cli_extensions(raw: &str) -> Result<Vec<String>, String> {
 fn parse_timeout_ms_arg(raw: &str) -> Result<u64, String> {
     raw.parse::<u64>()
         .map_err(|_| format!("Invalid --parse-timeout-ms value: {}", raw))
+}
+
+fn parse_workspace_name_arg(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Invalid --workspace-name value: name cannot be empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn default_workspace_name(workspace_root: &Path) -> String {
+    workspace_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("workspace")
+        .to_string()
+}
+
+fn resolve_workspace_name(
+    workspace_root: &Path,
+    cli_workspace_name: Option<&str>,
+    active_db_path: Option<&Path>,
+) -> String {
+    if let Some(name) = cli_workspace_name {
+        return name.trim().to_string();
+    }
+
+    if let Some(db_path) = active_db_path {
+        if let Ok(db) = storage::Database::open(db_path) {
+            if let Ok(Some(metadata)) = db.read_index_metadata() {
+                if !metadata.workspace_name.trim().is_empty() {
+                    return metadata.workspace_name;
+                }
+            }
+        }
+    }
+
+    default_workspace_name(workspace_root)
 }
 
 fn prepare_staging_db(source_db_path: Option<&Path>, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
@@ -1635,6 +1697,7 @@ mod tests {
             "codeatlas-indexer".to_string(),
             "watch".to_string(),
             "workspace".to_string(),
+            "--workspace-name=OpenCV".to_string(),
             "--extensions=cpp,h,hpp".to_string(),
             "--parse-timeout-ms".to_string(),
             "60000".to_string(),
@@ -1646,10 +1709,42 @@ mod tests {
         assert!(parsed.watch_mode);
         assert!(parsed.verbose_mode);
         assert_eq!(parsed.workspace_root, PathBuf::from("workspace"));
+        assert_eq!(parsed.workspace_name.as_deref(), Some("OpenCV"));
         assert_eq!(parsed.parse_timeout_ms, Some(60_000));
         assert_eq!(
             parsed.index_extensions,
             Some(vec!["cpp".into(), "h".into(), "hpp".into()])
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_name_prefers_cli_then_metadata_then_directory_name() {
+        let dir = tempdir().unwrap();
+        let workspace_root = dir.path().join("opencv");
+        fs::create_dir_all(&workspace_root).unwrap();
+        let data_dir = workspace_root.join(DATA_DIR_NAME);
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("index.db");
+        let db = storage::Database::open(&db_path).unwrap();
+        db.write_index_metadata(&storage::IndexMetadata {
+            format_version: 1,
+            indexer_version: "1.0.0".into(),
+            workspace_root: workspace_root.to_string_lossy().replace('\\', "/"),
+            workspace_name: "Stored OpenCV".into(),
+            extensions_csv: "cpp,h,hpp".into(),
+        }).unwrap();
+
+        assert_eq!(
+            resolve_workspace_name(&workspace_root, Some("CLI OpenCV"), Some(&db_path)),
+            "CLI OpenCV"
+        );
+        assert_eq!(
+            resolve_workspace_name(&workspace_root, None, Some(&db_path)),
+            "Stored OpenCV"
+        );
+        assert_eq!(
+            resolve_workspace_name(&workspace_root, None, None),
+            "opencv"
         );
     }
 

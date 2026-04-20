@@ -25,7 +25,7 @@ Folder layout
 Quick start
 -----------
 1. Index a workspace
-   index-workspace.cmd E:\Dev\your-project --full
+   index-workspace.cmd E:\Dev\your-project --full --workspace-name your-project
 
 2. Install Node.js and server runtime dependencies
    setup-prereqs.cmd
@@ -41,20 +41,18 @@ setup-prereqs.cmd
 
 Advanced / optional manual commands
 -----------------------------------
-- start-dashboard.cmd <workspace-root> [extra-data-dirs]
+- start-dashboard.cmd <workspace-root>
 - watch-workspace.cmd <workspace-root> [additional watcher args...]
 - start-mcp.cmd <workspace-root>
 
 Notes
 -----
 - The dashboard and MCP server resolve the active SQLite generation from <workspace-root>\.codeatlas\current-db.json
+- Use one dashboard process per workspace. The dashboard shows the stored workspace name from DB metadata.
 - If node is not installed yet, run setup-prereqs.cmd first.
 - For normal agent use, start MCP from your client configuration rather than double-clicking start-mcp.cmd.
 - The MCP server starts the watcher by default. Set CODEATLAS_WATCHER=false only if you intentionally want static reads.
 - start-dashboard.cmd is optional and mainly useful when you want the web dashboard without launching it from MCP runtime options.
 - watch-workspace.cmd is only for cases where you intentionally want a standalone watcher outside MCP operation.
-- start-dashboard.cmd accepts an optional second argument for additional data dirs.
-  Example:
-  start-dashboard.cmd E:\Dev\opencv "E:\Dev\llvm-project-llvmorg-18.1.8\.codeatlas"
 - If you want a different port, set CODEATLAS_PORT before starting:
   set CODEATLAS_PORT=3100

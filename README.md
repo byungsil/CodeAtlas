@@ -40,18 +40,19 @@ npm install
 
 ```bash
 # full rebuild
-./indexer/target/release/codeatlas-indexer <workspace-root> --full
+./indexer/target/release/codeatlas-indexer <workspace-root> --full --workspace-name <display-name>
 
 # incremental update
 ./indexer/target/release/codeatlas-indexer <workspace-root>
 
 # watch mode
-./indexer/target/release/codeatlas-indexer watch <workspace-root>
+./indexer/target/release/codeatlas-indexer watch <workspace-root> --workspace-name <display-name>
 ```
 
 Common optional flags:
 
 ```bash
+./indexer/target/release/codeatlas-indexer <workspace-root> --workspace-name opencv
 ./indexer/target/release/codeatlas-indexer <workspace-root> --extensions cpp,h,hpp,py
 ./indexer/target/release/codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
 ./indexer/target/release/codeatlas-indexer <workspace-root> --verbose
@@ -70,7 +71,7 @@ Dashboard:
 http://localhost:3000/dashboard/
 ```
 
-The server and MCP runtime resolve the active SQLite generation through `current-db.json`. Legacy `index.db` remains as a compatibility fallback for older workspaces.
+Run one dashboard instance per workspace/data dir. The dashboard shows the stored workspace name from DB metadata and resolves the active SQLite generation through `current-db.json`. Legacy `index.db` remains as a compatibility fallback for older workspaces.
 
 ## MCP Setup
 
@@ -112,12 +113,13 @@ If `CODEATLAS_WATCHER=true`, the MCP server launches the Rust watcher automatica
 
 ```text
 codeatlas-indexer <workspace-root>
-codeatlas-indexer <workspace-root> --full
+codeatlas-indexer <workspace-root> --full --workspace-name <display-name>
 codeatlas-indexer <workspace-root> --json
 codeatlas-indexer <workspace-root> --verbose
+codeatlas-indexer <workspace-root> --workspace-name <display-name>
 codeatlas-indexer <workspace-root> --extensions cpp,h,hpp
 codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
-codeatlas-indexer watch <workspace-root>
+codeatlas-indexer watch <workspace-root> --workspace-name <display-name>
 ```
 
 Supported extensions by default:

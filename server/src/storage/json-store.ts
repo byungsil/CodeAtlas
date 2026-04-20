@@ -267,6 +267,7 @@ export class JsonStore {
       backend: "json",
       dataPath: this.dataDir,
       workspaceRoot: path.resolve(this.dataDir, ".."),
+      workspaceName: path.basename(path.resolve(this.dataDir, "..")) || "workspace",
       ...(safeDirStat(this.dataDir) ? {
         databaseSizeBytes: directorySizeBytes(this.dataDir),
         updatedAt: safeDirStat(this.dataDir)?.mtime.toISOString(),

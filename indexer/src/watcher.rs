@@ -266,7 +266,7 @@ fn strip_editor_temp_suffix(name: &str) -> &str {
     name
 }
 
-pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
+pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Result<(), String> {
     let workspace_root = workspace_root
         .canonicalize()
         .map_err(|e| format!("Failed to resolve workspace root: {}", e))?;
@@ -277,7 +277,7 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
-    let expected_index_metadata = storage::expected_index_metadata(&workspace_root);
+    let expected_index_metadata = storage::expected_index_metadata(&workspace_root, workspace_name);
 
     let ignore_rules = IgnoreRules::load(&workspace_root);
 
@@ -291,7 +291,7 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
                 "Existing index is unhealthy (active DB resolution failed: {}). Rebuilding from scratch...",
                 issue
             );
-            run_full_index(&workspace_root, &data_dir, verbose)?;
+            run_full_index(&workspace_root, workspace_name, &data_dir, verbose)?;
             storage::resolve_active_database_path(&data_dir)?
         }
     };
@@ -301,26 +301,26 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
             Ok(()) => {
                 if let Some(reason) = storage::existing_database_metadata_issue(db_path, &expected_index_metadata)? {
                     println!("Existing index is outdated ({}). Rebuilding from scratch...", reason);
-                    run_full_index(&workspace_root, &data_dir, verbose)?;
+                    run_full_index(&workspace_root, workspace_name, &data_dir, verbose)?;
                 } else {
                     let db = open_database_with_retry(db_path, "watch open sqlite database")?;
                     if db.has_data() {
                         println!("Existing index found, running incremental catch-up...");
-                        run_incremental_index(&workspace_root, &data_dir, verbose, None)?;
+                        run_incremental_index(&workspace_root, workspace_name, &data_dir, verbose, None)?;
                     } else {
                         println!("No existing index, running full initial index...");
-                        run_full_index(&workspace_root, &data_dir, verbose)?;
+                        run_full_index(&workspace_root, workspace_name, &data_dir, verbose)?;
                     }
                 }
             }
             Err(issue) => {
                 println!("Existing index is unhealthy ({}). Rebuilding from scratch...", issue);
-                run_full_index(&workspace_root, &data_dir, verbose)?;
+                run_full_index(&workspace_root, workspace_name, &data_dir, verbose)?;
             }
         },
         None => {
             println!("No existing index, running full initial index...");
-            run_full_index(&workspace_root, &data_dir, verbose)?;
+            run_full_index(&workspace_root, workspace_name, &data_dir, verbose)?;
         }
     }
 
@@ -384,9 +384,9 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
                 if let Some(reason) = &burst_decision.reason {
                     println!("  Escalation: {}, rebuilding from scratch", reason);
                 }
-                run_full_index(&workspace_root, &data_dir, verbose)
+                run_full_index(&workspace_root, workspace_name, &data_dir, verbose)
             } else {
-                run_incremental_index(&workspace_root, &data_dir, verbose, Some(&changed))
+                run_incremental_index(&workspace_root, workspace_name, &data_dir, verbose, Some(&changed))
             };
 
             if let Err(e) = result {
@@ -442,7 +442,12 @@ fn drain_queued_events(
     }
 }
 
-fn run_full_index(workspace_root: &Path, data_dir: &Path, verbose: bool) -> Result<(), String> {
+fn run_full_index(
+    workspace_root: &Path,
+    workspace_name: &str,
+    data_dir: &Path,
+    verbose: bool,
+) -> Result<(), String> {
     let build_metadata = match build_metadata::load_build_metadata(workspace_root) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -450,7 +455,7 @@ fn run_full_index(workspace_root: &Path, data_dir: &Path, verbose: bool) -> Resu
             None
         }
     };
-    let expected_index_metadata = storage::expected_index_metadata(workspace_root);
+    let expected_index_metadata = storage::expected_index_metadata(workspace_root, workspace_name);
     let staging_db_path = make_watch_staging_db_path(data_dir, "full");
     if staging_db_path.exists() {
         retry_io("watch staging cleanup", || fs::remove_file(&staging_db_path))
@@ -655,6 +660,7 @@ fn merge_callable_summaries(
 
 fn run_incremental_index(
     workspace_root: &Path,
+    workspace_name: &str,
     data_dir: &Path,
     verbose: bool,
     changed_paths: Option<&[PathBuf]>,
@@ -666,7 +672,7 @@ fn run_incremental_index(
             None
         }
     };
-    let expected_index_metadata = storage::expected_index_metadata(workspace_root);
+    let expected_index_metadata = storage::expected_index_metadata(workspace_root, workspace_name);
     let db_path = storage::resolve_active_database_path(data_dir)?
         .ok_or_else(|| "no active database available for watch incremental update".to_string())?;
     let db = open_database_with_retry(&db_path, "watch open incremental sqlite database")?;
@@ -752,7 +758,7 @@ fn run_incremental_index(
 
     if escalation.level == incremental::EscalationLevel::FullRebuild {
         println!("  Escalation action: running full rebuild");
-        return run_full_index(workspace_root, data_dir, verbose);
+        return run_full_index(workspace_root, workspace_name, data_dir, verbose);
     }
 
     let start = Instant::now();
