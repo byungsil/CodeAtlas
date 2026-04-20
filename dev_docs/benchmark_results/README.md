@@ -8,7 +8,7 @@ Recommended usage:
 
 - keep one or more checked-in baseline files for representative datasets
 - write ad-hoc local comparison runs here while performance work is active
-- summarize conclusions in `dev_docs/BenchmarkPlan.md`
+- summarize conclusions in the relevant milestone or benchmark evaluation docs under `dev_docs/`
 
 Current intended baseline target:
 

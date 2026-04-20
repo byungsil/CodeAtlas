@@ -32,7 +32,7 @@ Positioning note:
 
 Scope note:
 
-- this document is a narrowed application of `dev_docs/TODO_UserSatisfactionImprovements.md`
+- this document captures the narrowed MS12 scope for query usability and coverage signaling improvements
 - it intentionally excludes ideas that are too speculative, too transport-specific, or too invasive for the next milestone
 
 ---
