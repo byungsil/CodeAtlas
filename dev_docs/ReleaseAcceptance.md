@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the release gate for CodeAtlas after MS13.
+This document defines the release gate for CodeAtlas after MS14.
 
 It answers one question:
 
@@ -30,8 +30,8 @@ Meaning:
 
 Current assessment:
 
-- CodeAtlas after MS13 meets **Level A**
-- CodeAtlas does **not yet fully meet Level B**
+- CodeAtlas after MS14 meets **Level A**
+- CodeAtlas is closer to **Level B**, but does **not yet fully meet Level B**
 
 ---
 
@@ -67,6 +67,7 @@ Evidence:
 
 - MS4 incremental correctness work
 - MS13 burst resilience work
+- MS14 versioned database publishing work
 - final watcher smoke on real workspaces
 
 ### 3. Query Surface Usability
@@ -117,6 +118,7 @@ Evidence:
 - OpenCV and LLVM validation
 - memory-pressure improvements from earlier milestones
 - watcher burst resilience improvements in MS13
+- active-reader-safe versioned publishing in MS14
 
 ### 6. Dashboard And Operational Visibility
 
@@ -163,18 +165,18 @@ Requirement:
 
 Current state:
 
-- partial
+- pass
 
-Why partial:
+Why pass:
 
-- DB contents remain valid
-- reader fallback behavior is stronger than before
-- but publish can still fail when another process holds the final DB path during replacement
+- versioned database publishing removes dependence on replacing the live DB path
+- active-reader publish was validated on `E:\Dev\opencv`
+- fresh readers also resolved the new generation correctly after publish
 
 Release impact:
 
 - acceptable for Level A
-- not acceptable for Level B without further hardening
+- no longer a Level B blocker on its own
 
 ### 9. Cross-Platform Release Completeness
 
@@ -208,7 +210,7 @@ Current state:
 
 Why partial:
 
-- current validation is strong for rebuild, watcher smoke, and burst handling
+- current validation is strong for rebuild, watcher smoke, burst handling, and active-reader publish
 - soak-style long-session validation is still limited
 
 Release impact:
@@ -235,7 +237,6 @@ Not yet accepted.
 
 Main blockers:
 
-- publish robustness when active readers hold the DB file
 - incomplete cross-platform packaging story
 - limited soak-style operational validation
 
@@ -248,8 +249,8 @@ Current recommendation:
 - CodeAtlas can be treated as ready for controlled release / early-user release
 - do not yet describe it as fully polished general release software without caveats
 
-Best next work after MS13:
+Best next work after MS14:
 
-1. harden DB publish behavior under active readers
-2. run longer operational soak validation
-3. decide whether non-Windows packaging is required for the next release bar
+1. run longer operational soak validation
+2. decide whether non-Windows packaging is required for the next release bar
+3. continue reducing first-run and operating-environment friction

@@ -7,7 +7,8 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
 ## What You Get
 
 - Rust indexer for full, incremental, and watch-mode indexing
-- SQLite database at `<workspace-root>/.codeatlas/index.db`
+- SQLite generations at `<workspace-root>/.codeatlas/index-<timestamp>.db`
+- Active DB pointer at `<workspace-root>/.codeatlas/current-db.json`
 - Node.js server for MCP tools, HTTP API, and dashboard
 - Support for C/C++, Lua, Python, TypeScript, and Rust source files
 
@@ -68,6 +69,8 @@ Dashboard:
 ```text
 http://localhost:3000/dashboard/
 ```
+
+The server and MCP runtime resolve the active SQLite generation through `current-db.json`. Legacy `index.db` remains as a compatibility fallback for older workspaces.
 
 ## MCP Setup
 

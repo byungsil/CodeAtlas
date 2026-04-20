@@ -8,12 +8,12 @@ import {
   CALLERS_DEFAULT_LIMIT, CALLERS_MAX_LIMIT,
   CALLGRAPH_DEFAULT_DEPTH, CALLGRAPH_MAX_DEPTH,
   CALLGRAPH_DEFAULT_NODE_CAP, CALLGRAPH_MAX_NODE_CAP,
-  DATA_DIR_NAME, DB_FILENAME,
+  DATA_DIR_NAME,
 } from "./constants";
 import { Store } from "./storage/store";
 import { MetadataFilters } from "./storage/store";
 import { SourceLanguage } from "./models/symbol";
-import { SqliteStore } from "./storage/sqlite-store";
+import { resolveActiveDatabasePath, SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
 import {
   BaseMethodsResponse,
@@ -79,8 +79,8 @@ import {
 export const DEFAULT_DATA_DIR = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
 
 export function openStore(dataDir: string): Store {
-  const dbPath = path.join(dataDir, DB_FILENAME);
-  if (fs.existsSync(dbPath)) {
+  const dbPath = resolveActiveDatabasePath(dataDir);
+  if (dbPath && fs.existsSync(dbPath)) {
     return new SqliteStore(dbPath);
   }
   return new JsonStore(dataDir);

@@ -133,7 +133,8 @@ index-workspace.cmd E:\Dev\CodeAtlas\samples\ambiguity --full
 
 3. Confirm that:
 
-- `<workspace>\.codeatlas\index.db` is created
+- `<workspace>\.codeatlas\current-db.json` is created
+- `<workspace>\.codeatlas\index-<timestamp>.db` is created
 - indexing completes successfully
 
 4. Start the dashboard manually if needed:

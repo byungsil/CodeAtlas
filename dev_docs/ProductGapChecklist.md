@@ -75,32 +75,12 @@ Why it matters:
 
 - the current release story is strong for Windows but not yet broad enough for a general multi-platform product claim
 
-### 3. Watcher Publish Robustness Under External Readers
+### 3. Long-Running Operational Confidence
 
 Current status:
 
-- watcher burst handling and incremental behavior improved in MS13
-- DB integrity remains good after real-project rebuilds
-
-Remaining gaps:
-
-- publish can still fail if another local process holds the target DB file during final replacement
-- the product currently relies on stopping local readers or retrying later rather than using a more graceful publish protocol
-
-Priority:
-
-- high
-
-Why it matters:
-
-- this is one of the remaining operational sharp edges in real local usage
-
-### 4. Long-Running Operational Confidence
-
-Current status:
-
-- large workspace rebuilds and watcher smoke tests have been validated
-- dashboard runtime stats exist
+- large workspace rebuilds, watcher smoke, and active-reader publish validation have all passed
+- versioned DB publishing and active pointer resolution were completed in MS14
 
 Remaining gaps:
 
@@ -115,7 +95,7 @@ Why it matters:
 
 - current validation is strong, but long-running operational confidence is still lighter than a mature product would ideally have
 
-### 5. Multi-Language Depth Consistency
+### 4. Multi-Language Depth Consistency
 
 Current status:
 
@@ -133,9 +113,9 @@ Priority:
 
 Why it matters:
 
-- current messaging should stay accurate about “supported” versus “equally feature-complete”
+- current messaging should stay accurate about "supported" versus "equally feature-complete"
 
-### 6. Product Surface Consolidation
+### 5. Product Surface Consolidation
 
 Current status:
 
@@ -155,16 +135,17 @@ Why it matters:
 
 - this is less about correctness and more about reducing user confusion
 
-### 7. Final Release Governance
+### 6. Final Release Governance
 
 Current status:
 
 - milestones and validation evidence exist
+- release acceptance criteria now exist as a dedicated document
 
 Remaining gaps:
 
-- no single release gate document previously stated what must be true before calling the product release-ready
-- acceptance has been proven through milestone progress rather than one consolidated release standard
+- release decisions are still driven more by milestone completion than by a routine release checklist
+- the current acceptance bar is documented, but not yet institutionalized into a repeated release process
 
 Priority:
 
@@ -172,19 +153,18 @@ Priority:
 
 Why it matters:
 
-- release decisions should be driven by one explicit acceptance contract
+- release decisions should be driven by one explicit acceptance contract and a repeatable habit around it
 
 ---
 
 ## Suggested Priority Order
 
-1. watcher publish robustness under external readers
-2. final release governance
-3. long-running operational confidence
-4. cross-platform release story
-5. multi-language depth consistency
-6. installation and first-run UX
-7. product surface consolidation
+1. final release governance
+2. long-running operational confidence
+3. cross-platform release story
+4. multi-language depth consistency
+5. installation and first-run UX
+6. product surface consolidation
 
 ---
 
@@ -199,6 +179,7 @@ These areas are no longer major product gaps:
 - dashboard observability
 - large-project indexing capability
 - burst-aware watcher behavior
+- active-reader-safe versioned DB publishing
 - Windows packaging basics
 
 ---
@@ -207,12 +188,12 @@ These areas are no longer major product gaps:
 
 If the question is:
 
-- “Is CodeAtlas a real usable product already?”
+- "Is CodeAtlas a real usable product already?"
   - yes
 
-- “Is every product-quality gap fully closed?”
+- "Is every product-quality gap fully closed?"
   - no
 
-- “What still looks most release-critical?”
-  - graceful watcher publish under active readers
-  - a single explicit release acceptance contract
+- "What still looks most release-critical?"
+  - a single explicit release acceptance contract in day-to-day use
+  - stronger long-run operational proof

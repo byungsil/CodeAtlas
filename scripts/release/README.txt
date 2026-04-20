@@ -47,7 +47,7 @@ Advanced / optional manual commands
 
 Notes
 -----
-- The dashboard and MCP server read SQLite from <workspace-root>\.codeatlas\index.db
+- The dashboard and MCP server resolve the active SQLite generation from <workspace-root>\.codeatlas\current-db.json
 - If node is not installed yet, run setup-prereqs.cmd first.
 - For normal agent use, start MCP from your client configuration rather than double-clicking start-mcp.cmd.
 - The MCP server starts the watcher by default. Set CODEATLAS_WATCHER=false only if you intentionally want static reads.

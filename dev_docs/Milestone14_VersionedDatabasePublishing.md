@@ -2,7 +2,7 @@
 
 Status:
 
-- Planned
+- Completed
 
 ## 1. Objective
 
@@ -296,3 +296,38 @@ MS14 can be considered complete when all of the following are true:
 - old readers remain usable during publish
 - generation cleanup is bounded and safe
 - the original active-reader publish failure is resolved in real-workspace validation
+
+## 8. Completion Note
+
+MS14 is complete.
+
+Implemented outcomes:
+
+- active DB selection now uses `.codeatlas/current-db.json`
+- full rebuild publish writes immutable versioned files such as `index-<timestamp>.db`
+- legacy `index.db` remains as a backward-compatibility fallback, but active publish no longer depends on replacing it
+- server and MCP now resolve the active SQLite generation through the pointer contract
+- generation cleanup keeps the active generation, the previous active generation, and one extra recent generation
+
+Validation summary:
+
+- indexer full test suite: `175/175` passed
+- server full test suite: `144/144` passed
+- server TypeScript build: passed
+- real workspace full rebuild:
+  - `E:\Dev\opencv`
+  - `E:\Dev\llvm-project-llvmorg-18.1.8`
+- active-reader publish validation:
+  - `opencv` dashboard held the previous generation open
+  - a new full rebuild published successfully
+  - `current-db.json` moved from the old generation to the new one
+  - the existing dashboard reader continued serving `200` responses
+  - a fresh dashboard reader opened the new generation successfully
+- fresh dashboard smoke also passed for `llvm`
+- pointer-based integrity checks on active generations:
+  - `opencv`: `ok`
+  - `llvm`: `ok`
+
+Acceptance result:
+
+- the previous Windows failure mode that depended on replacing the live `index.db` was eliminated for the validated active-reader scenario

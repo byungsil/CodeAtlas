@@ -6,6 +6,7 @@ pub const EXTENSIONS: &[&str] = &[
 pub const INDEX_EXTENSIONS_ENV: &str = "CODEATLAS_INDEX_EXTENSIONS";
 pub const DATA_DIR_NAME: &str = ".codeatlas";
 pub const DB_FILENAME: &str = "index.db";
+pub const ACTIVE_DB_POINTER_FILENAME: &str = "current-db.json";
 
 pub fn configured_extensions() -> HashSet<String> {
     match std::env::var(INDEX_EXTENSIONS_ENV) {

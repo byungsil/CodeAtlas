@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::Path;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
+use serde::{Deserialize, Serialize};
 use crate::models::{
     Call, CallableFlowSummary, FileRecord, NormalizedReference, PropagationAnchorKind,
     PropagationEvent, PropagationKind, RawExtractionConfidence, RawCallKind, RawCallSite,
@@ -9,6 +12,7 @@ use crate::models::{
 };
 #[cfg(test)]
 use crate::models::InheritanceEdge;
+use crate::constants::{ACTIVE_DB_POINTER_FILENAME, DB_FILENAME};
 use crate::resolver;
 
 const DB_SCHEMA_VERSION: i64 = 1;
@@ -189,6 +193,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(id, name, qualified_na
 
 pub struct Database {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveDbPointer {
+    pub active_db_filename: String,
+    pub published_at: String,
+    pub format_version: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1232,6 +1243,167 @@ impl Database {
     pub fn rollback(&self) -> SqlResult<()> {
         self.conn.execute_batch("ROLLBACK;")
     }
+}
+
+pub fn active_db_pointer_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(ACTIVE_DB_POINTER_FILENAME)
+}
+
+pub fn legacy_db_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(DB_FILENAME)
+}
+
+pub fn create_versioned_db_generation_filename() -> String {
+    format!(
+        "index-{}.db",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ")
+    )
+}
+
+pub fn current_index_format_version() -> u32 {
+    INDEX_FORMAT_VERSION
+}
+
+pub fn write_active_db_pointer(data_dir: &Path, pointer: &ActiveDbPointer) -> io::Result<()> {
+    let pointer_path = active_db_pointer_path(data_dir);
+    let temp_path = data_dir.join(format!("{}.tmp", ACTIVE_DB_POINTER_FILENAME));
+    let payload = serde_json::to_vec_pretty(pointer)
+        .map_err(|err| io::Error::other(format!("serialize active db pointer failed: {}", err)))?;
+    fs::write(&temp_path, payload)?;
+    if pointer_path.exists() {
+        fs::remove_file(&pointer_path)?;
+    }
+    fs::rename(&temp_path, &pointer_path)?;
+    Ok(())
+}
+
+pub fn read_active_db_pointer(data_dir: &Path) -> Result<Option<ActiveDbPointer>, String> {
+    let pointer_path = active_db_pointer_path(data_dir);
+    if !pointer_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&pointer_path)
+        .map_err(|err| format!("failed to read active db pointer: {}", err))?;
+    let pointer: ActiveDbPointer = serde_json::from_str(&raw)
+        .map_err(|err| format!("failed to parse active db pointer: {}", err))?;
+    validate_active_db_filename(&pointer.active_db_filename)?;
+    Ok(Some(pointer))
+}
+
+pub fn resolve_active_database_path(data_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if let Some(pointer) = read_active_db_pointer(data_dir)? {
+        let resolved = data_dir.join(&pointer.active_db_filename);
+        if resolved.exists() {
+            return Ok(Some(resolved));
+        }
+        return Err(format!(
+            "active db pointer target is missing: {}",
+            resolved.display()
+        ));
+    }
+
+    let legacy_path = legacy_db_path(data_dir);
+    if legacy_path.exists() {
+        return Ok(Some(legacy_path));
+    }
+
+    Ok(None)
+}
+
+pub fn cleanup_inactive_generations(
+    data_dir: &Path,
+    previous_active_filename: Option<&str>,
+    extra_recent_to_keep: usize,
+) -> io::Result<Vec<String>> {
+    let active_filename = read_active_db_pointer(data_dir)
+        .map_err(io::Error::other)?
+        .map(|pointer| pointer.active_db_filename);
+    let mut generation_files = list_versioned_db_generations(data_dir)?;
+    generation_files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    let mut keep = HashSet::new();
+    if let Some(active_filename) = active_filename {
+        keep.insert(active_filename);
+    }
+    if let Some(previous_active_filename) = previous_active_filename {
+        keep.insert(previous_active_filename.to_string());
+    }
+    for path in &generation_files {
+        if keep.len() >= extra_recent_to_keep + 2 {
+            break;
+        }
+        if let Some(filename) = path.file_name().and_then(|value| value.to_str()) {
+            keep.insert(filename.to_string());
+        }
+    }
+
+    let mut removed = Vec::new();
+    for generation_path in generation_files {
+        let Some(filename) = generation_path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if keep.contains(filename) {
+            continue;
+        }
+        if delete_database_family(&generation_path).is_ok() {
+            removed.push(filename.to_string());
+        }
+    }
+
+    Ok(removed)
+}
+
+fn validate_active_db_filename(filename: &str) -> Result<(), String> {
+    if filename.is_empty() {
+        return Err("active db pointer target filename is empty".to_string());
+    }
+    if filename.contains(['\\', '/']) {
+        return Err(format!(
+            "active db pointer target must be a filename, got {}",
+            filename
+        ));
+    }
+    if !filename.ends_with(".db") {
+        return Err(format!(
+            "active db pointer target must end with .db, got {}",
+            filename
+        ));
+    }
+    Ok(())
+}
+
+fn list_versioned_db_generations(data_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut generations = Vec::new();
+    for entry in fs::read_dir(data_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(filename) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if is_versioned_db_generation_file(filename) {
+            generations.push(path);
+        }
+    }
+    Ok(generations)
+}
+
+fn is_versioned_db_generation_file(filename: &str) -> bool {
+    filename.starts_with("index-") && filename.ends_with(".db")
+}
+
+fn delete_database_family(db_path: &Path) -> io::Result<()> {
+    fs::remove_file(db_path)?;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{}", db_path.display(), suffix));
+        if sidecar.exists() {
+            fs::remove_file(sidecar)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_existing_database(path: &Path) -> Result<(), String> {
@@ -2280,5 +2452,82 @@ mod tests {
             mismatch,
             Some("indexed extensions changed (db=cpp,h,hpp, current=cpp,h,hpp,py)".to_string())
         );
+    }
+
+    #[test]
+    fn active_db_pointer_round_trips_and_resolves_versioned_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let generation_name = "index-20260420T131500123Z.db";
+        let generation_path = data_dir.join(generation_name);
+        std::fs::write(&generation_path, b"sqlite placeholder").unwrap();
+
+        let pointer = ActiveDbPointer {
+            active_db_filename: generation_name.into(),
+            published_at: "2026-04-20T13:15:00Z".into(),
+            format_version: 1,
+        };
+        write_active_db_pointer(data_dir, &pointer).unwrap();
+
+        let stored = read_active_db_pointer(data_dir).unwrap().unwrap();
+        assert_eq!(stored, pointer);
+        let resolved = resolve_active_database_path(data_dir).unwrap().unwrap();
+        assert_eq!(resolved, generation_path);
+    }
+
+    #[test]
+    fn resolve_active_database_path_falls_back_to_legacy_index_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = dir.path().join(DB_FILENAME);
+        std::fs::write(&legacy_path, b"sqlite placeholder").unwrap();
+
+        let resolved = resolve_active_database_path(dir.path()).unwrap().unwrap();
+        assert_eq!(resolved, legacy_path);
+    }
+
+    #[test]
+    fn resolve_active_database_path_rejects_missing_pointer_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let pointer = ActiveDbPointer {
+            active_db_filename: "index-20260420T131500123Z.db".into(),
+            published_at: "2026-04-20T13:15:00Z".into(),
+            format_version: 1,
+        };
+        write_active_db_pointer(dir.path(), &pointer).unwrap();
+
+        let err = resolve_active_database_path(dir.path()).unwrap_err();
+        assert!(err.contains("active db pointer target is missing"));
+    }
+
+    #[test]
+    fn cleanup_inactive_generations_keeps_active_previous_and_one_extra_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let generations = [
+            "index-20260420T120000000Z.db",
+            "index-20260420T121000000Z.db",
+            "index-20260420T122000000Z.db",
+            "index-20260420T123000000Z.db",
+        ];
+        for generation in &generations {
+            std::fs::write(data_dir.join(generation), b"sqlite placeholder").unwrap();
+        }
+        write_active_db_pointer(
+            data_dir,
+            &ActiveDbPointer {
+                active_db_filename: generations[3].into(),
+                published_at: "2026-04-20T12:30:00Z".into(),
+                format_version: 1,
+            },
+        )
+        .unwrap();
+
+        let removed = cleanup_inactive_generations(data_dir, Some(generations[2]), 1).unwrap();
+
+        assert_eq!(removed, vec![generations[0].to_string()]);
+        assert!(data_dir.join(generations[1]).exists());
+        assert!(data_dir.join(generations[2]).exists());
+        assert!(data_dir.join(generations[3]).exists());
+        assert!(!data_dir.join(generations[0]).exists());
     }
 }

@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import Database from "better-sqlite3";
 import { deriveLanguageFromPath } from "../language";
+import { ACTIVE_DB_POINTER_FILENAME, DB_FILENAME } from "../constants";
 import { Symbol } from "../models/symbol";
 import { Call } from "../models/call";
 import {
@@ -536,6 +537,34 @@ function normalizeDisplayPath(rawPath: string): string {
   return rawPath;
 }
 
+interface ActiveDatabasePointer {
+  active_db_filename: string;
+  published_at?: string;
+  format_version?: number;
+}
+
+export function resolveActiveDatabasePath(dataDir: string): string | undefined {
+  const pointerPath = path.join(dataDir, ACTIVE_DB_POINTER_FILENAME);
+  if (fs.existsSync(pointerPath)) {
+    const pointer = JSON.parse(fs.readFileSync(pointerPath, "utf8")) as ActiveDatabasePointer;
+    const filename = pointer.active_db_filename;
+    if (!filename || filename.includes("/") || filename.includes("\\")) {
+      throw new Error(`Invalid active DB pointer target: ${filename ?? "<empty>"}`);
+    }
+    const candidatePath = path.join(dataDir, filename);
+    if (!fs.existsSync(candidatePath)) {
+      throw new Error(`Active DB pointer target is missing: ${candidatePath}`);
+    }
+    return candidatePath;
+  }
+
+  const legacyPath = path.join(dataDir, DB_FILENAME);
+  if (fs.existsSync(legacyPath)) {
+    return legacyPath;
+  }
+  return undefined;
+}
+
 function openReadonlyDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
@@ -596,6 +625,7 @@ export const __testables = {
   createSnapshotPath,
   deleteSnapshotDatabaseFamily,
   normalizeDisplayPath,
+  resolveActiveDatabasePath,
   snapshotCompanionPaths,
 };
 

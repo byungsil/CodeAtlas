@@ -150,7 +150,6 @@ fn main() {
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
     mark_codeatlas_artifacts(&data_dir, None);
 
-    let db_path = data_dir.join(DB_FILENAME);
     let build_metadata = match build_metadata::load_build_metadata(&workspace_root) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -167,16 +166,18 @@ fn main() {
         );
     }
     let mut effective_full_mode =
-        determine_effective_full_mode(&db_path, requested_full_mode, &expected_index_metadata);
-    let staging_db_path = make_staging_db_path(&db_path, "main");
-    if let Err(err) = prepare_staging_db(&db_path, &staging_db_path, effective_full_mode) {
+        determine_effective_full_mode(&data_dir, requested_full_mode, &expected_index_metadata);
+    let current_active_db_path = storage::resolve_active_database_path(&data_dir)
+        .unwrap_or(None);
+    let staging_db_path = make_staging_db_path(&data_dir, "main");
+    if let Err(err) = prepare_staging_db(current_active_db_path.as_deref(), &staging_db_path, effective_full_mode) {
         if !effective_full_mode {
             eprintln!(
                 "Failed to prepare incremental staging database ({}). Falling back to full rebuild.",
                 err
             );
             effective_full_mode = true;
-            prepare_staging_db(&db_path, &staging_db_path, true)
+            prepare_staging_db(None, &staging_db_path, true)
                 .expect("Failed to prepare staging SQLite database after full-rebuild fallback");
         } else {
             panic!("Failed to prepare staging SQLite database: {}", err);
@@ -287,8 +288,9 @@ fn main() {
         println!("\nDone in {}", format_elapsed(elapsed.as_millis()));
         println!("  Output: {}", data_dir.display());
     }
-    publish_staging_db(&staging_db_path, &db_path).expect("Failed to publish SQLite database");
-    mark_codeatlas_artifacts(&data_dir, Some(&db_path));
+    let published_db_path =
+        publish_staging_db(&staging_db_path, &data_dir).expect("Failed to publish SQLite database");
+    mark_codeatlas_artifacts(&data_dir, Some(&published_db_path));
 
 }
 
@@ -501,7 +503,8 @@ fn print_help() {
     println!("  refine metadata classification without requiring an LSP or compile DB.");
     println!();
     println!("Output:");
-    println!("  The index is stored in <workspace-root>/.codeatlas/index.db");
+    println!("  The active index is stored in <workspace-root>/.codeatlas/current-db.json");
+    println!("  Published generations are stored as <workspace-root>/.codeatlas/index-<timestamp>.db");
     println!(
         "  Supported file extensions: {}",
         EXTENSIONS
@@ -599,14 +602,20 @@ fn parse_timeout_ms_arg(raw: &str) -> Result<u64, String> {
         .map_err(|_| format!("Invalid --parse-timeout-ms value: {}", raw))
 }
 
-fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
+fn prepare_staging_db(source_db_path: Option<&Path>, staging_db_path: &Path, full_mode: bool) -> std::io::Result<()> {
     if staging_db_path.exists() {
         retry_io("remove stale staging db", || fs::remove_file(staging_db_path))?;
     }
 
-    if !full_mode && final_db_path.exists() {
+    if !full_mode {
+        let Some(source_db_path) = source_db_path else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no active database was available for incremental staging",
+            ));
+        };
         retry_io("copy published db to staging", || {
-            fs::copy(final_db_path, staging_db_path).map(|_| ())
+            fs::copy(source_db_path, staging_db_path).map(|_| ())
         })?;
     }
 
@@ -614,7 +623,7 @@ fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: b
 }
 
 fn determine_effective_full_mode(
-    db_path: &Path,
+    data_dir: &Path,
     requested_full_mode: bool,
     expected_index_metadata: &storage::IndexMetadata,
 ) -> bool {
@@ -622,9 +631,18 @@ fn determine_effective_full_mode(
         return true;
     }
 
-    match storage::validate_existing_database(db_path) {
+    let active_db_path = match storage::resolve_active_database_path(data_dir) {
+        Ok(Some(path)) => path,
+        Ok(None) => return true,
+        Err(issue) => {
+            eprintln!("Active index resolution failed ({}). Forcing full rebuild.", issue);
+            return true;
+        }
+    };
+
+    match storage::validate_existing_database(&active_db_path) {
         Ok(()) => match storage::existing_database_metadata_issue(
-            db_path,
+            &active_db_path,
             expected_index_metadata,
         ) {
             Ok(Some(reason)) => {
@@ -647,31 +665,38 @@ fn determine_effective_full_mode(
     }
 }
 
-fn make_staging_db_path(final_db_path: &Path, tag: &str) -> PathBuf {
+fn make_staging_db_path(data_dir: &Path, tag: &str) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    final_db_path.hash(&mut hasher);
+    data_dir.hash(&mut hasher);
     let key = hasher.finish();
     std::env::temp_dir().join(format!("codeatlas-{}-{}-{}.db", tag, key, DB_FILENAME))
 }
 
-fn publish_staging_db(staging_db_path: &Path, final_db_path: &Path) -> std::io::Result<()> {
-    let publish_path = final_db_path.with_file_name(format!("{}.next", DB_FILENAME));
-
-    if publish_path.exists() {
-        retry_io("remove stale publish db", || fs::remove_file(&publish_path))?;
-    }
-
-    retry_io("copy staging db to publish db", || {
+fn publish_staging_db(staging_db_path: &Path, data_dir: &Path) -> std::io::Result<PathBuf> {
+    let previous_active_filename = storage::read_active_db_pointer(data_dir)
+        .ok()
+        .flatten()
+        .map(|pointer| pointer.active_db_filename);
+    let generation_filename = storage::create_versioned_db_generation_filename();
+    let publish_path = data_dir.join(&generation_filename);
+    retry_io("copy staging db to published generation", || {
         fs::copy(staging_db_path, &publish_path).map(|_| ())
     })?;
-
-    if final_db_path.exists() {
-        retry_io("replace published db", || fs::remove_file(final_db_path))?;
-    }
-
-    retry_io("rename publish db into place", || fs::rename(&publish_path, final_db_path))?;
+    let pointer = storage::ActiveDbPointer {
+        active_db_filename: generation_filename,
+        published_at: chrono::Utc::now().to_rfc3339(),
+        format_version: storage::current_index_format_version(),
+    };
+    retry_io("update active db pointer", || {
+        storage::write_active_db_pointer(data_dir, &pointer)
+    })?;
+    let _ = storage::cleanup_inactive_generations(
+        data_dir,
+        previous_active_filename.as_deref(),
+        1,
+    );
     retry_io("remove staging db after publish", || fs::remove_file(staging_db_path))?;
-    Ok(())
+    Ok(publish_path)
 }
 
 fn retry_io<T, F>(operation: &str, mut action: F) -> io::Result<T>
@@ -1820,6 +1845,55 @@ mod tests {
 
         assert_eq!(attempts.get(), 1);
         assert!(err.to_string().contains("test op failed"));
+    }
+
+    #[test]
+    fn publish_staging_db_creates_versioned_generation_and_pointer() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let staging_db_path = temp.path().join("staging.db");
+        std::fs::write(&staging_db_path, b"sqlite placeholder").unwrap();
+
+        let published = publish_staging_db(&staging_db_path, &data_dir).unwrap();
+
+        assert!(published.exists());
+        assert!(published.file_name().unwrap().to_string_lossy().starts_with("index-"));
+        let pointer = storage::read_active_db_pointer(&data_dir).unwrap().unwrap();
+        assert_eq!(pointer.active_db_filename, published.file_name().unwrap().to_string_lossy());
+        let resolved = storage::resolve_active_database_path(&data_dir).unwrap().unwrap();
+        assert_eq!(resolved, published);
+        assert!(!staging_db_path.exists());
+    }
+
+    #[test]
+    fn publish_staging_db_succeeds_while_previous_generation_is_open() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let previous_generation = data_dir.join("index-20260420T120000000Z.db");
+        std::fs::write(&previous_generation, b"old sqlite placeholder").unwrap();
+        storage::write_active_db_pointer(
+            &data_dir,
+            &storage::ActiveDbPointer {
+                active_db_filename: previous_generation.file_name().unwrap().to_string_lossy().into_owned(),
+                published_at: "2026-04-20T12:00:00Z".into(),
+                format_version: storage::current_index_format_version(),
+            },
+        )
+        .unwrap();
+        let _reader = std::fs::File::open(&previous_generation).unwrap();
+
+        let staging_db_path = temp.path().join("staging.db");
+        std::fs::write(&staging_db_path, b"new sqlite placeholder").unwrap();
+
+        let published = publish_staging_db(&staging_db_path, &data_dir).unwrap();
+
+        assert!(published.exists());
+        assert_ne!(published, previous_generation);
+        let pointer = storage::read_active_db_pointer(&data_dir).unwrap().unwrap();
+        assert_eq!(pointer.active_db_filename, published.file_name().unwrap().to_string_lossy());
+        assert!(previous_generation.exists());
     }
 
     #[test]

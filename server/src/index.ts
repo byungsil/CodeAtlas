@@ -1,11 +1,11 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Store } from "./storage/store";
-import { SqliteStore } from "./storage/sqlite-store";
+import { resolveActiveDatabasePath, SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
 import { createApp } from "./app";
 import { loadConfig } from "./config";
-import { DATA_DIR_NAME, DB_FILENAME } from "./constants";
+import { DATA_DIR_NAME } from "./constants";
 import { initRuntimeStats, prepareRuntimeStatsPath } from "./runtime-stats";
 
 const dataDir = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
@@ -13,8 +13,8 @@ const config = loadConfig();
 const PORT = config.dashboard.port;
 
 function openStore(dataDir: string): Store {
-  const dbPath = path.join(dataDir, DB_FILENAME);
-  if (fs.existsSync(dbPath)) {
+  const dbPath = resolveActiveDatabasePath(dataDir);
+  if (dbPath && fs.existsSync(dbPath)) {
     console.log(`Using SQLite: ${dbPath}`);
     return new SqliteStore(dbPath);
   }
