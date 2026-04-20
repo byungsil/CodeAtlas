@@ -2049,6 +2049,8 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(payload.lookupMode).toBe("heuristic");
       expect(payload.confidence).toBe("ambiguous");
       expect(payload.ambiguity).toEqual({ candidateCount: 2 });
+      expect(typeof payload.selectedReason).toBe("string");
+      expect(payload.topCandidates).toHaveLength(2);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2078,6 +2080,8 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(runtimePayload.confidence).toBe("ambiguous");
       expect(runtimePayload.ambiguity).toEqual({ candidateCount: 2 });
       expect(runtimePayload.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+      expect(runtimePayload.selectedReason).toBe("Matched artifact kind 'runtime'.");
+      expect(runtimePayload.topCandidates[0].qualifiedName).toBe("Game::Runtime::UpdateShot");
 
       const editorResponses = await mcpCall([
         INIT,
@@ -2100,6 +2104,8 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(editorPayload.confidence).toBe("ambiguous");
       expect(editorPayload.ambiguity).toEqual({ candidateCount: 2 });
       expect(editorPayload.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+      expect(editorPayload.selectedReason).toBe("Closest match to the provided file path neighborhood.");
+      expect(editorPayload.topCandidates[0].qualifiedName).toBe("Game::Editor::UpdateShot");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2128,6 +2134,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(runtimePayload.lookupMode).toBe("heuristic");
       expect(runtimePayload.confidence).toBe("ambiguous");
       expect(runtimePayload.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+      expect(runtimePayload.selectedReason).toBe("Matched artifact kind 'runtime'.");
 
       const editorResponses = await mcpCall([
         INIT,
@@ -2149,6 +2156,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(editorPayload.lookupMode).toBe("heuristic");
       expect(editorPayload.confidence).toBe("ambiguous");
       expect(editorPayload.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+      expect(editorPayload.selectedReason).toBe("Matched a direct neighbor of the anchor symbol.");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2177,6 +2185,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(runtimePayload.lookupMode).toBe("heuristic");
       expect(runtimePayload.confidence).toBe("ambiguous");
       expect(runtimePayload.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+      expect(runtimePayload.selectedReason).toBe("Matched artifact kind 'runtime'.");
 
       const editorResponses = await mcpCall([
         INIT,
@@ -2198,6 +2207,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(editorPayload.lookupMode).toBe("heuristic");
       expect(editorPayload.confidence).toBe("ambiguous");
       expect(editorPayload.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+      expect(editorPayload.selectedReason).toBe("Matched a direct neighbor of the anchor symbol.");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2227,6 +2237,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(runtimePayload.lookupMode).toBe("heuristic");
       expect(runtimePayload.confidence).toBe("ambiguous");
       expect(runtimePayload.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+      expect(runtimePayload.selectedReason).toBe("Matched artifact kind 'runtime'.");
       expect(runtimePayload.callers).toHaveLength(1);
       expect(runtimePayload.callers[0].qualifiedName).toBe("Game::Runtime::TickRuntimeShot");
 
@@ -2251,6 +2262,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(editorPayload.lookupMode).toBe("heuristic");
       expect(editorPayload.confidence).toBe("ambiguous");
       expect(editorPayload.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+      expect(editorPayload.selectedReason).toBe("Matched a direct neighbor of the anchor symbol.");
       expect(editorPayload.callers).toHaveLength(1);
       expect(editorPayload.callers[0].qualifiedName).toBe("Game::Editor::RefreshShotPreview");
     } finally {
@@ -2281,6 +2293,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(runtimePayload.lookupMode).toBe("heuristic");
       expect(runtimePayload.confidence).toBe("ambiguous");
       expect(runtimePayload.symbol.qualifiedName).toBe("Game::Runtime::ShotPanel");
+      expect(runtimePayload.selectedReason).toBe("Matched artifact kind 'runtime'.");
 
       const editorResponses = await mcpCall([
         INIT,
@@ -2302,6 +2315,7 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(editorPayload.lookupMode).toBe("heuristic");
       expect(editorPayload.confidence).toBe("ambiguous");
       expect(editorPayload.symbol.qualifiedName).toBe("Game::Editor::ShotPanel");
+      expect(editorPayload.selectedReason).toBe("Matched artifact kind 'editor'.");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -2437,8 +2451,10 @@ describe("investigation fixture storage and workflow prerequisites", () => {
       expect(payload.suggestedFollowUpQueries).toContain("lookup_function name=MakeHint recentQualifiedName=Game::Investigation::RunHintWorkflow");
       expect(payload.suggestedFollowUpQueries).toContain("lookup_function name=ApplyHint recentQualifiedName=Game::Investigation::RunHintWorkflow");
       expect(payload.suggestedFollowUpQueries).toContain("find_callers name=MakeHint recentQualifiedName=Game::Investigation::RunHintWorkflow");
+      expect(payload.suggestedFollowUpQueries).toContain("find_callers_recursive name=MakeHint depth=3 recentQualifiedName=Game::Investigation::RunHintWorkflow");
       expect(payload.suggestedFollowUpQueries).toContain("lookup_function name=ReadInputPower recentQualifiedName=Game::Investigation::RunHintWorkflow");
       expect(payload.suggestedFollowUpQueries).toContain("find_callers name=ReadInputPower recentQualifiedName=Game::Investigation::RunHintWorkflow");
+      expect(payload.suggestedFollowUpQueries).toContain("find_callers_recursive name=ReadInputPower depth=3 recentQualifiedName=Game::Investigation::RunHintWorkflow");
       expect(Array.isArray(payload.suggestedLookupCandidates)).toBe(true);
       expect(payload.suggestedLookupCandidates.some((candidate: any) =>
         candidate.shortName === "MakeHint"

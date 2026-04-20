@@ -13,7 +13,7 @@ Base URL: `http://localhost:3000`
 | id            | string   | Canonical exact symbol identifier    |
 | name          | string   | Short name                           |
 | qualifiedName | string   | Canonical exact qualified name       |
-| type          | string   | One of: function, method, class, struct, enum, namespace, variable, typedef |
+| type          | string   | One of: function, method, class, struct, enum, enumMember, namespace, variable, typedef |
 | filePath      | string   | Relative path from workspace root    |
 | line          | number   | Start line (1-based)                 |
 | endLine       | number   | End line (1-based)                   |
@@ -178,6 +178,8 @@ Supported first-release reference categories:
   - a structural mention of a type in declarations, fields, parameters, or local declarations
 - `inheritanceMention`
   - a structural base-class mention in an inheritance clause
+- `enumValueUsage`
+  - a resolved enum-member value use such as assignment, comparison, bitwise composition, or function-argument passing
 
 Intentional first-release limits:
 
@@ -198,7 +200,7 @@ Normalized reference payload:
 |----------------|--------|-------------|
 | sourceSymbolId | string | Canonical symbol ID that owns or originates the reference |
 | targetSymbolId | string | Canonical symbol ID being referenced |
-| category       | string | One of: `functionCall`, `methodCall`, `classInstantiation`, `moduleImport`, `typeUsage`, `inheritanceMention` |
+| category       | string | One of: `functionCall`, `methodCall`, `classInstantiation`, `moduleImport`, `typeUsage`, `inheritanceMention`, `enumValueUsage` |
 | filePath       | string | Relative file path |
 | line           | number | 1-based source line |
 | confidence     | string | Extraction confidence: `high` or `partial` |
@@ -511,11 +513,21 @@ Retrieve a function or method by name.
   - `lookupMode`
   - `confidence`
   - `matchReasons`
+  - `selectedReason`
   - optional `ambiguity` when multiple short-name candidates exist
+  - optional `topCandidates` when multiple short-name candidates exist
 - Current ambiguity behavior:
   - the endpoint remains backward compatible and still returns one selected symbol payload
   - when multiple short-name candidates exist, callers must treat the result as heuristic rather than exact
   - ambiguity is surfaced through `confidence = "ambiguous"`, `matchReasons = ["ambiguous_top_score"]`, and `ambiguity.candidateCount`
+  - `selectedReason` explains the strongest ranking signal that chose the returned candidate
+  - `topCandidates` exposes up to five ranked alternatives with:
+    - `id`
+    - `qualifiedName`
+    - `filePath`
+    - `line`
+    - optional `signature`
+    - `rankScore`
 
 ---
 
@@ -548,7 +560,55 @@ Retrieve a class or struct and its members.
 
 - `GET /class/:name` is name-based and heuristic when duplicate short names exist.
 - `GET /class/:name` is not the canonical exact lookup path.
-- Heuristic lookup responses may include `ambiguity` metadata when multiple short-name candidates exist.
+- Heuristic lookup responses may include `ambiguity`, `selectedReason`, and ranked `topCandidates` metadata when multiple short-name candidates exist.
+
+M12-E5 reliability metadata:
+
+- `GET /function/:name` responses now include top-level `reliability`
+  - `level`: `full` | `partial` | `low`
+  - `factors`: compact structural risk hints such as `elevated_parse_fragility` and `macro_sensitive`
+  - optional `suggestion`
+
+---
+
+### GET /overloads/:name
+
+Retrieve all exact same-name function and method matches without heuristic collapse.
+
+**Parameters:**
+- `name` (path) Function or method short name to inspect exactly.
+
+**Response 200:**
+
+```json
+{
+  "query": "Update",
+  "totalCount": 4,
+  "groupCount": 4,
+  "groups": [
+    {
+      "qualifiedName": "Gameplay::Update",
+      "type": "function",
+      "count": 1,
+      "candidates": [
+        {
+          "id": "Gameplay::Update",
+          "qualifiedName": "Gameplay::Update",
+          "filePath": "src/gameplay/update.cpp",
+          "line": 10,
+          "signature": "void Update()"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Notes:**
+
+- this endpoint is exact-by-name grouping, not heuristic ranking
+- it returns only callable same-name matches (`function` and `method`)
+- multiple declaration/definition anchors with the same qualified name are preserved inside each group
 
 **Lookup mode guidance:**
 
@@ -621,6 +681,50 @@ Retrieve the call graph rooted at a symbol.
 }
 ```
 
+E2 additions:
+
+- `GET /callgraph/:name` also accepts:
+  - `direction` query with `callees`, `callers`, or `both`
+  - `nodeCap` query for bounded expansion
+- current callgraph responses also include:
+  - `direction`
+  - `nodeCount`
+  - `nodeCap`
+  - optional `root.callers` when caller expansion is requested
+- `truncated = true` means traversal stopped because of `depth`, `nodeCap`, or cycle-safe expansion limits
+
+M12-E5 reliability metadata:
+
+- `GET /callgraph/:name` now includes top-level:
+  - `reliability`
+  - `indexCoverage`
+  - optional `coverageWarning`
+- zero-edge callgraph answers on fragile symbols should not look like silent certainty
+
+E4 compact mode:
+
+- `compact = true` reduces `root.symbol` to:
+  - `id`
+  - `name`
+  - `qualifiedName`
+  - `filePath`
+  - `line`
+- default response shape remains unchanged when `compact` is omitted
+
+### GET /callers-recursive/:name
+
+Retrieve recursive inbound callers for a function or method.
+
+**Parameters:**
+- `name` (path) Function or method short name to inspect.
+- `depth` (query, optional) Max traversal depth. Default: 3. Max: 10.
+- `nodeCap` (query, optional) Maximum total nodes to expand before truncation. Default: 200.
+- `anchorQualifiedName` (query, optional) Exact anchor symbol used to steer heuristic target selection.
+- `recentQualifiedName` (query, optional) Recently inspected symbol used to derive anchor context.
+
+**Response 200:**
+- same payload shape as `GET /callgraph/:name` with `direction = "callers"`.
+
 ### GET /references
 
 Retrieve generalized references for one exact target symbol identity.
@@ -630,6 +734,7 @@ Retrieve generalized references for one exact target symbol identity.
 - `qualifiedName` (query, optional)
 - `category` (query, optional)
 - `filePath` (query, optional)
+- `compact` (query, optional)
 - `limit` (query, optional)
 
 **Response 200:**
@@ -912,6 +1017,7 @@ Retrieve generalized references for one exact target symbol identity.
 - `qualifiedName` (optional)
 - `category` (optional)
 - `filePath` (optional)
+- `includeEnumValueUsage` (optional)
 - `limit` (optional)
 
 **Current behavior:**
@@ -920,6 +1026,19 @@ Retrieve generalized references for one exact target symbol identity.
 - returns resolved source-symbol metadata together with category and confidence
 - currently surfaces persisted references stored in `symbol_references`
 - includes a shared `window` metadata block for bounded result sets
+- exact enum member targets can be queried directly
+- when the exact target is an enum type, `includeEnumValueUsage = true` aggregates `enumValueUsage` references for its enum members
+- `compact = true` reduces each reference record to:
+  - `sourceSymbolId`
+  - `sourceQualifiedName`
+  - `targetSymbolId`
+  - `targetQualifiedName`
+  - `category`
+  - `filePath`
+  - `line`
+- default response shape remains unchanged when `compact` is omitted
+- top-level `reliability` is included on reference responses
+- `indexCoverage` and optional `coverageWarning` are used to flag fragile zero-result reference answers
 
 ### Tool: `impact_analysis`
 
@@ -946,7 +1065,20 @@ Summarize likely change impact for one exact target symbol.
 Retrieve all symbols for one exact workspace-relative file path in stable declaration order.
 
 - accepts optional `limit`
+- accepts optional `compact`
 - returns `summary` plus shared `window` metadata before the symbol list
+- `compact = true` reduces each symbol row to:
+  - `id`
+  - `name`
+  - `qualifiedName`
+  - `type`
+  - `line`
+  - `endLine`
+
+### Tool: `find_callers`
+
+- top-level `reliability` is included on caller responses
+- `indexCoverage` and optional `coverageWarning` are used to flag fragile zero-result caller answers
 
 ### Tool: `list_namespace_symbols`
 

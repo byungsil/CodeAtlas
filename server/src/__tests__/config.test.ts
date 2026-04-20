@@ -59,9 +59,9 @@ describe("Config from environment variables", () => {
     expect(config.dashboard.port).toBe(3000);
   });
 
-  it("watcher disabled by default", () => {
+  it("watcher enabled by default", () => {
     const config = loadConfig();
-    expect(config.watcher.enabled).toBe(false);
+    expect(config.watcher.enabled).toBe(true);
     expect(config.watcher.indexerPath).toBe("codeatlas-indexer");
   });
 

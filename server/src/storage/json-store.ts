@@ -15,7 +15,7 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
+import { IndexDetailsRecord, MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
 
 export interface IndexData {
   symbols: Symbol[];
@@ -261,6 +261,31 @@ export class JsonStore {
     return Array.from(summary.values()).sort((a, b) => a.language.localeCompare(b.language));
   }
 
+  getIndexDetails(): IndexDetailsRecord {
+    const data = this.load();
+    return {
+      backend: "json",
+      dataPath: this.dataDir,
+      workspaceRoot: path.resolve(this.dataDir, ".."),
+      ...(safeDirStat(this.dataDir) ? {
+        databaseSizeBytes: directorySizeBytes(this.dataDir),
+        updatedAt: safeDirStat(this.dataDir)?.mtime.toISOString(),
+      } : {}),
+      counts: {
+        symbols: data.symbols.length,
+        calls: data.calls.length,
+        references: data.references.length,
+        propagation: data.propagationEvents.length,
+        files: data.files.length,
+      },
+      fileRiskCounts: {
+        elevatedParseFragility: data.symbols.filter((symbol) => symbol.parseFragility === "elevated").length,
+        macroSensitive: data.symbols.filter((symbol) => symbol.macroSensitivity === "high").length,
+        includeHeavy: data.symbols.filter((symbol) => symbol.includeHeaviness === "heavy").length,
+      },
+    };
+  }
+
   private symbolsPath(): string {
     return path.join(this.dataDir, "symbols.json");
   }
@@ -354,6 +379,25 @@ function inferSignatureArity(signature?: string): number | undefined {
   const params = signature.slice(start + 1, end).trim();
   if (!params || params === "void") return 0;
   return params.split(",").length;
+}
+
+function safeDirStat(dirPath: string): fs.Stats | undefined {
+  try {
+    return fs.statSync(dirPath);
+  } catch {
+    return undefined;
+  }
+}
+
+function directorySizeBytes(dirPath: string): number {
+  try {
+    return fs.readdirSync(dirPath)
+      .map((name) => path.join(dirPath, name))
+      .filter((entryPath) => fs.existsSync(entryPath) && fs.statSync(entryPath).isFile())
+      .reduce((sum, entryPath) => sum + fs.statSync(entryPath).size, 0);
+  } catch {
+    return 0;
+  }
 }
 
 function matchesPropagationDirection(

@@ -23,6 +23,34 @@ export interface WorkspaceLanguageSummaryRecord {
   symbolCount: number;
 }
 
+export interface IndexCountsRecord {
+  symbols: number;
+  calls: number;
+  references: number;
+  propagation: number;
+  files: number;
+}
+
+export interface FileRiskCountsRecord {
+  elevatedParseFragility: number;
+  macroSensitive: number;
+  includeHeavy: number;
+}
+
+export interface IndexDetailsRecord {
+  backend: "sqlite" | "json";
+  dataPath: string;
+  workspaceRoot?: string;
+  formatVersion?: string;
+  indexerVersion?: string;
+  extensionsCsv?: string;
+  sqliteUserVersion?: number;
+  databaseSizeBytes?: number;
+  updatedAt?: string;
+  counts: IndexCountsRecord;
+  fileRiskCounts: FileRiskCountsRecord;
+}
+
 export interface Store {
   getSymbolsByName(name: string): Symbol[];
   getSymbolById(id: string): Symbol | undefined;
@@ -43,4 +71,5 @@ export interface Store {
   getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
   getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
   getWorkspaceLanguageSummary(): WorkspaceLanguageSummaryRecord[];
+  getIndexDetails?(): IndexDetailsRecord;
 }

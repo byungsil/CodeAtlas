@@ -7,6 +7,7 @@ import {
   SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SEARCH_MIN_QUERY_LENGTH,
   CALLERS_DEFAULT_LIMIT, CALLERS_MAX_LIMIT,
   CALLGRAPH_DEFAULT_DEPTH, CALLGRAPH_MAX_DEPTH,
+  CALLGRAPH_DEFAULT_NODE_CAP, CALLGRAPH_MAX_NODE_CAP,
   DATA_DIR_NAME, DB_FILENAME,
 } from "./constants";
 import { Store } from "./storage/store";
@@ -18,8 +19,13 @@ import {
   BaseMethodsResponse,
   ClassMembersOverviewResponse,
   CallReference,
+  CallGraphDirection,
   CallGraphEdge,
   CallerQueryResponse,
+  CompactCallGraphResponse,
+  CompactFileSymbolsResponse,
+  CompactReferenceQueryResponse,
+  CompactReferenceRecord,
   ExplainSymbolPropagationResponse,
   FileSymbolsResponse,
   ImpactAnalysisResponse,
@@ -44,16 +50,24 @@ import {
   WorkspaceSummaryResponse,
 } from "./models/responses";
 import {
+  toCompactCallGraphResponse,
+  toCompactFileSymbolsResponse,
+  toCompactReferenceQueryResponse,
+} from "./compact-responses";
+import {
   buildClassResponse,
   buildCallerQueryResponse,
+  buildOverloadQueryResponse,
   deriveRepresentativeMetadata,
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
   HeuristicLookupContext,
   makeResolvedCallReference,
-  rankHeuristicCandidates,
+  rankHeuristicCandidatesDetailed,
 } from "./response-metadata";
+import { buildResponseReliability } from "./reliability";
+import { initRuntimeStats, prepareRuntimeStatsPath, recordMcpToolCall } from "./runtime-stats";
 import {
   buildInvestigateWorkflowResponse,
   createWorkflowProfiler,
@@ -77,11 +91,34 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   store: Store;
   close: () => void;
 } {
+  initRuntimeStats(prepareRuntimeStatsPath(dataDir));
   const store = openStore(dataDir);
   const server = new McpServer({
     name: "codeatlas",
     version: "0.1.0",
   });
+  const originalTool = server.tool.bind(server);
+  (server as unknown as { tool: typeof server.tool }).tool = ((name: string, description: string, schema: any, handler: any) =>
+    originalTool(name, description, schema, async (args: any) => {
+      const startedAt = Date.now();
+      try {
+        const result = await handler(args);
+        recordMcpToolCall({
+          toolName: name,
+          elapsedMs: Date.now() - startedAt,
+          ok: true,
+        });
+        return result;
+      } catch (error) {
+        recordMcpToolCall({
+          toolName: name,
+          elapsedMs: Date.now() - startedAt,
+          ok: false,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    })) as typeof server.tool;
 
   function buildSymbolMap(ids: Iterable<string>) {
     const uniqueIds = Array.from(new Set(Array.from(ids)));
@@ -285,14 +322,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   function resolveFunctionSymbol(name: string, context?: HeuristicLookupContext) {
     const symbols = store.getSymbolsByName(name);
-    const functions = rankHeuristicCandidates(
+    const rankedCandidates = rankHeuristicCandidatesDetailed(
       symbols.filter((s) => s.type === "function" || s.type === "method"),
       context,
     );
-    const symbol = functions[0];
+    const symbol = rankedCandidates[0]?.symbol;
     return {
       symbol,
-      candidateCount: functions.length,
+      candidateCount: rankedCandidates.length,
+      rankedCandidates,
     };
   }
 
@@ -321,18 +359,27 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       } as SymbolLookupResponse;
     }
 
+    if (symbol.type === "enum") {
+      return {
+        ...base,
+        members: store.getMembers(symbol.id),
+      } as SymbolLookupResponse;
+    }
+
     return base;
   }
 
   function buildResolvedReferences(
-    targetSymbolId: string,
+    targetSymbolIds: string[],
     category?: ReferenceCategory,
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
-    const rawReferences = store.getReferences(targetSymbolId, category, filePath);
-    const symbolMap = buildSymbolMap(rawReferences.map((reference) => reference.sourceSymbolId));
+    const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    const symbolMap = buildSymbolMap(
+      rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
+    );
     const references = rawReferences
       .map((reference) => {
         const sourceSymbol = symbolMap.get(reference.sourceSymbolId);
@@ -344,6 +391,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         };
       })
       .filter((reference): reference is ResolvedReference => reference !== null)
+      .filter((reference, index, all) =>
+        all.findIndex((candidate) =>
+          candidate.sourceSymbolId === reference.sourceSymbolId
+          && candidate.targetSymbolId === reference.targetSymbolId
+          && candidate.category === reference.category
+          && candidate.filePath === reference.filePath
+          && candidate.line === reference.line) === index)
       .sort((a, b) =>
         a.category.localeCompare(b.category)
         || a.filePath.localeCompare(b.filePath)
@@ -355,6 +409,43 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       totalCount: references.length,
       truncated: references.length > limit,
     };
+  }
+
+  function buildCompactResolvedReferences(references: ResolvedReference[]): CompactReferenceRecord[] {
+    const targetMap = buildSymbolMap(references.map((reference) => reference.targetSymbolId));
+    return references
+      .map((reference) => {
+        const targetSymbol = targetMap.get(reference.targetSymbolId);
+        if (!targetSymbol) return null;
+        return {
+          sourceSymbolId: reference.sourceSymbolId,
+          sourceQualifiedName: reference.sourceQualifiedName,
+          targetSymbolId: reference.targetSymbolId,
+          targetQualifiedName: targetSymbol.qualifiedName,
+          category: reference.category,
+          filePath: reference.filePath,
+          line: reference.line,
+        };
+      })
+      .filter((reference): reference is CompactReferenceRecord => reference !== null);
+  }
+
+  function buildReferenceTargetIds(
+    symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    category?: ReferenceCategory,
+    includeEnumValueUsage = false,
+  ): string[] {
+    if (!(includeEnumValueUsage && symbol.type === "enum")) {
+      return [symbol.id];
+    }
+
+    const enumMemberIds = store.getMembers(symbol.id)
+      .filter((member) => member.type === "enumMember")
+      .map((member) => member.id);
+    if (category === "enumValueUsage") {
+      return enumMemberIds;
+    }
+    return [symbol.id, ...enumMemberIds];
   }
 
   function anchorKey(anchor: PropagationEventRecord["sourceAnchor"]): string | null {
@@ -702,7 +793,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   ): ImpactAnalysisResponse {
     const directCallers = buildUniqueCallReferences(store.getCallers(symbol.id), "callerId", limit, metadataFilters);
     const directCallees = buildUniqueCallReferences(store.getCallees(symbol.id), "calleeId", limit, metadataFilters);
-    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit, metadataFilters);
+    const directReferences = buildResolvedReferences([symbol.id], undefined, undefined, limit, metadataFilters);
 
     const impactedSymbolCounts = new Map<string, number>();
     const impactedFileCounts = new Map<string, number>();
@@ -1009,7 +1100,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     },
     async ({ name, language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName }) => {
       const context = buildHeuristicLookupContext({ language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName });
-      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
+      const { symbol: sym, candidateCount, rankedCandidates } = resolveFunctionSymbol(name, context);
 
       if (!sym) {
         return notFoundPayload();
@@ -1017,16 +1108,19 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
       const callers = buildCallReferences(store.getCallers(sym.id), "callerId");
       const callees = buildCallReferences(store.getCallees(sym.id), "calleeId");
+      const payload = buildFunctionResponse({
+        symbol: sym,
+        candidateCount,
+        rankedCandidates,
+        callers,
+        callees,
+      });
+      Object.assign(payload, buildResponseReliability({ symbol: sym }));
 
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(buildFunctionResponse({
-            symbol: sym,
-            candidateCount,
-            callers,
-            callees,
-          }), null, 2),
+          text: JSON.stringify(payload, null, 2),
         }],
       };
     },
@@ -1051,7 +1145,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       const context = buildCallerLookupContext({ anchorQualifiedName, recentQualifiedName });
-      const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
+      const { symbol: sym, candidateCount, rankedCandidates } = resolveFunctionSymbol(name, context);
 
       if (!sym) {
         return notFoundPayload();
@@ -1061,11 +1155,17 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       const payload: CallerQueryResponse = buildCallerQueryResponse({
         symbol: sym,
         candidateCount,
+        rankedCandidates,
         callers: callers.results,
         totalCount: callers.totalCount,
         truncated: callers.truncated,
         limitApplied: limit,
       });
+      Object.assign(payload, buildResponseReliability({
+        symbol: sym,
+        relatedResultCount: callers.totalCount,
+        zeroResultLabel: "callers",
+      }));
       Object.assign(payload, metadataFilterEcho(metadataFilters), {
         groupedBySubsystem: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.subsystem),
         groupedByModule: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.module),
@@ -1094,11 +1194,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     },
     async ({ name, language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName }) => {
       const context = buildHeuristicLookupContext({ language, subsystem, module, projectArea, artifactKind, filePath, anchorQualifiedName, recentQualifiedName });
-      const symbols = rankHeuristicCandidates(
+      const rankedCandidates = rankHeuristicCandidatesDetailed(
         store.getSymbolsByName(name).filter((s) => s.type === "class" || s.type === "struct"),
         context,
       );
-      const sym = symbols[0];
+      const sym = rankedCandidates[0]?.symbol;
 
       if (!sym) {
         return notFoundPayload();
@@ -1110,7 +1210,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           type: "text",
           text: JSON.stringify(buildClassResponse({
             symbol: sym,
-            candidateCount: symbols.length,
+            candidateCount: rankedCandidates.length,
+            rankedCandidates,
             members,
           }), null, 2),
         }],
@@ -1119,13 +1220,36 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   );
 
   server.tool(
+    "find_all_overloads",
+    "Return all exact same-name function and method matches grouped by qualified name, without heuristic ranking collapse.",
+    {
+      name: z.string().describe("Function or method short name to inspect exactly"),
+    },
+    async ({ name }) => ({
+      content: [{
+        type: "text",
+        text: JSON.stringify(
+          buildOverloadQueryResponse(
+            name,
+            store.getSymbolsByName(name).filter((symbol) => symbol.type === "function" || symbol.type === "method"),
+          ),
+          null,
+          2,
+        ),
+      }],
+    }),
+  );
+
+  server.tool(
     "find_references",
-    "Find generalized references for one exact target symbol. Accepts id and/or qualifiedName and supports optional category and filePath filters.",
+    "Find generalized references for one exact target symbol. Accepts id and/or qualifiedName and supports optional category and filePath filters. Use compact=true for lighter navigation payloads.",
     {
       id: z.string().optional().describe("Canonical exact target symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
-      category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention"]).optional().describe("Optional reference category filter"),
+      category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention", "enumValueUsage"]).optional().describe("Optional reference category filter"),
       filePath: z.string().optional().describe("Optional exact file path filter"),
+      includeEnumValueUsage: z.boolean().optional().describe("When the exact target is an enum, also include aggregated enum-member value usage references"),
+      compact: z.boolean().optional().describe("When true, return only source/target identity fields needed for navigation"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum references to return"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to source symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to source symbols"),
@@ -1133,7 +1257,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       projectArea: z.string().optional().describe("Optional project-area filter applied to source symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to source symbols"),
     },
-    async ({ id, qualifiedName, category, filePath, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ id, qualifiedName, category, filePath, includeEnumValueUsage, compact, limit, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1158,11 +1282,22 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const references = buildResolvedReferences(symbol.id, category, filePath, limit, metadataFilters);
+      const references = buildResolvedReferences(
+        buildReferenceTargetIds(symbol, category, includeEnumValueUsage),
+        category,
+        filePath,
+        limit,
+        metadataFilters,
+      );
       const payload: ReferenceQueryResponse = {
         ...buildExactLookupResponse({
           symbol,
           matchedBy: id && qualifiedName ? "both" : id ? "id" : "qualifiedName",
+        }),
+        ...buildResponseReliability({
+          symbol,
+          relatedResultCount: references.totalCount,
+          zeroResultLabel: "references",
         }),
         window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit),
         references: references.results,
@@ -1175,9 +1310,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
         groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
       };
+      const response: ReferenceQueryResponse | CompactReferenceQueryResponse = compact
+        ? toCompactReferenceQueryResponse(payload, buildCompactResolvedReferences(references.results))
+        : payload;
 
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
@@ -1330,12 +1468,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   server.tool(
     "list_file_symbols",
-    "List symbols declared in one exact file path in stable line order with a compact type summary first.",
+    "List symbols declared in one exact file path in stable line order. Use compact=true when you only need symbol identity and line ranges for navigation.",
     {
       filePath: z.string().describe("Exact workspace-relative file path"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum symbols to return"),
+      compact: z.boolean().optional().describe("When true, return only compact symbol navigation fields"),
     },
-    async ({ filePath, limit }) => {
+    async ({ filePath, limit, compact }) => {
       const allSymbols = store.getFileSymbols(filePath);
       const symbols = applyLimit(allSymbols, limit);
       const payload: FileSymbolsResponse = {
@@ -1344,9 +1483,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
         symbols: symbols.results,
       };
+      const response: FileSymbolsResponse | CompactFileSymbolsResponse = compact
+        ? toCompactFileSymbolsResponse(payload)
+        : payload;
 
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
@@ -1534,7 +1676,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "Search symbols by name substring. Returns matching symbols with truncation indicator. Minimum query length is 3 characters.",
     {
       query: z.string().describe(`Search query (minimum ${SEARCH_MIN_QUERY_LENGTH} characters; shorter queries return an empty result set)`),
-      type: z.enum(["function", "method", "class", "struct", "enum", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
+      type: z.enum(["function", "method", "class", "struct", "enum", "enumMember", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum results to return"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to result symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to result symbols"),
@@ -1576,51 +1718,143 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     }),
   );
 
-  function expandCallees(symbolId: string, currentDepth: number, maxDepth: number, visited: Set<string>): { edges: CallGraphEdge[]; truncated: boolean } {
+  function expandCallDirection(
+    symbolId: string,
+    currentDepth: number,
+    maxDepth: number,
+    visited: Set<string>,
+    state: { remainingNodeBudget: number },
+    direction: "callers" | "callees",
+  ): { edges: CallGraphEdge[]; truncated: boolean } {
+    const calls = direction === "callers" ? store.getCallers(symbolId) : store.getCallees(symbolId);
     if (currentDepth >= maxDepth || visited.has(symbolId)) {
-      const calls = store.getCallees(symbolId);
       return { edges: [], truncated: calls.length > 0 };
     }
     visited.add(symbolId);
-    const calls = store.getCallees(symbolId);
+
     let anyTruncated = false;
-    const edges: CallGraphEdge[] = calls
-      .map((c) => {
-        const target = store.getSymbolById(c.calleeId);
-        if (!target) return null;
-        const { edges: children, truncated } = expandCallees(target.id, currentDepth + 1, maxDepth, visited);
-        if (truncated) anyTruncated = true;
-        return {
-          targetId: target.id,
-          targetName: target.name,
-          targetQualifiedName: target.qualifiedName,
-          filePath: c.filePath,
-          line: c.line,
-          ...(children.length > 0 ? { children } : {}),
-        };
-      })
-      .filter((e): e is CallGraphEdge => e !== null);
+    const edges: CallGraphEdge[] = [];
+    for (const call of calls) {
+      const targetId = direction === "callers" ? call.callerId : call.calleeId;
+      const target = targetId ? store.getSymbolById(targetId) : undefined;
+      if (!target) {
+        continue;
+      }
+      if (visited.has(target.id)) {
+        anyTruncated = true;
+        continue;
+      }
+      if (state.remainingNodeBudget <= 0) {
+        anyTruncated = true;
+        break;
+      }
+
+      state.remainingNodeBudget -= 1;
+      const { edges: children, truncated } = expandCallDirection(
+        target.id,
+        currentDepth + 1,
+        maxDepth,
+        new Set(visited),
+        state,
+        direction,
+      );
+      if (truncated) anyTruncated = true;
+      edges.push({
+        targetId: target.id,
+        targetName: target.name,
+        targetQualifiedName: target.qualifiedName,
+        filePath: call.filePath,
+        line: call.line,
+        ...(children.length > 0 ? { children } : {}),
+      });
+    }
+
     return { edges, truncated: anyTruncated };
   }
 
-  function computeDepth(edges: CallGraphEdge[]): number {
+  function buildCallGraphPayload(
+    symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    maxDepth: number,
+    direction: CallGraphDirection,
+    nodeCap: number,
+  ) {
+    const state = { remainingNodeBudget: Math.max(0, nodeCap - 1) };
+    const root = {
+      symbol: { id: symbol.id, name: symbol.name, qualifiedName: symbol.qualifiedName, type: symbol.type, filePath: symbol.filePath, line: symbol.line },
+      callees: [] as CallGraphEdge[],
+      callers: undefined as CallGraphEdge[] | undefined,
+    };
+    let truncated = false;
+
+    if (direction === "callees" || direction === "both") {
+      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callees");
+      root.callees = result.edges;
+      truncated = truncated || result.truncated;
+    }
+    if (direction === "callers" || direction === "both") {
+      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callers");
+      root.callers = result.edges;
+      truncated = truncated || result.truncated;
+    }
+
+    const edgeCount = countGraphEdges(root.callees) + countGraphEdges(root.callers ?? []);
+
+    return {
+      ...buildResponseReliability({
+        symbol,
+        relatedResultCount: edgeCount,
+        zeroResultLabel: direction === "callers"
+          ? "caller edges"
+          : direction === "both"
+            ? "callgraph edges"
+            : "callee edges",
+      }),
+      root,
+      direction,
+      depth: computeDepth(root),
+      maxDepth,
+      nodeCount: nodeCap - state.remainingNodeBudget,
+      nodeCap,
+      truncated,
+    };
+  }
+
+  function computeDepth(root: { callees: CallGraphEdge[]; callers?: CallGraphEdge[] }): number {
+    return Math.max(computeEdgeDepth(root.callees), computeEdgeDepth(root.callers ?? []));
+  }
+
+  function computeEdgeDepth(edges: CallGraphEdge[]): number {
     if (edges.length === 0) return 0;
     let max = 0;
     for (const e of edges) {
-      const d = e.children ? computeDepth(e.children) : 0;
+      const d = e.children ? computeEdgeDepth(e.children) : 0;
       if (d + 1 > max) max = d + 1;
     }
     return max;
   }
 
+  function countGraphEdges(edges: CallGraphEdge[]): number {
+    let count = 0;
+    for (const edge of edges) {
+      count += 1;
+      if (edge.children) {
+        count += countGraphEdges(edge.children);
+      }
+    }
+    return count;
+  }
+
   server.tool(
     "get_callgraph",
-    "Get the call graph rooted at a function or method. Expands callees recursively up to the requested depth.",
+    "Get the call graph rooted at a function or method. Supports bounded callee, caller, or bidirectional expansion. Use compact=true for lighter navigation payloads.",
     {
       name: z.string().describe("Root function or method name"),
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum traversal depth"),
+      direction: z.enum(["callees", "callers", "both"]).default("callees").describe("Traversal direction"),
+      nodeCap: z.number().int().min(1).max(CALLGRAPH_MAX_NODE_CAP).default(CALLGRAPH_DEFAULT_NODE_CAP).describe("Maximum total nodes to expand before truncation"),
+      compact: z.boolean().optional().describe("When true, reduce root node metadata to compact navigation fields"),
     },
-    async ({ name, depth: maxDepth }) => {
+    async ({ name, depth: maxDepth, direction, nodeCap, compact }) => {
       const symbols = store.getSymbolsByName(name);
       const sym = symbols.find((s) => s.type === "function" || s.type === "method");
 
@@ -1628,22 +1862,37 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const visited = new Set<string>();
-      const { edges: callees, truncated } = expandCallees(sym.id, 0, maxDepth, visited);
-      const actualDepth = computeDepth(callees);
-
-      const response = {
-        root: {
-          symbol: { id: sym.id, name: sym.name, qualifiedName: sym.qualifiedName, type: sym.type, filePath: sym.filePath, line: sym.line },
-          callees,
-        },
-        depth: actualDepth,
-        maxDepth,
-        truncated,
-      };
+      const payload = buildCallGraphPayload(sym, maxDepth, direction, nodeCap);
+      const response: ReturnType<typeof buildCallGraphPayload> | CompactCallGraphResponse = compact
+        ? toCompactCallGraphResponse(payload)
+        : payload;
 
       return {
         content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "find_callers_recursive",
+    "Expand callers recursively for a function or method using the same bounded traversal as caller-direction callgraph queries.",
+    {
+      name: z.string().describe("Root function or method name"),
+      depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum traversal depth"),
+      nodeCap: z.number().int().min(1).max(CALLGRAPH_MAX_NODE_CAP).default(CALLGRAPH_DEFAULT_NODE_CAP).describe("Maximum total nodes to expand before truncation"),
+      anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
+      recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
+    },
+    async ({ name, depth: maxDepth, nodeCap, anchorQualifiedName, recentQualifiedName }) => {
+      const context = buildCallerLookupContext({ anchorQualifiedName, recentQualifiedName });
+      const { symbol: sym } = resolveFunctionSymbol(name, context);
+
+      if (!sym) {
+        return notFoundPayload();
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(buildCallGraphPayload(sym, maxDepth, "callers", nodeCap), null, 2) }],
       };
     },
   );

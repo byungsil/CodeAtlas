@@ -164,6 +164,7 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
     let db_path = data_dir.join(DB_FILENAME);
+    let expected_index_metadata = storage::expected_index_metadata(&workspace_root);
 
     let ignore_rules = IgnoreRules::load(&workspace_root);
 
@@ -172,13 +173,18 @@ pub fn watch(workspace_root: &Path, verbose: bool) -> Result<(), String> {
 
     match storage::validate_existing_database(&db_path) {
         Ok(()) => {
-            let db = open_database_with_retry(&db_path, "watch open sqlite database")?;
-            if db.has_data() {
-                println!("Existing index found, running incremental catch-up...");
-                run_incremental_index(&workspace_root, &db_path, verbose)?;
-            } else {
-                println!("No existing index, running full initial index...");
+            if let Some(reason) = storage::existing_database_metadata_issue(&db_path, &expected_index_metadata)? {
+                println!("Existing index is outdated ({}). Rebuilding from scratch...", reason);
                 run_full_index(&workspace_root, &db_path, verbose)?;
+            } else {
+                let db = open_database_with_retry(&db_path, "watch open sqlite database")?;
+                if db.has_data() {
+                    println!("Existing index found, running incremental catch-up...");
+                    run_incremental_index(&workspace_root, &db_path, verbose)?;
+                } else {
+                    println!("No existing index, running full initial index...");
+                    run_full_index(&workspace_root, &db_path, verbose)?;
+                }
             }
         }
         Err(issue) => {
@@ -271,6 +277,7 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
             None
         }
     };
+    let expected_index_metadata = storage::expected_index_metadata(workspace_root);
     let staging_db_path = make_watch_staging_db_path(db_path, "full");
     if staging_db_path.exists() {
         retry_io("watch staging cleanup", || fs::remove_file(&staging_db_path))
@@ -320,6 +327,8 @@ fn run_full_index(workspace_root: &Path, db_path: &Path, verbose: bool) -> Resul
         &file_records,
     )
         .map_err(|e| format!("DB write: {}", e))?;
+    db.write_index_metadata(&expected_index_metadata)
+        .map_err(|e| format!("DB write metadata: {}", e))?;
     db.checkpoint().map_err(|e| format!("DB checkpoint: {}", e))?;
 
     publish_watch_db(&staging_db_path, db_path)?;
@@ -474,6 +483,7 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
             None
         }
     };
+    let expected_index_metadata = storage::expected_index_metadata(workspace_root);
     let db = open_database_with_retry(db_path, "watch open incremental sqlite database")?;
     let registry = default_language_registry();
     let supported_languages = registry.supported_languages();
@@ -738,6 +748,8 @@ fn run_incremental_index(workspace_root: &Path, db_path: &Path, verbose: bool) -
         return Err(err);
     }
 
+    db.write_index_metadata(&expected_index_metadata)
+        .map_err(|e| format!("DB write metadata: {}", e))?;
     db.commit().map_err(|e| format!("DB commit: {}", e))?;
 
     Ok(())

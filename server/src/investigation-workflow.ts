@@ -494,6 +494,7 @@ export function buildWorkflowSuggestedQueries(
     }
     queries.push(`lookup_function name=${symbol.name} recentQualifiedName=${source.qualifiedName}`);
     queries.push(`find_callers name=${symbol.name} recentQualifiedName=${source.qualifiedName}`);
+    queries.push(`find_callers_recursive name=${symbol.name} depth=3 recentQualifiedName=${source.qualifiedName}`);
   }
   if (source.parseFragility === "elevated" || source.macroSensitivity === "high") {
     queries.push(`list_file_symbols filePath=${source.filePath}`);

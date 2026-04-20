@@ -178,6 +178,7 @@ pub enum RawRelationKind {
     Call,
     TypeUsage,
     Inheritance,
+    EnumValueUsage,
 }
 
 #[allow(dead_code)]
@@ -190,6 +191,7 @@ pub enum ReferenceCategory {
     ModuleImport,
     TypeUsage,
     InheritanceMention,
+    EnumValueUsage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

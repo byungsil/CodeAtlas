@@ -18,13 +18,15 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
+import { IndexDetailsRecord, MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
 
 export class SqliteStore {
   private db: Database.Database;
   private snapshotPath?: string;
+  private sourcePath: string;
 
   constructor(dbPath: string) {
+    this.sourcePath = dbPath;
     const opened = openReadonlyStore(dbPath);
     this.db = opened.db;
     this.snapshotPath = opened.snapshotPath;
@@ -341,6 +343,37 @@ export class SqliteStore {
     return Array.from(summary.values()).sort((a, b) => a.language.localeCompare(b.language));
   }
 
+  getIndexDetails(): IndexDetailsRecord {
+    const hasSymbolMetadata = this.hasMetadataColumns();
+    const counts = {
+      symbols: this.scalarCount("symbols"),
+      calls: this.scalarCount("calls"),
+      references: this.hasReferencesTable() ? this.scalarCount("symbol_references") : 0,
+      propagation: this.hasPropagationTable() ? this.scalarCount("propagation_events") : 0,
+      files: this.scalarCount("files"),
+    };
+    const fileRiskCounts = {
+      elevatedParseFragility: hasSymbolMetadata ? this.scalarWhereCount("symbols", "parse_fragility = 'elevated'") : 0,
+      macroSensitive: hasSymbolMetadata ? this.scalarWhereCount("symbols", "macro_sensitivity = 'high'") : 0,
+      includeHeavy: hasSymbolMetadata ? this.scalarWhereCount("symbols", "include_heaviness = 'heavy'") : 0,
+    };
+    const metadata = this.readMetadataMap();
+    const stat = safeStat(this.sourcePath);
+
+    return {
+      backend: "sqlite",
+      dataPath: this.sourcePath,
+      ...(metadata.workspace_root ? { workspaceRoot: normalizeDisplayPath(metadata.workspace_root) } : {}),
+      ...(metadata.format_version ? { formatVersion: metadata.format_version } : {}),
+      ...(metadata.indexer_version ? { indexerVersion: metadata.indexer_version } : {}),
+      ...(metadata.extensions_csv ? { extensionsCsv: metadata.extensions_csv } : {}),
+      ...(readUserVersion(this.db) !== undefined ? { sqliteUserVersion: readUserVersion(this.db) } : {}),
+      ...(stat ? { databaseSizeBytes: stat.size, updatedAt: stat.mtime.toISOString() } : {}),
+      counts,
+      fileRiskCounts,
+    };
+  }
+
   private hasReferencesTable(): boolean {
     try {
       const row = this.db
@@ -436,6 +469,22 @@ export class SqliteStore {
       }
     }
   }
+
+  private scalarCount(table: string): number {
+    return (this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}`).get() as { cnt: number }).cnt;
+  }
+
+  private scalarWhereCount(table: string, whereClause: string): number {
+    return (this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${whereClause}`).get() as { cnt: number }).cnt;
+  }
+
+  private readMetadataMap(): Record<string, string> {
+    if (!this.hasTable("db_metadata")) {
+      return {};
+    }
+    const rows = this.db.prepare("SELECT key, value FROM db_metadata").all() as Array<{ key: string; value: string }>;
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  }
 }
 
 function openReadonlyStore(dbPath: string): { db: Database.Database; snapshotPath?: string } {
@@ -459,6 +508,32 @@ function openReadonlyStore(dbPath: string): { db: Database.Database; snapshotPat
   const db = openReadonlyDatabase(snapshotPath);
   verifyDatabaseReadable(db);
   return { db, snapshotPath };
+}
+
+function safeStat(filePath: string): fs.Stats | undefined {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+function readUserVersion(db: Database.Database): number | undefined {
+  try {
+    return db.pragma("user_version", { simple: true }) as number;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeDisplayPath(rawPath: string): string {
+  if (rawPath.startsWith("\\\\?\\")) {
+    return rawPath.slice(4);
+  }
+  if (rawPath.startsWith("//?/")) {
+    return rawPath.slice(4);
+  }
+  return rawPath;
 }
 
 function openReadonlyDatabase(dbPath: string): Database.Database {

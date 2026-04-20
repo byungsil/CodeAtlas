@@ -158,6 +158,7 @@ fn main() {
             None
         }
     };
+    let expected_index_metadata = storage::expected_index_metadata(&workspace_root);
     if let Some(metadata) = &build_metadata {
         println!(
             "Build metadata: {} translation unit(s), {} workspace include dir(s)",
@@ -165,7 +166,8 @@ fn main() {
             metadata.workspace_include_dirs.len()
         );
     }
-    let mut effective_full_mode = determine_effective_full_mode(&db_path, requested_full_mode);
+    let mut effective_full_mode =
+        determine_effective_full_mode(&db_path, requested_full_mode, &expected_index_metadata);
     let staging_db_path = make_staging_db_path(&db_path, "main");
     if let Err(err) = prepare_staging_db(&db_path, &staging_db_path, effective_full_mode) {
         if !effective_full_mode {
@@ -216,6 +218,8 @@ fn main() {
                     &data_dir,
                     build_metadata.as_ref(),
                 );
+            db.write_index_metadata(&expected_index_metadata)
+                .expect("Failed to write index metadata");
             timings.discovery_ms = discovery_elapsed;
             let checkpoint_start = Instant::now();
             db.checkpoint().expect("Failed to checkpoint SQLite database");
@@ -250,6 +254,8 @@ fn main() {
                     &data_dir,
                     build_metadata.as_ref(),
                 );
+                db.write_index_metadata(&expected_index_metadata)
+                    .expect("Failed to write index metadata");
             } else {
                 if plan.to_index.is_empty() && plan.to_delete.is_empty() {
                     let elapsed = start.elapsed();
@@ -263,6 +269,8 @@ fn main() {
                     eprintln!("Incremental indexing failed: {}", e);
                     std::process::exit(1);
                 }
+                db.write_index_metadata(&expected_index_metadata)
+                    .expect("Failed to write index metadata");
             }
 
             let checkpoint_start = Instant::now();
@@ -605,13 +613,33 @@ fn prepare_staging_db(final_db_path: &Path, staging_db_path: &Path, full_mode: b
     Ok(())
 }
 
-fn determine_effective_full_mode(db_path: &Path, requested_full_mode: bool) -> bool {
+fn determine_effective_full_mode(
+    db_path: &Path,
+    requested_full_mode: bool,
+    expected_index_metadata: &storage::IndexMetadata,
+) -> bool {
     if requested_full_mode {
         return true;
     }
 
     match storage::validate_existing_database(db_path) {
-        Ok(()) => false,
+        Ok(()) => match storage::existing_database_metadata_issue(
+            db_path,
+            expected_index_metadata,
+        ) {
+            Ok(Some(reason)) => {
+                eprintln!(
+                    "Existing index is outdated ({}). Forcing full rebuild.",
+                    reason
+                );
+                true
+            }
+            Ok(None) => false,
+            Err(issue) => {
+                eprintln!("Existing index metadata check failed ({}). Forcing full rebuild.", issue);
+                true
+            }
+        },
         Err(issue) => {
             eprintln!("Existing index is unhealthy ({}). Forcing full rebuild.", issue);
             true

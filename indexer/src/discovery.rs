@@ -1,5 +1,7 @@
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -11,37 +13,12 @@ use crate::constants::{DATA_DIR_NAME, is_indexed_extension};
 use crate::ignore::IgnoreRules;
 use crate::language::{DiscoveredSourceFile, SourceLanguage};
 
+#[cfg(test)]
 pub fn find_cpp_files(root: &Path) -> Vec<PathBuf> {
     find_cpp_files_with_ignore(root, &IgnoreRules::load(root))
 }
 
-#[allow(dead_code)]
-pub fn find_cpp_files_with_feedback(root: &Path, verbose: bool) -> Vec<PathBuf> {
-    if !verbose {
-        return find_cpp_files(root);
-    }
-
-    let running = Arc::new(AtomicBool::new(true));
-    let spinner_running = Arc::clone(&running);
-    let spinner = thread::spawn(move || {
-        let frames = ["|", "/", "-", "\\"];
-        let mut index = 0usize;
-        while spinner_running.load(Ordering::Relaxed) {
-            print!("\rSearching files... {}", frames[index % frames.len()]);
-            let _ = io::stdout().flush();
-            index += 1;
-            thread::sleep(Duration::from_millis(100));
-        }
-    });
-
-    let files = find_cpp_files(root);
-
-    running.store(false, Ordering::Relaxed);
-    let _ = spinner.join();
-    println!("\rSearching files... done");
-    files
-}
-
+#[cfg(test)]
 pub fn find_cpp_files_with_ignore(root: &Path, ignore: &IgnoreRules) -> Vec<PathBuf> {
     let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
@@ -88,7 +65,6 @@ pub fn find_source_files(root: &Path, languages: &[SourceLanguage]) -> Vec<Disco
     find_source_files_with_ignore(root, &IgnoreRules::load(root), languages)
 }
 
-#[allow(dead_code)]
 pub fn find_source_files_with_feedback(
     root: &Path,
     verbose: bool,

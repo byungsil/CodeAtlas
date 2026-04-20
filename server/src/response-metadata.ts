@@ -3,8 +3,11 @@ import {
   ConfidenceLevel,
   CallerQueryResponse,
   FunctionResponse,
+  HeuristicSelectionMetadata,
+  HeuristicTopCandidate,
   MatchReason,
   ClassResponse,
+  OverloadQueryResponse,
   RepresentativeMetadata,
   RepresentativeSelectionReason,
   ResultWindow,
@@ -12,7 +15,13 @@ import {
 } from "./models/responses";
 import { Symbol } from "./models/symbol";
 
-type LookupMetadata = Pick<FunctionResponse, "lookupMode" | "confidence" | "matchReasons" | "ambiguity">;
+type LookupMetadata = Pick<FunctionResponse, "lookupMode" | "confidence" | "matchReasons" | "ambiguity"> & HeuristicSelectionMetadata;
+
+interface RankedHeuristicCandidate {
+  symbol: Symbol;
+  rankScore: number;
+  selectedReason: string;
+}
 
 export interface HeuristicLookupContext {
   language?: Symbol["language"];
@@ -26,13 +35,18 @@ export interface HeuristicLookupContext {
   anchorScopePrefixes?: string[];
 }
 
-export function deriveLegacyLookupMetadata(candidateCount: number): LookupMetadata {
+export function deriveLegacyLookupMetadata(
+  candidateCount: number,
+  rankedCandidates?: RankedHeuristicCandidate[],
+): LookupMetadata {
+  const heuristicSelectionMetadata = buildHeuristicSelectionMetadata(candidateCount, rankedCandidates);
   if (candidateCount > 1) {
     return {
       lookupMode: "heuristic",
       confidence: "ambiguous",
       matchReasons: ["ambiguous_top_score"],
       ambiguity: { candidateCount },
+      ...heuristicSelectionMetadata,
     };
   }
 
@@ -40,6 +54,7 @@ export function deriveLegacyLookupMetadata(candidateCount: number): LookupMetada
     lookupMode: "heuristic",
     confidence: "high_confidence_heuristic",
     matchReasons: [],
+    ...heuristicSelectionMetadata,
   };
 }
 
@@ -284,12 +299,17 @@ export function makeResolvedCallReference(params: {
 export function buildFunctionResponse(params: {
   symbol: Symbol;
   candidateCount: number;
+  rankedCandidates?: RankedHeuristicCandidate[];
   callers: CallReference[];
   callees: CallReference[];
 }): FunctionResponse {
-  const metadata = deriveLegacyLookupMetadata(params.candidateCount);
+  const metadata = deriveLegacyLookupMetadata(params.candidateCount, params.rankedCandidates);
   return {
     ...metadata,
+    reliability: {
+      level: "full",
+      factors: [],
+    },
     symbol: params.symbol,
     callers: params.callers,
     callees: params.callees,
@@ -299,14 +319,19 @@ export function buildFunctionResponse(params: {
 export function buildCallerQueryResponse(params: {
   symbol: Symbol;
   candidateCount: number;
+  rankedCandidates?: RankedHeuristicCandidate[];
   callers: CallReference[];
   totalCount: number;
   truncated: boolean;
   limitApplied?: number;
 }): CallerQueryResponse {
-  const metadata = deriveLegacyLookupMetadata(params.candidateCount);
+  const metadata = deriveLegacyLookupMetadata(params.candidateCount, params.rankedCandidates);
   return {
     ...metadata,
+    reliability: {
+      level: "full",
+      factors: [],
+    },
     symbol: params.symbol,
     window: buildResultWindow(params.callers.length, params.totalCount, params.truncated, params.limitApplied),
     callers: params.callers,
@@ -318,13 +343,59 @@ export function buildCallerQueryResponse(params: {
 export function buildClassResponse(params: {
   symbol: Symbol;
   candidateCount: number;
+  rankedCandidates?: RankedHeuristicCandidate[];
   members: Symbol[];
 }): ClassResponse {
-  const metadata = deriveLegacyLookupMetadata(params.candidateCount);
+  const metadata = deriveLegacyLookupMetadata(params.candidateCount, params.rankedCandidates);
   return {
     ...metadata,
     symbol: params.symbol,
     members: params.members,
+  };
+}
+
+export function buildOverloadQueryResponse(name: string, symbols: Symbol[]): OverloadQueryResponse {
+  const grouped = new Map<string, { qualifiedName: string; type: Symbol["type"]; candidates: OverloadQueryResponse["groups"][number]["candidates"] }>();
+  for (const symbol of symbols) {
+    const key = `${symbol.type}:${symbol.qualifiedName}`;
+    const group = grouped.get(key);
+    const candidate = {
+      id: symbol.id,
+      qualifiedName: symbol.qualifiedName,
+      filePath: symbol.filePath,
+      line: symbol.line,
+      ...(symbol.signature ? { signature: symbol.signature } : {}),
+    };
+    if (group) {
+      group.candidates.push(candidate);
+      continue;
+    }
+    grouped.set(key, {
+      qualifiedName: symbol.qualifiedName,
+      type: symbol.type,
+      candidates: [candidate],
+    });
+  }
+
+  const groups = Array.from(grouped.values())
+    .map((group) => ({
+      qualifiedName: group.qualifiedName,
+      type: group.type,
+      count: group.candidates.length,
+      candidates: group.candidates.sort((left, right) =>
+        left.filePath.localeCompare(right.filePath)
+        || left.line - right.line
+        || left.id.localeCompare(right.id)),
+    }))
+    .sort((left, right) =>
+      left.qualifiedName.localeCompare(right.qualifiedName)
+      || left.type.localeCompare(right.type));
+
+  return {
+    query: name,
+    totalCount: symbols.length,
+    groupCount: groups.length,
+    groups,
   };
 }
 
@@ -343,12 +414,25 @@ export function buildResultWindow(
 }
 
 export function rankHeuristicCandidates(symbols: Symbol[], context?: HeuristicLookupContext): Symbol[] {
-  return symbols.slice().sort((left, right) =>
-    heuristicContextScore(right, context) - heuristicContextScore(left, context)
-    || representativeTieBreakScore(right) - representativeTieBreakScore(left)
-    || left.filePath.localeCompare(right.filePath)
-    || left.line - right.line
-    || left.qualifiedName.localeCompare(right.qualifiedName));
+  return rankHeuristicCandidatesDetailed(symbols, context).map((entry) => entry.symbol);
+}
+
+export function rankHeuristicCandidatesDetailed(
+  symbols: Symbol[],
+  context?: HeuristicLookupContext,
+): RankedHeuristicCandidate[] {
+  return symbols
+    .map((symbol) => ({
+      symbol,
+      rankScore: heuristicContextScore(symbol, context),
+      selectedReason: deriveSelectedReason(symbol, context),
+    }))
+    .sort((left, right) =>
+      right.rankScore - left.rankScore
+      || representativeTieBreakScore(right.symbol) - representativeTieBreakScore(left.symbol)
+      || left.symbol.filePath.localeCompare(right.symbol.filePath)
+      || left.symbol.line - right.symbol.line
+      || left.symbol.qualifiedName.localeCompare(right.symbol.qualifiedName));
 }
 
 function heuristicContextScore(symbol: Symbol, context?: HeuristicLookupContext): number {
@@ -367,6 +451,66 @@ function heuristicContextScore(symbol: Symbol, context?: HeuristicLookupContext)
   if (context.anchorScopePrefixes?.some((prefix) => symbol.qualifiedName === prefix || symbol.qualifiedName.startsWith(`${prefix}::`))) score += 70;
 
   return score;
+}
+
+function buildHeuristicSelectionMetadata(
+  candidateCount: number,
+  rankedCandidates?: RankedHeuristicCandidate[],
+): HeuristicSelectionMetadata {
+  const selected = rankedCandidates?.[0];
+  if (!selected) {
+    return {};
+  }
+
+  return {
+    selectedReason: selected.selectedReason,
+    ...(candidateCount > 1 ? { topCandidates: toTopCandidates(rankedCandidates) } : {}),
+  };
+}
+
+function toTopCandidates(rankedCandidates: RankedHeuristicCandidate[]): HeuristicTopCandidate[] {
+  return rankedCandidates.slice(0, 5).map((entry) => ({
+    id: entry.symbol.id,
+    qualifiedName: entry.symbol.qualifiedName,
+    filePath: entry.symbol.filePath,
+    line: entry.symbol.line,
+    ...(entry.symbol.signature ? { signature: entry.symbol.signature } : {}),
+    rankScore: entry.rankScore,
+  }));
+}
+
+function deriveSelectedReason(symbol: Symbol, context?: HeuristicLookupContext): string {
+  if (context?.anchorNeighborSymbolIds?.includes(symbol.id)) {
+    return "Matched a direct neighbor of the anchor symbol.";
+  }
+  if (context?.artifactKind && symbol.artifactKind === context.artifactKind) {
+    return `Matched artifact kind '${context.artifactKind}'.`;
+  }
+  if (context?.subsystem && symbol.subsystem === context.subsystem) {
+    return `Matched subsystem '${context.subsystem}'.`;
+  }
+  if (context?.module && symbol.module === context.module) {
+    return `Matched module '${context.module}'.`;
+  }
+  if (context?.projectArea && symbol.projectArea === context.projectArea) {
+    return `Matched project area '${context.projectArea}'.`;
+  }
+  if (context?.filePath && filePathNeighborhoodScore(symbol.filePath, context.filePath) > 0) {
+    return "Closest match to the provided file path neighborhood.";
+  }
+  if (context?.anchorScopePrefixes?.some((prefix) => symbol.qualifiedName === prefix || symbol.qualifiedName.startsWith(`${prefix}::`))) {
+    return "Matched the anchor symbol scope context.";
+  }
+  if (context?.language && symbol.language === context.language) {
+    return `Matched language '${context.language}'.`;
+  }
+  if (symbol.artifactKind === "runtime") {
+    return "Preferred runtime candidate by default heuristic ranking.";
+  }
+  if (looksLikeImplementationPath(symbol.filePath)) {
+    return "Preferred implementation-path candidate by default heuristic ranking.";
+  }
+  return "Won deterministic tie-breakers among same-name candidates.";
 }
 
 function baseHeuristicScore(symbol: Symbol): number {

@@ -2,6 +2,7 @@ import request from "supertest";
 import { createApp } from "../app";
 import { SqliteStore } from "../storage/sqlite-store";
 import * as path from "path";
+import { recordMcpToolCall, resetMcpRuntimeStatsForTests } from "../runtime-stats";
 
 const DB_PATH = path.resolve(__dirname, "../../../samples/.codeatlas/index.db");
 let store: SqliteStore;
@@ -14,6 +15,10 @@ beforeAll(() => {
 
 afterAll(() => {
   store.close();
+});
+
+beforeEach(() => {
+  resetMcpRuntimeStatsForTests();
 });
 
 describe("Dashboard static serving", () => {
@@ -30,6 +35,24 @@ describe("Dashboard static serving", () => {
 });
 
 describe("Dashboard consumes same API contracts as agents", () => {
+  it("dashboard overview exposes index details and MCP runtime stats", async () => {
+    recordMcpToolCall({ toolName: "lookup_symbol", elapsedMs: 12, ok: true });
+    recordMcpToolCall({ toolName: "find_references", elapsedMs: 28, ok: false, errorMessage: "boom" });
+
+    const res = await request(app).get("/dashboard/api/overview").expect(200);
+    expect(res.body).toHaveProperty("generatedAt");
+    expect(res.body).toHaveProperty("workspace");
+    expect(res.body).toHaveProperty("index");
+    expect(res.body).toHaveProperty("mcp");
+    expect(res.body.index).toHaveProperty("counts");
+    expect(res.body.index).toHaveProperty("fileRiskCounts");
+    expect(res.body.index).toHaveProperty("backend");
+    expect(res.body.mcp.totalToolCalls).toBe(2);
+    expect(res.body.mcp.totalErrors).toBe(1);
+    expect(Array.isArray(res.body.mcp.tools)).toBe(true);
+    expect(Array.isArray(res.body.mcp.recentCalls)).toBe(true);
+  });
+
   it("search endpoint returns same shape for dashboard and MCP", async () => {
     const res = await request(app).get("/search?q=Update").expect(200);
     expect(res.body).toHaveProperty("query");

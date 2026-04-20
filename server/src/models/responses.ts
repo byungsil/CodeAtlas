@@ -53,10 +53,45 @@ export interface AmbiguityInfo {
   candidateCount: number;
 }
 
+export interface HeuristicTopCandidate {
+  id: string;
+  qualifiedName: string;
+  filePath: string;
+  line: number;
+  signature?: string;
+  rankScore: number;
+}
+
+export interface HeuristicSelectionMetadata {
+  selectedReason?: string;
+  topCandidates?: HeuristicTopCandidate[];
+}
+
 export interface ConfidenceMetadata {
   confidence: ConfidenceLevel;
   matchReasons: MatchReason[];
   ambiguity?: AmbiguityInfo;
+}
+
+export type ReliabilityLevel = "full" | "partial" | "low";
+
+export type ReliabilityFactor =
+  | "elevated_parse_fragility"
+  | "macro_sensitive"
+  | "include_heavy";
+
+export type IndexCoverageLevel = "full" | "partial" | "low";
+
+export interface ReliabilitySummary {
+  level: ReliabilityLevel;
+  factors: ReliabilityFactor[];
+  suggestion?: string;
+}
+
+export interface ReliabilityMetadata {
+  reliability: ReliabilitySummary;
+  indexCoverage?: IndexCoverageLevel;
+  coverageWarning?: string;
 }
 
 export interface SymbolLookupResponse extends ConfidenceMetadata {
@@ -70,7 +105,7 @@ export interface SymbolLookupResponse extends ConfidenceMetadata {
   members?: Symbol[];
 }
 
-export interface FunctionResponse {
+export interface FunctionResponse extends HeuristicSelectionMetadata, ReliabilityMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
   confidence: ConfidenceLevel;
@@ -80,7 +115,7 @@ export interface FunctionResponse {
   callees: CallReference[];
 }
 
-export interface CallerQueryResponse {
+export interface CallerQueryResponse extends HeuristicSelectionMetadata, ReliabilityMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
   confidence: ConfidenceLevel;
@@ -99,13 +134,35 @@ export interface CallerQueryResponse {
   groupedByLanguage?: MetadataGroupSummary[];
 }
 
-export interface ClassResponse {
+export interface ClassResponse extends HeuristicSelectionMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
   confidence: ConfidenceLevel;
   matchReasons: MatchReason[];
   ambiguity?: AmbiguityInfo;
   members: Symbol[];
+}
+
+export interface OverloadCandidate {
+  id: string;
+  qualifiedName: string;
+  filePath: string;
+  line: number;
+  signature?: string;
+}
+
+export interface OverloadGroup {
+  qualifiedName: string;
+  type: Symbol["type"];
+  count: number;
+  candidates: OverloadCandidate[];
+}
+
+export interface OverloadQueryResponse {
+  query: string;
+  totalCount: number;
+  groupCount: number;
+  groups: OverloadGroup[];
 }
 
 export interface SearchResponse {
@@ -125,6 +182,21 @@ export interface SearchResponse {
 export interface CallGraphNode {
   symbol: Pick<Symbol, "id" | "name" | "qualifiedName" | "type" | "filePath" | "line">;
   callees: CallGraphEdge[];
+  callers?: CallGraphEdge[];
+}
+
+export interface CompactCallGraphSymbol {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+  line: number;
+}
+
+export interface CompactCallGraphNode {
+  symbol: CompactCallGraphSymbol;
+  callees: CallGraphEdge[];
+  callers?: CallGraphEdge[];
 }
 
 export interface CallGraphEdge {
@@ -136,10 +208,26 @@ export interface CallGraphEdge {
   children?: CallGraphEdge[];
 }
 
-export interface CallGraphResponse {
+export type CallGraphDirection = "callees" | "callers" | "both";
+
+export interface CallGraphResponse extends ReliabilityMetadata {
   root: CallGraphNode;
+  direction: CallGraphDirection;
   depth: number;
   maxDepth: number;
+  nodeCount: number;
+  nodeCap: number;
+  truncated: boolean;
+}
+
+export interface CompactCallGraphResponse extends ReliabilityMetadata {
+  responseMode: "compact";
+  root: CompactCallGraphNode;
+  direction: CallGraphDirection;
+  depth: number;
+  maxDepth: number;
+  nodeCount: number;
+  nodeCap: number;
   truncated: boolean;
 }
 
@@ -160,7 +248,8 @@ export type ReferenceCategory =
   | "classInstantiation"
   | "moduleImport"
   | "typeUsage"
-  | "inheritanceMention";
+  | "inheritanceMention"
+  | "enumValueUsage";
 
 export interface ReferenceRecord {
   sourceSymbolId: string;
@@ -181,11 +270,40 @@ export interface MetadataGroupSummary {
   count: number;
 }
 
-export interface ReferenceQueryResponse extends ConfidenceMetadata {
+export interface ReferenceQueryResponse extends ConfidenceMetadata, ReliabilityMetadata {
   lookupMode: LookupMode;
   symbol: Symbol;
   window: ResultWindow;
   references: ResolvedReference[];
+  totalCount: number;
+  truncated: boolean;
+  category?: ReferenceCategory;
+  filePath?: string;
+  subsystem?: string;
+  module?: string;
+  projectArea?: string;
+  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
+  groupedBySubsystem?: MetadataGroupSummary[];
+  groupedByModule?: MetadataGroupSummary[];
+  groupedByLanguage?: MetadataGroupSummary[];
+}
+
+export interface CompactReferenceRecord {
+  sourceSymbolId: string;
+  sourceQualifiedName: string;
+  targetSymbolId: string;
+  targetQualifiedName: string;
+  category: ReferenceCategory;
+  filePath: string;
+  line: number;
+}
+
+export interface CompactReferenceQueryResponse extends ConfidenceMetadata, ReliabilityMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  references: CompactReferenceRecord[];
   totalCount: number;
   truncated: boolean;
   category?: ReferenceCategory;
@@ -252,6 +370,23 @@ export interface FileSymbolsResponse {
   summary: StructureOverviewSummary;
   window: ResultWindow;
   symbols: Symbol[];
+}
+
+export interface CompactFileSymbol {
+  id: string;
+  name: string;
+  qualifiedName: string;
+  type: Symbol["type"];
+  line: number;
+  endLine: number;
+}
+
+export interface CompactFileSymbolsResponse {
+  responseMode: "compact";
+  filePath: string;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  symbols: CompactFileSymbol[];
 }
 
 export interface NamespaceSymbolsResponse extends ConfidenceMetadata {

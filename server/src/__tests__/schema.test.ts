@@ -28,7 +28,7 @@ describe("Schema and contract validation", () => {
     });
 
     it("has valid symbol types", () => {
-      const validTypes = ["function", "method", "class", "struct", "enum", "namespace", "variable", "typedef"];
+      const validTypes = ["function", "method", "class", "struct", "enum", "enumMember", "namespace", "variable", "typedef"];
       for (const s of symbols) {
         expect(validTypes).toContain(s.type);
       }

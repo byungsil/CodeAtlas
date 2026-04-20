@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::path::Path;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use crate::models::{
@@ -9,6 +10,9 @@ use crate::models::{
 #[cfg(test)]
 use crate::models::InheritanceEdge;
 use crate::resolver;
+
+const DB_SCHEMA_VERSION: i64 = 1;
+const INDEX_FORMAT_VERSION: u32 = 1;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
 
@@ -143,6 +147,11 @@ CREATE TABLE IF NOT EXISTS files (
     include_heaviness TEXT
 );
 
+CREATE TABLE IF NOT EXISTS db_metadata (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_id ON symbols_raw(id);
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_name ON symbols_raw(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_raw_file ON symbols_raw(file_path);
@@ -182,6 +191,38 @@ pub struct Database {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexMetadata {
+    pub format_version: u32,
+    pub indexer_version: String,
+    pub workspace_root: String,
+    pub extensions_csv: String,
+}
+
+impl IndexMetadata {
+    pub fn mismatch_reason(&self, expected: &Self) -> Option<String> {
+        if self.format_version != expected.format_version {
+            return Some(format!(
+                "index format version mismatch (db={}, current={})",
+                self.format_version, expected.format_version
+            ));
+        }
+        if self.workspace_root != expected.workspace_root {
+            return Some(format!(
+                "workspace root mismatch (db={}, current={})",
+                self.workspace_root, expected.workspace_root
+            ));
+        }
+        if self.extensions_csv != expected.extensions_csv {
+            return Some(format!(
+                "indexed extensions changed (db={}, current={})",
+                self.extensions_csv, expected.extensions_csv
+            ));
+        }
+        None
+    }
+}
+
 impl Database {
     pub fn open(path: &Path) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
@@ -190,6 +231,7 @@ impl Database {
         Self::migrate_symbol_storage(&conn)?;
         Self::migrate_symbol_metadata(&conn)?;
         Self::migrate_fts(&conn)?;
+        conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
         Ok(Database { conn })
     }
 
@@ -570,6 +612,65 @@ impl Database {
 
     pub fn checkpoint(&self) -> SqlResult<()> {
         self.conn.execute_batch("PRAGMA optimize;")
+    }
+
+    pub fn write_index_metadata(&self, metadata: &IndexMetadata) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO db_metadata(key, value) VALUES (?1, ?2)",
+        )?;
+        for (key, value) in [
+            ("format_version", metadata.format_version.to_string()),
+            ("indexer_version", metadata.indexer_version.clone()),
+            ("workspace_root", metadata.workspace_root.clone()),
+            ("extensions_csv", metadata.extensions_csv.clone()),
+        ] {
+            stmt.execute(params![key, value])?;
+        }
+        Ok(())
+    }
+
+    pub fn read_index_metadata(&self) -> SqlResult<Option<IndexMetadata>> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM db_metadata")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut values = HashMap::new();
+        for row in rows {
+            let (key, value) = row?;
+            values.insert(key, value);
+        }
+
+        if values.is_empty() {
+            return Ok(None);
+        }
+
+        let format_version = values
+            .get("format_version")
+            .and_then(|value| value.parse::<u32>().ok());
+        let indexer_version = values.get("indexer_version").cloned();
+        let workspace_root = values.get("workspace_root").cloned();
+        let extensions_csv = values.get("extensions_csv").cloned();
+
+        match (
+            format_version,
+            indexer_version,
+            workspace_root,
+            extensions_csv,
+        ) {
+            (
+                Some(format_version),
+                Some(indexer_version),
+                Some(workspace_root),
+                Some(extensions_csv),
+            ) => Ok(Some(IndexMetadata {
+                format_version,
+                indexer_version,
+                workspace_root,
+                extensions_csv,
+            })),
+            _ => Ok(None),
+        }
     }
 
     pub fn quick_check(&self) -> SqlResult<Vec<String>> {
@@ -1148,6 +1249,43 @@ pub fn validate_existing_database(path: &Path) -> Result<(), String> {
     }
 }
 
+pub fn expected_index_metadata(workspace_root: &Path) -> IndexMetadata {
+    let mut extensions: Vec<String> = crate::constants::configured_extensions().into_iter().collect();
+    extensions.sort();
+    IndexMetadata {
+        format_version: INDEX_FORMAT_VERSION,
+        indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+        workspace_root: normalized_workspace_root(workspace_root),
+        extensions_csv: extensions.join(","),
+    }
+}
+
+pub fn existing_database_metadata_issue(
+    path: &Path,
+    expected: &IndexMetadata,
+) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let db = Database::open(path).map_err(|e| format!("open failed: {}", e))?;
+    let actual = db
+        .read_index_metadata()
+        .map_err(|e| format!("read metadata failed: {}", e))?;
+    match actual {
+        Some(actual) => Ok(actual.mismatch_reason(expected)),
+        None => Ok(Some("index metadata missing".to_string())),
+    }
+}
+
+fn normalized_workspace_root(workspace_root: &Path) -> String {
+    workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn row_to_symbol(row: &rusqlite::Row<'_>) -> SqlResult<Symbol> {
     Ok(Symbol {
         id: row.get(0)?,
@@ -1188,6 +1326,7 @@ fn reference_category_key(category: &ReferenceCategory) -> &'static str {
         ReferenceCategory::ModuleImport => "moduleImport",
         ReferenceCategory::TypeUsage => "typeUsage",
         ReferenceCategory::InheritanceMention => "inheritanceMention",
+        ReferenceCategory::EnumValueUsage => "enumValueUsage",
     }
 }
 
@@ -1198,6 +1337,7 @@ fn reference_category_from_key(value: &str) -> ReferenceCategory {
         "moduleImport" => ReferenceCategory::ModuleImport,
         "typeUsage" => ReferenceCategory::TypeUsage,
         "inheritanceMention" => ReferenceCategory::InheritanceMention,
+        "enumValueUsage" => ReferenceCategory::EnumValueUsage,
         _ => ReferenceCategory::FunctionCall,
     }
 }
@@ -1761,6 +1901,28 @@ mod tests {
     }
 
     #[test]
+    fn writes_enum_value_usage_references() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let references = vec![NormalizedReference {
+            source_symbol_id: "Game::Controller::Update".into(),
+            target_symbol_id: "Game::AIState::Idle".into(),
+            category: ReferenceCategory::EnumValueUsage,
+            file_path: "controller.cpp".into(),
+            line: 12,
+            confidence: RawExtractionConfidence::Partial,
+        }];
+
+        db.write_references(&references).unwrap();
+
+        let category: String = db.conn.query_row(
+            "SELECT category FROM symbol_references LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(category, "enumValueUsage");
+    }
+
+    #[test]
     fn cleanup_dangling_references_removes_non_workspace_targets() {
         let db = Database::open(Path::new(":memory:")).unwrap();
         let symbols = vec![
@@ -2070,5 +2232,51 @@ mod tests {
 
         let err = validate_existing_database(&db_path).unwrap_err();
         assert!(err.contains("open failed") || err.contains("quick_check failed"));
+    }
+
+    #[test]
+    fn index_metadata_round_trips() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let metadata = IndexMetadata {
+            format_version: 1,
+            indexer_version: "1.2.3".into(),
+            workspace_root: "E:/Dev/project".into(),
+            extensions_csv: "cpp,h,hpp".into(),
+        };
+
+        db.write_index_metadata(&metadata).unwrap();
+
+        let stored = db.read_index_metadata().unwrap().unwrap();
+        assert_eq!(stored, metadata);
+    }
+
+    #[test]
+    fn existing_database_metadata_issue_detects_missing_and_changed_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let db = Database::open(&db_path).unwrap();
+        let expected = IndexMetadata {
+            format_version: 1,
+            indexer_version: "1.2.3".into(),
+            workspace_root: "E:/Dev/project".into(),
+            extensions_csv: "cpp,h,hpp".into(),
+        };
+
+        let missing = existing_database_metadata_issue(&db_path, &expected).unwrap();
+        assert_eq!(missing, Some("index metadata missing".to_string()));
+
+        db.write_index_metadata(&expected).unwrap();
+        let healthy = existing_database_metadata_issue(&db_path, &expected).unwrap();
+        assert_eq!(healthy, None);
+
+        let changed = IndexMetadata {
+            extensions_csv: "cpp,h,hpp,py".into(),
+            ..expected.clone()
+        };
+        let mismatch = existing_database_metadata_issue(&db_path, &changed).unwrap();
+        assert_eq!(
+            mismatch,
+            Some("indexed extensions changed (db=cpp,h,hpp, current=cpp,h,hpp,py)".to_string())
+        );
     }
 }

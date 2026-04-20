@@ -11,6 +11,7 @@ export type SymbolType =
   | "class"
   | "struct"
   | "enum"
+  | "enumMember"
   | "namespace"
   | "variable"
   | "typedef";

@@ -136,6 +136,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
             (Vec::new(), 0, 0)
         };
     let graph_relation_ms = graph_relation_start.elapsed().as_millis();
+    let enum_value_references = extract_enum_value_references(tree.root_node(), &ctx, &ctx.symbols);
     let legacy_raw_calls = ctx.raw_calls;
     let legacy_relation_events: Vec<RawRelationEvent> = legacy_raw_calls
         .iter()
@@ -167,7 +168,8 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         (mixed_relation_events, legacy_raw_calls)
     };
     let reference_normalization_start = Instant::now();
-    let normalized_references = extract_normalized_references(&relation_events, &ctx.symbols);
+    let mut normalized_references = extract_normalized_references(&relation_events, &ctx.symbols);
+    merge_normalized_references(&mut normalized_references, enum_value_references);
     let reference_normalization_ms = reference_normalization_start.elapsed().as_millis();
 
     Ok(ParseResult {
@@ -357,6 +359,7 @@ fn extract_graph_relation_events(
             let confidence = match relation_kind {
                 RawRelationKind::Inheritance => RawExtractionConfidence::Partial,
                 RawRelationKind::TypeUsage => RawExtractionConfidence::Partial,
+                RawRelationKind::EnumValueUsage => RawExtractionConfidence::Partial,
                 RawRelationKind::Call => match read_attr_str(attrs, "call_kind") {
                     Some("qualified") => RawExtractionConfidence::Partial,
                     _ => {
@@ -455,6 +458,7 @@ fn extract_normalized_references(
         let category = match event.relation_kind {
             RawRelationKind::TypeUsage => ReferenceCategory::TypeUsage,
             RawRelationKind::Inheritance => ReferenceCategory::InheritanceMention,
+            RawRelationKind::EnumValueUsage => ReferenceCategory::EnumValueUsage,
             RawRelationKind::Call => continue,
         };
 
@@ -511,6 +515,135 @@ fn extract_type_usage_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationE
     }
 
     events
+}
+
+fn extract_enum_value_references(
+    root: Node,
+    ctx: &Ctx,
+    symbols: &[Symbol],
+) -> Vec<NormalizedReference> {
+    let symbol_index = build_symbol_index(symbols);
+    let mut references = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "qualified_identifier" || node.kind() == "identifier" {
+            if let Some(reference) = enum_value_reference_for_node(node, ctx, &symbol_index) {
+                let key = format!(
+                    "{}|{}|{:?}|{}|{}",
+                    reference.source_symbol_id,
+                    reference.target_symbol_id,
+                    reference.category,
+                    reference.file_path,
+                    reference.line
+                );
+                if seen.insert(key) {
+                    references.push(reference);
+                }
+            }
+        }
+
+        for child in named_children(node) {
+            stack.push(child);
+        }
+    }
+
+    references
+}
+
+fn enum_value_reference_for_node(
+    node: Node,
+    ctx: &Ctx,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> Option<NormalizedReference> {
+    if !enum_value_usage_context(node) {
+        return None;
+    }
+
+    let line = node.start_position().row + 1;
+    let source_symbol_id = read_enclosing_symbol_id(line, ctx)?;
+    let target_name = ctx.node_text(node);
+    let event = RawRelationEvent {
+        relation_kind: RawRelationKind::EnumValueUsage,
+        source: RawEventSource::LegacyAst,
+        confidence: RawExtractionConfidence::Partial,
+        caller_id: Some(source_symbol_id.clone()),
+        target_name: Some(target_name),
+        call_kind: None,
+        argument_count: None,
+        receiver: None,
+        receiver_kind: None,
+        qualifier: None,
+        qualifier_kind: None,
+        file_path: ctx.file_path.clone(),
+        line,
+    };
+    let target_symbol_id = resolve_reference_target_id(&event, &source_symbol_id, symbol_index)?;
+
+    Some(NormalizedReference {
+        source_symbol_id,
+        target_symbol_id,
+        category: ReferenceCategory::EnumValueUsage,
+        file_path: ctx.file_path.clone(),
+        line,
+        confidence: RawExtractionConfidence::Partial,
+    })
+}
+
+fn enum_value_usage_context(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "argument_list" | "assignment_expression" | "binary_expression" | "return_statement" => {
+                return true;
+            }
+            "init_declarator" => {
+                return true;
+            }
+            "function_definition" | "declaration" | "field_declaration" | "parameter_declaration" => {
+                return false;
+            }
+            _ => {
+                current = parent.parent();
+            }
+        }
+    }
+
+    false
+}
+
+fn merge_normalized_references(
+    references: &mut Vec<NormalizedReference>,
+    incoming: Vec<NormalizedReference>,
+) {
+    let mut seen: HashSet<String> = references
+        .iter()
+        .map(|reference| {
+            format!(
+                "{}|{}|{:?}|{}|{}",
+                reference.source_symbol_id,
+                reference.target_symbol_id,
+                reference.category,
+                reference.file_path,
+                reference.line
+            )
+        })
+        .collect();
+
+    for reference in incoming {
+        let key = format!(
+            "{}|{}|{:?}|{}|{}",
+            reference.source_symbol_id,
+            reference.target_symbol_id,
+            reference.category,
+            reference.file_path,
+            reference.line
+        );
+        if seen.insert(key) {
+            references.push(reference);
+        }
+    }
 }
 
 fn extract_inheritance_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationEvent> {
@@ -1635,12 +1768,17 @@ fn resolve_reference_target_id(
 fn reference_target_allowed(event: &RawRelationEvent, symbol: &Symbol) -> bool {
     match event.relation_kind {
         RawRelationKind::Inheritance => is_type_like_symbol(symbol),
+        RawRelationKind::EnumValueUsage => is_enum_member_symbol(symbol),
         RawRelationKind::TypeUsage | RawRelationKind::Call => true,
     }
 }
 
 fn is_type_like_symbol(symbol: &Symbol) -> bool {
-    matches!(symbol.symbol_type.as_str(), "class" | "struct")
+    matches!(symbol.symbol_type.as_str(), "class" | "struct" | "enum")
+}
+
+fn is_enum_member_symbol(symbol: &Symbol) -> bool {
+    symbol.symbol_type == "enumMember"
 }
 
 fn symbol_namespace<'a>(symbol: &'a Symbol) -> Option<&'a str> {
@@ -2034,15 +2172,17 @@ fn visit_enum(node: Node, ctx: &mut Ctx) {
     };
     let name = ctx.node_text(name_node);
     let enum_id = ctx.qualify(&name);
+    let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
 
     ctx.symbols.push(Symbol {
         id: enum_id.clone(),
         name,
-        qualified_name: enum_id,
+        qualified_name: enum_id.clone(),
         symbol_type: "enum".to_string(),
         file_path: ctx.file_path.clone(),
-        line: node.start_position().row + 1,
-        end_line: node.end_position().row + 1,
+        line,
+        end_line,
         signature: None,
         parameter_count: None,
         scope_qualified_name: None,
@@ -2064,6 +2204,48 @@ fn visit_enum(node: Node, ctx: &mut Ctx) {
         macro_sensitivity: None,
         include_heaviness: None,
     });
+
+    if let Some(body) = find_child(node, "enumerator_list") {
+        for enumerator in named_children(body) {
+            if enumerator.kind() != "enumerator" {
+                continue;
+            }
+            let Some(member_name_node) = enumerator.child_by_field_name("name") else {
+                continue;
+            };
+            let member_name = ctx.node_text(member_name_node);
+            let member_id = format!("{}::{}", enum_id, member_name);
+            ctx.symbols.push(Symbol {
+                id: member_id.clone(),
+                name: member_name,
+                qualified_name: member_id,
+                symbol_type: "enumMember".to_string(),
+                file_path: ctx.file_path.clone(),
+                line: enumerator.start_position().row + 1,
+                end_line: enumerator.end_position().row + 1,
+                signature: None,
+                parameter_count: None,
+                scope_qualified_name: None,
+                scope_kind: None,
+                symbol_role: None,
+                declaration_file_path: None,
+                declaration_line: None,
+                declaration_end_line: None,
+                definition_file_path: None,
+                definition_line: None,
+                definition_end_line: None,
+                parent_id: Some(enum_id.clone()),
+                module: None,
+                subsystem: None,
+                project_area: None,
+                artifact_kind: None,
+                header_role: None,
+                parse_fragility: None,
+                macro_sensitivity: None,
+                include_heaviness: None,
+            });
+        }
+    }
 }
 
 fn visit_function_definition(node: Node, ctx: &mut Ctx) {
@@ -2715,6 +2897,7 @@ mod tests {
                 RawRelationKind::Call => "call",
                 RawRelationKind::TypeUsage => "type_usage",
                 RawRelationKind::Inheritance => "inheritance",
+                RawRelationKind::EnumValueUsage => "enum_value_usage",
             },
             event.caller_id.as_deref().unwrap_or_default(),
             event.target_name.as_deref().unwrap_or_default(),
@@ -3336,9 +3519,68 @@ void Player::Update(float dt) {
     fn parses_enum_class() {
         let src = "enum class AIState { Idle, Patrol, Chase };";
         let result = parse_cpp_file("test.h", src).unwrap();
-        assert_eq!(result.symbols.len(), 1);
-        assert_eq!(result.symbols[0].name, "AIState");
-        assert_eq!(result.symbols[0].symbol_type, "enum");
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.name == "AIState" && symbol.symbol_type == "enum"
+        }));
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "AIState::Idle" && symbol.symbol_type == "enumMember"
+        }));
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "AIState::Patrol" && symbol.symbol_type == "enumMember"
+        }));
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "AIState::Chase" && symbol.symbol_type == "enumMember"
+        }));
+    }
+
+    #[test]
+    fn emits_enum_value_usage_references_for_qualified_and_plain_members() {
+        let src = r#"
+namespace Game {
+enum class AIState { Idle, Patrol, Chase };
+enum LegacyMode { Off, On };
+
+class Controller {
+public:
+    void Update() {
+        AIState state = AIState::Idle;
+        if (state == AIState::Patrol) {
+            state = AIState::Chase;
+        }
+        LegacyMode mode = On;
+    }
+};
+}
+"#;
+        let result = parse_cpp_file("enum_usage.cpp", src).unwrap();
+        let enum_refs: Vec<_> = result
+            .normalized_references
+            .iter()
+            .filter(|reference| reference.category == ReferenceCategory::EnumValueUsage)
+            .collect();
+
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "Game::AIState::Idle" && symbol.symbol_type == "enumMember"
+        }));
+        assert!(result.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "Game::LegacyMode::On" && symbol.symbol_type == "enumMember"
+        }));
+        assert!(enum_refs.iter().any(|reference| {
+            reference.target_symbol_id == "Game::AIState::Idle"
+                && reference.source_symbol_id == "Game::Controller::Update"
+        }));
+        assert!(enum_refs.iter().any(|reference| {
+            reference.target_symbol_id == "Game::AIState::Patrol"
+                && reference.source_symbol_id == "Game::Controller::Update"
+        }));
+        assert!(enum_refs.iter().any(|reference| {
+            reference.target_symbol_id == "Game::AIState::Chase"
+                && reference.source_symbol_id == "Game::Controller::Update"
+        }));
+        assert!(enum_refs.iter().any(|reference| {
+            reference.target_symbol_id == "Game::LegacyMode::On"
+                && reference.source_symbol_id == "Game::Controller::Update"
+        }));
     }
 
     #[test]

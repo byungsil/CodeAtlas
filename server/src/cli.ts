@@ -212,6 +212,7 @@ function main(): void {
         contentHash: hashContent(content),
         lastIndexed: new Date().toISOString(),
         symbolCount: result.symbols.length,
+        language: "cpp",
       });
 
       console.log(`  ${relativePath}: ${result.symbols.length} symbols, ${result.rawCalls.length} raw calls`);

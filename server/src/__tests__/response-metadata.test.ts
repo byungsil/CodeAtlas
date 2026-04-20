@@ -4,6 +4,7 @@ import {
   buildFunctionResponse,
   deriveLegacyLookupMetadata,
   makeResolvedCallReference,
+  rankHeuristicCandidatesDetailed,
 } from "../response-metadata";
 import { Symbol } from "../models/symbol";
 
@@ -32,11 +33,23 @@ describe("response confidence metadata", () => {
   });
 
   it("derives ambiguity metadata for duplicate legacy lookup", () => {
-    expect(deriveLegacyLookupMetadata(3)).toEqual({
+    const ranked = rankHeuristicCandidatesDetailed([
+      makeSymbol({ id: "Game::Runtime::Update", qualifiedName: "Game::Runtime::Update", filePath: "runtime/update.cpp", artifactKind: "runtime" }),
+      makeSymbol({ id: "Game::Editor::Update", qualifiedName: "Game::Editor::Update", filePath: "editor/update.cpp", artifactKind: "editor" }),
+      makeSymbol({ id: "Game::Tests::Update", qualifiedName: "Game::Tests::Update", filePath: "tests/update.cpp", artifactKind: "test" }),
+    ]);
+
+    expect(deriveLegacyLookupMetadata(3, ranked)).toEqual({
       lookupMode: "heuristic",
       confidence: "ambiguous",
       matchReasons: ["ambiguous_top_score"],
       ambiguity: { candidateCount: 3 },
+      selectedReason: "Preferred runtime candidate by default heuristic ranking.",
+      topCandidates: [
+        { id: "Game::Runtime::Update", qualifiedName: "Game::Runtime::Update", filePath: "runtime/update.cpp", line: 10, rankScore: 42 },
+        { id: "Game::Editor::Update", qualifiedName: "Game::Editor::Update", filePath: "editor/update.cpp", line: 10, rankScore: 32 },
+        { id: "Game::Tests::Update", qualifiedName: "Game::Tests::Update", filePath: "tests/update.cpp", line: 10, rankScore: 14 },
+      ],
     });
   });
 
@@ -75,9 +88,14 @@ describe("response confidence metadata", () => {
   });
 
   it("propagates ambiguity metadata through function response", () => {
+    const ranked = rankHeuristicCandidatesDetailed([
+      makeSymbol({ id: "Game::Runtime::Update", qualifiedName: "Game::Runtime::Update", filePath: "runtime/update.cpp", artifactKind: "runtime" }),
+      makeSymbol({ id: "Game::Editor::Update", qualifiedName: "Game::Editor::Update", filePath: "editor/update.cpp", artifactKind: "editor" }),
+    ]);
     const response = buildFunctionResponse({
-      symbol: makeSymbol(),
+      symbol: ranked[0].symbol,
       candidateCount: 2,
+      rankedCandidates: ranked,
       callers: [],
       callees: [],
     });
@@ -85,17 +103,35 @@ describe("response confidence metadata", () => {
     expect(response.confidence).toBe("ambiguous");
     expect(response.matchReasons).toEqual(["ambiguous_top_score"]);
     expect(response.ambiguity).toEqual({ candidateCount: 2 });
+    expect(response.selectedReason).toBe("Preferred runtime candidate by default heuristic ranking.");
+    expect(response.topCandidates?.map((candidate) => candidate.qualifiedName)).toEqual([
+      "Game::Runtime::Update",
+      "Game::Editor::Update",
+    ]);
   });
 
   it("propagates heuristic confidence through class response", () => {
+    const ranked = rankHeuristicCandidatesDetailed([
+      makeSymbol({
+        id: "Game::Runtime::GameObject",
+        name: "GameObject",
+        qualifiedName: "Game::Runtime::GameObject",
+        type: "class",
+        filePath: "runtime/game_object.h",
+        artifactKind: "runtime",
+      }),
+    ]);
     const response = buildClassResponse({
-      symbol: makeSymbol({ id: "Game::GameObject", name: "GameObject", qualifiedName: "Game::GameObject", type: "class" }),
+      symbol: ranked[0].symbol,
       candidateCount: 1,
+      rankedCandidates: ranked,
       members: [],
     });
 
     expect(response.lookupMode).toBe("heuristic");
     expect(response.confidence).toBe("high_confidence_heuristic");
     expect(response.matchReasons).toEqual([]);
+    expect(response.selectedReason).toBe("Preferred runtime candidate by default heuristic ranking.");
+    expect(response.topCandidates).toBeUndefined();
   });
 });

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "codeatlas": {
+      "command": "node",
+      "args": [
+        "<unzipped-path>\\server\\dist\\mcp.js",
+        "<workspace-root>\\.codeatlas"
+      ],
+      "env": {
+        "CODEATLAS_WORKSPACE": "<workspace-root>",
+        "CODEATLAS_INDEXER_PATH": "<unzipped-path>\\bin\\codeatlas-indexer.exe",
+        "CODEATLAS_DASHBOARD_AUTOOPEN": "false"
+      }
+    }
+  }
+}

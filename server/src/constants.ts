@@ -5,5 +5,7 @@ export const CALLERS_DEFAULT_LIMIT = 50;
 export const CALLERS_MAX_LIMIT = 200;
 export const CALLGRAPH_DEFAULT_DEPTH = 3;
 export const CALLGRAPH_MAX_DEPTH = 10;
+export const CALLGRAPH_DEFAULT_NODE_CAP = 200;
+export const CALLGRAPH_MAX_NODE_CAP = 1000;
 export const DATA_DIR_NAME = ".codeatlas";
 export const DB_FILENAME = "index.db";

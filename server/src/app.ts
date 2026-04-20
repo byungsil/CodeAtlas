@@ -7,12 +7,14 @@ import {
   SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
   CALLERS_DEFAULT_LIMIT, CALLERS_MAX_LIMIT,
   CALLGRAPH_DEFAULT_DEPTH, CALLGRAPH_MAX_DEPTH,
+  CALLGRAPH_DEFAULT_NODE_CAP, CALLGRAPH_MAX_NODE_CAP,
 } from "./constants";
 import {
   FunctionResponse,
   CallerQueryResponse,
   ClassResponse,
   SearchResponse,
+  CallGraphDirection,
   CallGraphResponse,
   CallGraphEdge,
   CallReference,
@@ -27,6 +29,10 @@ import {
   NamespaceSymbolsResponse,
   OverrideQueryResponse,
   ExplainSymbolPropagationResponse,
+  CompactCallGraphResponse,
+  CompactFileSymbolsResponse,
+  CompactReferenceRecord,
+  CompactReferenceQueryResponse,
   PropagationEventRecord,
   PropagationKind,
   PropagationPathStep,
@@ -43,16 +49,24 @@ import {
   WorkspaceSummaryResponse,
 } from "./models/responses";
 import {
+  toCompactCallGraphResponse,
+  toCompactFileSymbolsResponse,
+  toCompactReferenceQueryResponse,
+} from "./compact-responses";
+import {
   buildClassResponse,
   buildCallerQueryResponse,
+  buildOverloadQueryResponse,
   deriveRepresentativeMetadata,
   buildResultWindow,
   buildExactLookupResponse,
   buildFunctionResponse,
   HeuristicLookupContext,
   makeResolvedCallReference,
-  rankHeuristicCandidates,
+  rankHeuristicCandidatesDetailed,
 } from "./response-metadata";
+import { buildResponseReliability } from "./reliability";
+import { getMcpRuntimeStatsSnapshot, readPersistedMcpRuntimeStatsSnapshot } from "./runtime-stats";
 import {
   buildInvestigateWorkflowResponse,
   createWorkflowProfiler,
@@ -61,8 +75,29 @@ import {
   toInvestigationAnchorSummary as sharedToInvestigationAnchorSummary,
 } from "./investigation-workflow";
 
-export function createApp(store: Store): express.Express {
+interface DashboardWorkspaceSource {
+  id: string;
+  label: string;
+  dataDir: string;
+  statsPath?: string;
+  store: Store;
+  isPrimary?: boolean;
+}
+
+interface AppOptions {
+  dashboardWorkspaces?: DashboardWorkspaceSource[];
+}
+
+export function createApp(store: Store, options?: AppOptions): express.Express {
   const app = express();
+  const dashboardWorkspaces = options?.dashboardWorkspaces ?? [{
+    id: "default",
+    label: "default",
+    dataDir: "",
+    store,
+    isPrimary: true,
+  }];
+  const primaryDashboardWorkspace = dashboardWorkspaces.find((workspace) => workspace.isPrimary) ?? dashboardWorkspaces[0];
 
   app.use("/dashboard", express.static(path.join(__dirname, "../public"), { index: "index.html" }));
   app.get("/dashboard", (_req, res) => res.redirect("/dashboard/"));
@@ -75,9 +110,30 @@ export function createApp(store: Store): express.Express {
     return res.status(400).json({ error: "Invalid exact lookup request", code: "BAD_REQUEST" } as ErrorResponse);
   }
 
-  function buildSymbolMap(ids: Iterable<string>): Map<string, CodeSymbol> {
+  function buildSymbolMapForStore(activeStore: Store, ids: Iterable<string>): Map<string, CodeSymbol> {
     const uniqueIds = Array.from(new Set(Array.from(ids)));
-    return new Map(store.getSymbolsByIds(uniqueIds).map((symbol) => [symbol.id, symbol]));
+    return new Map(activeStore.getSymbolsByIds(uniqueIds).map((symbol) => [symbol.id, symbol]));
+  }
+
+  function buildSymbolMap(ids: Iterable<string>): Map<string, CodeSymbol> {
+    return buildSymbolMapForStore(store, ids);
+  }
+
+  function makeCallRefForStore(
+    activeStore: Store,
+    call: { callerId?: string; calleeId?: string; filePath: string; line: number },
+    targetField: "callerId" | "calleeId",
+    symbolMap?: Map<string, CodeSymbol>,
+  ): CallReference | null {
+    const targetId = call[targetField];
+    if (!targetId) return null;
+    const sym = symbolMap?.get(targetId) ?? activeStore.getSymbolById(targetId);
+    if (!sym) return null;
+    return makeResolvedCallReference({
+      symbol: sym,
+      filePath: call.filePath,
+      line: call.line,
+    });
   }
 
   function makeCallRef(
@@ -85,15 +141,7 @@ export function createApp(store: Store): express.Express {
     targetField: "callerId" | "calleeId",
     symbolMap?: Map<string, CodeSymbol>,
   ): CallReference | null {
-    const targetId = call[targetField];
-    if (!targetId) return null;
-    const sym = symbolMap?.get(targetId) ?? store.getSymbolById(targetId);
-    if (!sym) return null;
-    return makeResolvedCallReference({
-      symbol: sym,
-      filePath: call.filePath,
-      line: call.line,
-    });
+    return makeCallRefForStore(store, call, targetField, symbolMap);
   }
 
   function parseMetadataFilters(source: Record<string, unknown>): MetadataFilters | undefined {
@@ -110,6 +158,10 @@ export function createApp(store: Store): express.Express {
     }
 
     return { language, subsystem, module, projectArea, artifactKind };
+  }
+
+  function parseCompactMode(value: unknown): boolean {
+    return value === "1" || value === "true" || value === true;
   }
 
   function parseHeuristicLookupContext(source: Record<string, unknown>): HeuristicLookupContext | undefined {
@@ -225,12 +277,151 @@ export function createApp(store: Store): express.Express {
       .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
   }
 
-  function buildWorkspaceSummary(): WorkspaceSummaryResponse {
-    const languages = store.getWorkspaceLanguageSummary();
+  function buildWorkspaceSummary(activeStore: Store = store): WorkspaceSummaryResponse {
+    const languages = activeStore.getWorkspaceLanguageSummary();
     return {
       languages,
       totalFiles: languages.reduce((sum, entry) => sum + entry.fileCount, 0),
       totalSymbols: languages.reduce((sum, entry) => sum + entry.symbolCount, 0),
+    };
+  }
+
+  function getDashboardWorkspace(id: string | undefined): DashboardWorkspaceSource {
+    if (!id) {
+      return primaryDashboardWorkspace;
+    }
+    return dashboardWorkspaces.find((workspace) => workspace.id === id) ?? primaryDashboardWorkspace;
+  }
+
+  function buildDashboardOverview(workspaceId?: string) {
+    const workspaceSource = getDashboardWorkspace(workspaceId);
+    const activeStore = workspaceSource.store;
+    const workspaceSummary = buildWorkspaceSummary(activeStore);
+    const indexDetails = typeof activeStore.getIndexDetails === "function"
+      ? activeStore.getIndexDetails()
+      : {
+        backend: "json" as const,
+        dataPath: "",
+        counts: {
+          symbols: workspaceSummary.totalSymbols,
+          calls: 0,
+          references: 0,
+          propagation: 0,
+          files: workspaceSummary.totalFiles,
+        },
+        fileRiskCounts: {
+          elevatedParseFragility: 0,
+          macroSensitive: 0,
+          includeHeavy: 0,
+        },
+      };
+    return {
+      generatedAt: new Date().toISOString(),
+      selectedWorkspaceId: workspaceSource.id,
+      availableWorkspaces: dashboardWorkspaces.map((workspace) => ({
+        id: workspace.id,
+        label: workspace.label,
+        dataDir: workspace.dataDir,
+      })),
+      workspace: workspaceSummary,
+      index: indexDetails,
+      mcp: workspaceSource.statsPath
+        ? readPersistedMcpRuntimeStatsSnapshot(workspaceSource.statsPath)
+        : getMcpRuntimeStatsSnapshot(),
+    };
+  }
+
+  function buildCallRefsForStore(
+    activeStore: Store,
+    calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
+    targetField: "callerId" | "calleeId",
+  ): CallReference[] {
+    const symbolMap = buildSymbolMapForStore(
+      activeStore,
+      calls.map((call) => call[targetField]).filter((symbolId): symbolId is string => Boolean(symbolId)),
+    );
+    return calls
+      .map((call) => makeCallRefForStore(activeStore, call, targetField, symbolMap))
+      .filter((call): call is CallReference => call !== null);
+  }
+
+  function buildDashboardFunctionPayload(activeStore: Store, name: string): FunctionResponse | null {
+    const candidates = activeStore.getSymbolsByName(name).filter((symbol) => symbol.type === "function" || symbol.type === "method");
+    const symbol = candidates[0];
+    if (!symbol) {
+      return null;
+    }
+    const payload = buildFunctionResponse({
+      symbol,
+      candidateCount: candidates.length,
+      callers: buildCallRefsForStore(activeStore, activeStore.getCallers(symbol.id), "callerId"),
+      callees: buildCallRefsForStore(activeStore, activeStore.getCallees(symbol.id), "calleeId"),
+    });
+    Object.assign(payload, buildResponseReliability({ symbol }));
+    return payload;
+  }
+
+  function buildDashboardClassPayload(activeStore: Store, name: string): ClassResponse | null {
+    const symbol = activeStore.getSymbolsByName(name).find((candidate) => candidate.type === "class" || candidate.type === "struct");
+    if (!symbol) {
+      return null;
+    }
+    return buildClassResponse({
+      symbol,
+      candidateCount: 1,
+      members: activeStore.getMembers(symbol.id),
+    });
+  }
+
+  function buildDashboardCallGraphPayload(activeStore: Store, name: string, maxDepth: number) {
+    const symbol = activeStore.getSymbolsByName(name).find((candidate) => candidate.type === "function" || candidate.type === "method");
+    if (!symbol) {
+      return null;
+    }
+
+    function expand(symbolId: string, depth: number, visited: Set<string>): CallGraphEdge[] {
+      if (depth >= maxDepth || visited.has(symbolId)) {
+        return [];
+      }
+      visited.add(symbolId);
+      return activeStore.getCallees(symbolId)
+        .map((call) => {
+          const target = activeStore.getSymbolById(call.calleeId);
+          if (!target) return null;
+          const children = expand(target.id, depth + 1, new Set(visited));
+          return {
+            targetId: target.id,
+            targetName: target.name,
+            targetQualifiedName: target.qualifiedName,
+            filePath: call.filePath,
+            line: call.line,
+            ...(children.length > 0 ? { children } : {}),
+          };
+        })
+        .filter((edge): edge is CallGraphEdge => edge !== null);
+    }
+
+    const root = {
+      symbol: {
+        id: symbol.id,
+        name: symbol.name,
+        qualifiedName: symbol.qualifiedName,
+        type: symbol.type,
+        filePath: symbol.filePath,
+        line: symbol.line,
+      },
+      callees: expand(symbol.id, 0, new Set<string>()),
+    };
+    const edgeCount = countCallGraphEdges(root.callees);
+    return {
+      ...buildResponseReliability({ symbol, relatedResultCount: edgeCount, zeroResultLabel: "callee edges" }),
+      root,
+      direction: "callees" as const,
+      depth: computeEdgeDepth(root.callees),
+      maxDepth,
+      nodeCount: edgeCount + 1,
+      nodeCap: CALLGRAPH_DEFAULT_NODE_CAP,
+      truncated: false,
     };
   }
 
@@ -286,14 +477,16 @@ export function createApp(store: Store): express.Express {
   }
 
   function buildResolvedReferences(
-    targetSymbolId: string,
+    targetSymbolIds: string[],
     category?: ReferenceCategory,
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
-    const rawReferences = store.getReferences(targetSymbolId, category, filePath);
-    const symbolMap = buildSymbolMap(rawReferences.map((reference) => reference.sourceSymbolId));
+    const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    const symbolMap = buildSymbolMap(
+      rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
+    );
     const references = rawReferences
       .map((reference) => {
         const sourceSymbol = symbolMap.get(reference.sourceSymbolId);
@@ -305,6 +498,13 @@ export function createApp(store: Store): express.Express {
         };
       })
       .filter((reference): reference is ResolvedReference => reference !== null)
+      .filter((reference, index, all) =>
+        all.findIndex((candidate) =>
+          candidate.sourceSymbolId === reference.sourceSymbolId
+          && candidate.targetSymbolId === reference.targetSymbolId
+          && candidate.category === reference.category
+          && candidate.filePath === reference.filePath
+          && candidate.line === reference.line) === index)
       .sort((a, b) =>
         a.category.localeCompare(b.category)
         || a.filePath.localeCompare(b.filePath)
@@ -316,6 +516,43 @@ export function createApp(store: Store): express.Express {
       totalCount: references.length,
       truncated: references.length > limit,
     };
+  }
+
+  function buildCompactResolvedReferences(references: ResolvedReference[]): CompactReferenceRecord[] {
+    const targetMap = buildSymbolMap(references.map((reference) => reference.targetSymbolId));
+    return references
+      .map((reference) => {
+        const targetSymbol = targetMap.get(reference.targetSymbolId);
+        if (!targetSymbol) return null;
+        return {
+          sourceSymbolId: reference.sourceSymbolId,
+          sourceQualifiedName: reference.sourceQualifiedName,
+          targetSymbolId: reference.targetSymbolId,
+          targetQualifiedName: targetSymbol.qualifiedName,
+          category: reference.category,
+          filePath: reference.filePath,
+          line: reference.line,
+        };
+      })
+      .filter((reference): reference is CompactReferenceRecord => reference !== null);
+  }
+
+  function buildReferenceTargetIds(
+    symbol: CodeSymbol,
+    category?: ReferenceCategory,
+    includeEnumValueUsage = false,
+  ): string[] {
+    if (!(includeEnumValueUsage && symbol.type === "enum")) {
+      return [symbol.id];
+    }
+
+    const enumMemberIds = store.getMembers(symbol.id)
+      .filter((member) => member.type === "enumMember")
+      .map((member) => member.id);
+    if (category === "enumValueUsage") {
+      return enumMemberIds;
+    }
+    return [symbol.id, ...enumMemberIds];
   }
 
   function parsePropagationKinds(source: Record<string, unknown>): PropagationKind[] | undefined {
@@ -670,7 +907,7 @@ export function createApp(store: Store): express.Express {
   ): ImpactAnalysisResponse {
     const directCallers = buildUniqueCallRefs(store.getCallers(symbol.id), "callerId", limit, metadataFilters);
     const directCallees = buildUniqueCallRefs(store.getCallees(symbol.id), "calleeId", limit, metadataFilters);
-    const directReferences = buildResolvedReferences(symbol.id, undefined, undefined, limit, metadataFilters);
+    const directReferences = buildResolvedReferences([symbol.id], undefined, undefined, limit, metadataFilters);
 
     const impactedSymbolCounts = new Map<string, number>();
     const impactedFileCounts = new Map<string, number>();
@@ -905,14 +1142,15 @@ export function createApp(store: Store): express.Express {
 
   function resolveFunctionSymbol(name: string, context?: HeuristicLookupContext) {
     const symbols = store.getSymbolsByName(name);
-    const functions = rankHeuristicCandidates(
+    const rankedCandidates = rankHeuristicCandidatesDetailed(
       symbols.filter((s) => s.type === "function" || s.type === "method"),
       context,
     );
-    const symbol = functions[0];
+    const symbol = rankedCandidates[0]?.symbol;
     return {
       symbol,
-      candidateCount: functions.length,
+      candidateCount: rankedCandidates.length,
+      rankedCandidates,
     };
   }
 
@@ -932,6 +1170,13 @@ export function createApp(store: Store): express.Express {
     }
 
     if (symbol.type === "class" || symbol.type === "struct") {
+      return {
+        ...base,
+        members: store.getMembers(symbol.id),
+      };
+    }
+
+    if (symbol.type === "enum") {
       return {
         ...base,
         members: store.getMembers(symbol.id),
@@ -979,7 +1224,7 @@ export function createApp(store: Store): express.Express {
   app.get("/function/:name", (req, res) => {
     const { name } = req.params;
     const context = parseHeuristicLookupContext(req.query as Record<string, unknown>);
-    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
+    const { symbol: sym, candidateCount, rankedCandidates } = resolveFunctionSymbol(name, context);
 
     if (!sym) {
       return notFound(res);
@@ -991,9 +1236,11 @@ export function createApp(store: Store): express.Express {
     const response: FunctionResponse = buildFunctionResponse({
       symbol: sym,
       candidateCount,
+      rankedCandidates,
       callers,
       callees,
     });
+    Object.assign(response, buildResponseReliability({ symbol: sym }));
     return res.json(response);
   });
 
@@ -1002,7 +1249,7 @@ export function createApp(store: Store): express.Express {
     const limit = Math.min(parseInt((req.query.limit as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
     const context = parseCallerLookupContext(req.query as Record<string, unknown>);
-    const { symbol: sym, candidateCount } = resolveFunctionSymbol(name, context);
+    const { symbol: sym, candidateCount, rankedCandidates } = resolveFunctionSymbol(name, context);
 
     if (!sym) {
       return notFound(res);
@@ -1012,11 +1259,17 @@ export function createApp(store: Store): express.Express {
     const response: CallerQueryResponse = buildCallerQueryResponse({
       symbol: sym,
       candidateCount,
+      rankedCandidates,
       callers: callers.results,
       totalCount: callers.totalCount,
       truncated: callers.truncated,
       limitApplied: limit,
     });
+    Object.assign(response, buildResponseReliability({
+      symbol: sym,
+      relatedResultCount: callers.totalCount,
+      zeroResultLabel: "callers",
+    }));
     const callerIds = callers.results.map((caller) => caller.symbolId);
     Object.assign(response, metadataFilterEcho(metadataFilters), {
       groupedBySubsystem: buildMetadataGroupSummary(callerIds, (caller) => caller.subsystem),
@@ -1029,11 +1282,11 @@ export function createApp(store: Store): express.Express {
   app.get("/class/:name", (req, res) => {
     const { name } = req.params;
     const context = parseHeuristicLookupContext(req.query as Record<string, unknown>);
-    const symbols = rankHeuristicCandidates(
+    const rankedCandidates = rankHeuristicCandidatesDetailed(
       store.getSymbolsByName(name).filter((s) => s.type === "class" || s.type === "struct"),
       context,
     );
-    const sym = symbols[0];
+    const sym = rankedCandidates[0]?.symbol;
 
     if (!sym) {
       return notFound(res);
@@ -1042,10 +1295,18 @@ export function createApp(store: Store): express.Express {
     const members = store.getMembers(sym.id);
     const response: ClassResponse = buildClassResponse({
       symbol: sym,
-      candidateCount: symbols.length,
+      candidateCount: rankedCandidates.length,
+      rankedCandidates,
       members,
     });
     return res.json(response);
+  });
+
+  app.get("/overloads/:name", (req, res) => {
+    const { name } = req.params;
+    const symbols = store.getSymbolsByName(name)
+      .filter((symbol) => symbol.type === "function" || symbol.type === "method");
+    return res.json(buildOverloadQueryResponse(name, symbols));
   });
 
   app.get("/references", (req, res) => {
@@ -1053,7 +1314,11 @@ export function createApp(store: Store): express.Express {
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
     const category = typeof req.query.category === "string" ? req.query.category as ReferenceCategory : undefined;
     const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
+    const includeEnumValueUsage =
+      req.query.includeEnumValueUsage === "1"
+      || req.query.includeEnumValueUsage === "true";
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const compact = parseCompactMode(req.query.compact);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
     if (!id && !qualifiedName) {
@@ -1076,11 +1341,22 @@ export function createApp(store: Store): express.Express {
       return notFound(res);
     }
 
-    const references = buildResolvedReferences(symbol.id, category, filePath, limit, metadataFilters);
+    const references = buildResolvedReferences(
+      buildReferenceTargetIds(symbol, category, includeEnumValueUsage),
+      category,
+      filePath,
+      limit,
+      metadataFilters,
+    );
     const response: ReferenceQueryResponse = {
       ...buildExactLookupResponse({
         symbol,
         matchedBy: id && qualifiedName ? "both" : id ? "id" : "qualifiedName",
+      }),
+      ...buildResponseReliability({
+        symbol,
+        relatedResultCount: references.totalCount,
+        zeroResultLabel: "references",
       }),
       window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit),
       references: references.results,
@@ -1093,6 +1369,13 @@ export function createApp(store: Store): express.Express {
       groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
       groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
     };
+    if (compact) {
+      const compactResponse: CompactReferenceQueryResponse = toCompactReferenceQueryResponse(
+        response,
+        buildCompactResolvedReferences(references.results),
+      );
+      return res.json(compactResponse);
+    }
     return res.json(response);
   });
 
@@ -1223,9 +1506,61 @@ export function createApp(store: Store): express.Express {
     return res.json(buildWorkspaceSummary());
   });
 
+  app.get("/dashboard/api/overview", (req, res) => {
+    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
+    return res.json(buildDashboardOverview(workspaceId));
+  });
+
+  app.get("/dashboard/api/search", (req, res) => {
+    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
+    const q = (req.query.q as string) || "";
+    const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const activeStore = getDashboardWorkspace(workspaceId).store;
+    if (!q) {
+      return res.status(400).json({ error: "Missing query parameter 'q'", code: "BAD_REQUEST" } as ErrorResponse);
+    }
+    const { results, totalCount } = activeStore.searchSymbols(q, undefined, limit);
+    return res.json({
+      query: q,
+      window: buildResultWindow(results.length, totalCount, totalCount > limit, limit),
+      results,
+      totalCount,
+      truncated: totalCount > limit,
+    });
+  });
+
+  app.get("/dashboard/api/function/:name", (req, res) => {
+    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
+    const payload = buildDashboardFunctionPayload(getDashboardWorkspace(workspaceId).store, req.params.name);
+    if (!payload) {
+      return notFound(res);
+    }
+    return res.json(payload);
+  });
+
+  app.get("/dashboard/api/class/:name", (req, res) => {
+    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
+    const payload = buildDashboardClassPayload(getDashboardWorkspace(workspaceId).store, req.params.name);
+    if (!payload) {
+      return notFound(res);
+    }
+    return res.json(payload);
+  });
+
+  app.get("/dashboard/api/callgraph/:name", (req, res) => {
+    const workspaceId = typeof req.query.workspace === "string" ? req.query.workspace : undefined;
+    const maxDepth = Math.min(parseInt((req.query.depth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
+    const payload = buildDashboardCallGraphPayload(getDashboardWorkspace(workspaceId).store, req.params.name, maxDepth);
+    if (!payload) {
+      return notFound(res);
+    }
+    return res.json(payload);
+  });
+
   app.get("/file-symbols", (req, res) => {
     const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const compact = parseCompactMode(req.query.compact);
     if (!filePath) {
       return res.status(400).json({ error: "Missing query parameter 'filePath'", code: "BAD_REQUEST" } as ErrorResponse);
     }
@@ -1238,6 +1573,10 @@ export function createApp(store: Store): express.Express {
       window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
       symbols: symbols.results,
     };
+    if (compact) {
+      const compactResponse: CompactFileSymbolsResponse = toCompactFileSymbolsResponse(response);
+      return res.json(compactResponse);
+    }
     return res.json(response);
   });
 
@@ -1393,38 +1732,119 @@ export function createApp(store: Store): express.Express {
     return res.json(traceShortestCallPath(source, target, maxDepth));
   });
 
-  function expandCallees(symbolId: string, currentDepth: number, maxDepth: number, visited: Set<string>): { edges: CallGraphEdge[]; truncated: boolean } {
+  function expandCallDirection(
+    symbolId: string,
+    currentDepth: number,
+    maxDepth: number,
+    visited: Set<string>,
+    state: { remainingNodeBudget: number },
+    direction: "callers" | "callees",
+  ): { edges: CallGraphEdge[]; truncated: boolean } {
+    const calls = direction === "callers" ? store.getCallers(symbolId) : store.getCallees(symbolId);
     if (currentDepth >= maxDepth || visited.has(symbolId)) {
-      const calls = store.getCallees(symbolId);
       return { edges: [], truncated: calls.length > 0 };
     }
     visited.add(symbolId);
 
-    const calls = store.getCallees(symbolId);
     let anyTruncated = false;
-    const edges: CallGraphEdge[] = calls
-      .map((c) => {
-        const target = store.getSymbolById(c.calleeId);
-        if (!target) return null;
-        const { edges: children, truncated } = expandCallees(target.id, currentDepth + 1, maxDepth, visited);
-        if (truncated) anyTruncated = true;
-        return {
-          targetId: target.id,
-          targetName: target.name,
-          targetQualifiedName: target.qualifiedName,
-          filePath: c.filePath,
-          line: c.line,
-          ...(children.length > 0 ? { children } : {}),
-        };
-      })
-      .filter((e): e is CallGraphEdge => e !== null);
+    const edges: CallGraphEdge[] = [];
+    for (const call of calls) {
+      const targetId = direction === "callers" ? call.callerId : call.calleeId;
+      const target = targetId ? store.getSymbolById(targetId) : undefined;
+      if (!target) {
+        continue;
+      }
+      if (visited.has(target.id)) {
+        anyTruncated = true;
+        continue;
+      }
+      if (state.remainingNodeBudget <= 0) {
+        anyTruncated = true;
+        break;
+      }
+
+      state.remainingNodeBudget -= 1;
+      const { edges: children, truncated } = expandCallDirection(
+        target.id,
+        currentDepth + 1,
+        maxDepth,
+        new Set(visited),
+        state,
+        direction,
+      );
+      if (truncated) anyTruncated = true;
+      edges.push({
+        targetId: target.id,
+        targetName: target.name,
+        targetQualifiedName: target.qualifiedName,
+        filePath: call.filePath,
+        line: call.line,
+        ...(children.length > 0 ? { children } : {}),
+      });
+    }
 
     return { edges, truncated: anyTruncated };
+  }
+
+  function buildCallGraphResponse(
+    symbol: CodeSymbol,
+    maxDepth: number,
+    direction: CallGraphDirection,
+    nodeCap: number,
+  ): CallGraphResponse {
+    const state = { remainingNodeBudget: Math.max(0, nodeCap - 1) };
+    const root: CallGraphResponse["root"] = {
+      symbol: {
+        id: symbol.id,
+        name: symbol.name,
+        qualifiedName: symbol.qualifiedName,
+        type: symbol.type,
+        filePath: symbol.filePath,
+        line: symbol.line,
+      },
+      callees: [],
+    };
+    let truncated = false;
+
+    if (direction === "callees" || direction === "both") {
+      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callees");
+      root.callees = result.edges;
+      truncated = truncated || result.truncated;
+    }
+    if (direction === "callers" || direction === "both") {
+      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callers");
+      root.callers = result.edges;
+      truncated = truncated || result.truncated;
+    }
+
+    const edgeCount = countCallGraphEdges(root.callees) + countCallGraphEdges(root.callers ?? []);
+
+    return {
+      ...buildResponseReliability({
+        symbol,
+        relatedResultCount: edgeCount,
+        zeroResultLabel: direction === "callers"
+          ? "caller edges"
+          : direction === "both"
+            ? "callgraph edges"
+            : "callee edges",
+      }),
+      root,
+      direction,
+      depth: computeDepth(root),
+      maxDepth,
+      nodeCount: nodeCap - state.remainingNodeBudget,
+      nodeCap,
+      truncated,
+    };
   }
 
   app.get("/callgraph/:name", (req, res) => {
     const { name } = req.params;
     const maxDepth = Math.min(parseInt((req.query.depth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
+    const direction = parseCallGraphDirection(req.query.direction);
+    const nodeCap = Math.min(parseInt((req.query.nodeCap as string) || String(CALLGRAPH_DEFAULT_NODE_CAP), 10), CALLGRAPH_MAX_NODE_CAP);
+    const compact = parseCompactMode(req.query.compact);
 
     const symbols = store.getSymbolsByName(name);
     const sym = symbols.find((s) => s.type === "function" || s.type === "method");
@@ -1433,37 +1853,55 @@ export function createApp(store: Store): express.Express {
       return notFound(res);
     }
 
-    const visited = new Set<string>();
-    const { edges: callees, truncated } = expandCallees(sym.id, 0, maxDepth, visited);
-    const actualDepth = computeDepth(callees);
-
-    const response: CallGraphResponse = {
-      root: {
-        symbol: {
-          id: sym.id,
-          name: sym.name,
-          qualifiedName: sym.qualifiedName,
-          type: sym.type,
-          filePath: sym.filePath,
-          line: sym.line,
-        },
-        callees,
-      },
-      depth: actualDepth,
-      maxDepth,
-      truncated,
-    };
+    const response = buildCallGraphResponse(sym, maxDepth, direction, nodeCap);
+    if (compact) {
+      const compactResponse: CompactCallGraphResponse = toCompactCallGraphResponse(response);
+      return res.json(compactResponse);
+    }
     return res.json(response);
   });
 
-  function computeDepth(edges: CallGraphEdge[]): number {
+  app.get("/callers-recursive/:name", (req, res) => {
+    const { name } = req.params;
+    const maxDepth = Math.min(parseInt((req.query.depth as string) || String(CALLGRAPH_DEFAULT_DEPTH), 10), CALLGRAPH_MAX_DEPTH);
+    const context = parseCallerLookupContext(req.query as Record<string, unknown>);
+    const nodeCap = Math.min(parseInt((req.query.nodeCap as string) || String(CALLGRAPH_DEFAULT_NODE_CAP), 10), CALLGRAPH_MAX_NODE_CAP);
+    const { symbol: sym } = resolveFunctionSymbol(name, context);
+
+    if (!sym) {
+      return notFound(res);
+    }
+
+    return res.json(buildCallGraphResponse(sym, maxDepth, "callers", nodeCap));
+  });
+
+  function computeDepth(root: Pick<CallGraphResponse["root"], "callers" | "callees">): number {
+    return Math.max(computeEdgeDepth(root.callees), computeEdgeDepth(root.callers ?? []));
+  }
+
+  function computeEdgeDepth(edges: CallGraphEdge[]): number {
     if (edges.length === 0) return 0;
     let max = 0;
     for (const e of edges) {
-      const childDepth = e.children ? computeDepth(e.children) : 0;
+      const childDepth = e.children ? computeEdgeDepth(e.children) : 0;
       if (childDepth + 1 > max) max = childDepth + 1;
     }
     return max;
+  }
+
+  function countCallGraphEdges(edges: CallGraphEdge[]): number {
+    let count = 0;
+    for (const edge of edges) {
+      count += 1;
+      if (edge.children) {
+        count += countCallGraphEdges(edge.children);
+      }
+    }
+    return count;
+  }
+
+  function parseCallGraphDirection(value: unknown): CallGraphDirection {
+    return value === "callers" || value === "both" ? value : "callees";
   }
 
   return app;

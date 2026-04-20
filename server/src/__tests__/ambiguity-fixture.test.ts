@@ -712,12 +712,17 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.body.confidence).toBe("ambiguous");
       expect(heuristic.body.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.body.ambiguity).toEqual({ candidateCount: 4 });
+      expect(typeof heuristic.body.selectedReason).toBe("string");
+      expect(heuristic.body.topCandidates).toHaveLength(4);
+      expect(heuristic.body.topCandidates[0].qualifiedName).toBe(heuristic.body.symbol.qualifiedName);
 
       const callers = await request(app).get("/callers/Update").expect(200);
       expect(callers.body.lookupMode).toBe("heuristic");
       expect(callers.body.confidence).toBe("ambiguous");
       expect(callers.body.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(callers.body.ambiguity).toEqual({ candidateCount: 4 });
+      expect(typeof callers.body.selectedReason).toBe("string");
+      expect(callers.body.topCandidates).toHaveLength(4);
       expect(callers.body.totalCount).toBe(1);
       expect(callers.body.truncated).toBe(false);
       expect(callers.body.window.totalCount).toBe(1);
@@ -733,6 +738,14 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(filteredCallers.body.module).toBe("ai");
       expect(filteredCallers.body.callers).toHaveLength(1);
       expect(filteredCallers.body.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
+      const overloads = await request(app).get("/overloads/Update").expect(200);
+      expect(overloads.body.query).toBe("Update");
+      expect(overloads.body.totalCount).toBe(4);
+      expect(overloads.body.groupCount).toBe(4);
+      expect(overloads.body.groups).toHaveLength(4);
+      expect(overloads.body.groups[0]).toHaveProperty("qualifiedName");
+      expect(overloads.body.groups[0]).toHaveProperty("candidates");
 
       const references = await request(app)
         .get("/references")
@@ -929,6 +942,9 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.confidence).toBe("ambiguous");
       expect(heuristic.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.ambiguity).toEqual({ candidateCount: 4 });
+      expect(typeof heuristic.selectedReason).toBe("string");
+      expect(heuristic.topCandidates).toHaveLength(4);
+      expect(heuristic.topCandidates[0].qualifiedName).toBe(heuristic.symbol.qualifiedName);
 
       const callerResponses = await mcpCall([
         INIT,
@@ -945,6 +961,8 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(callers.confidence).toBe("ambiguous");
       expect(callers.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(callers.ambiguity).toEqual({ candidateCount: 4 });
+      expect(typeof callers.selectedReason).toBe("string");
+      expect(callers.topCandidates).toHaveLength(4);
       expect(callers.totalCount).toBe(1);
       expect(callers.truncated).toBe(false);
       expect(callers.window.totalCount).toBe(1);
@@ -968,6 +986,22 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(filteredCallers.module).toBe("ai");
       expect(filteredCallers.callers).toHaveLength(1);
       expect(filteredCallers.groupedByModule).toEqual([{ key: "ai", count: 1 }]);
+
+      const overloadResponses = await mcpCall([
+        INIT,
+        INITIALIZED,
+        {
+          jsonrpc: "2.0",
+          id: 15,
+          method: "tools/call",
+          params: { name: "find_all_overloads", arguments: { name: "Update" } },
+        },
+      ], dir);
+      const overloads = JSON.parse(overloadResponses.find((r) => r.id === 15).result.content[0].text);
+      expect(overloads.query).toBe("Update");
+      expect(overloads.totalCount).toBe(4);
+      expect(overloads.groupCount).toBe(4);
+      expect(overloads.groups).toHaveLength(4);
 
       const referenceResponses = await mcpCall([
         INIT,

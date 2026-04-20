@@ -7,16 +7,18 @@ const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVe
 const INITIALIZED = { jsonrpc: "2.0", method: "notifications/initialized" };
 
 describe("MCP payload contracts", () => {
-  it("tools/list returns 19 tools", async () => {
+  it("tools/list returns 21 tools", async () => {
     const responses = await mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }], DATA_DIR);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(19);
+    expect(toolList.result.tools).toHaveLength(21);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([
       "explain_symbol_propagation",
+      "find_all_overloads",
       "find_base_methods",
       "find_callers",
+      "find_callers_recursive",
       "find_overrides",
       "find_references",
       "get_callgraph",
@@ -155,6 +157,10 @@ describe("MCP payload contracts", () => {
     expect(payload.lookupMode).toBe("heuristic");
     expect(payload.confidence).toBe("high_confidence_heuristic");
     expect(payload.matchReasons).toEqual([]);
+    expect(payload.reliability.level).toBeDefined();
+    expect(Array.isArray(payload.reliability.factors)).toBe(true);
+    expect(typeof payload.selectedReason).toBe("string");
+    expect(payload.topCandidates).toBeUndefined();
     expect(payload.callers).toBeInstanceOf(Array);
     expect(payload.callees).toBeInstanceOf(Array);
     for (const ref of [...payload.callers, ...payload.callees]) {
@@ -174,8 +180,26 @@ describe("MCP payload contracts", () => {
     expect(payload.lookupMode).toBe("heuristic");
     expect(payload.confidence).toBe("high_confidence_heuristic");
     expect(payload.matchReasons).toEqual([]);
+    expect(typeof payload.selectedReason).toBe("string");
+    expect(payload.topCandidates).toBeUndefined();
     expect(payload.members).toBeInstanceOf(Array);
     expect(payload.members.length).toBeGreaterThan(0);
+  });
+
+  it("find_all_overloads returns grouped exact same-name callable matches", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "find_all_overloads", arguments: { name: "UpdateAI" } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.query).toBe("UpdateAI");
+    expect(typeof payload.totalCount).toBe("number");
+    expect(typeof payload.groupCount).toBe("number");
+    expect(Array.isArray(payload.groups)).toBe(true);
+    expect(payload.groups.length).toBeGreaterThan(0);
+    expect(payload.groups[0]).toHaveProperty("qualifiedName");
+    expect(payload.groups[0]).toHaveProperty("candidates");
   });
 
   it("search_symbols returns correct shape", async () => {
@@ -193,6 +217,23 @@ describe("MCP payload contracts", () => {
     expect(payload).toHaveProperty("truncated");
   });
 
+  it("find_references supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "find_references", arguments: { qualifiedName: "Game::AIComponent::UpdateAI", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.reliability.level).toBeDefined();
+    expect(payload.references).toBeInstanceOf(Array);
+    if (payload.references.length > 0) {
+      expect(payload.references[0].sourceQualifiedName).toBeDefined();
+      expect(payload.references[0].targetQualifiedName).toBeDefined();
+      expect(payload.references[0].confidence).toBeUndefined();
+    }
+  });
+
   it("get_callgraph returns correct shape", async () => {
     const responses = await mcpCall([
       INIT, INITIALIZED,
@@ -203,9 +244,51 @@ describe("MCP payload contracts", () => {
     expect(payload.root).toBeDefined();
     expect(payload.root.symbol.name).toBe("UpdateAI");
     expect(payload.root.callees).toBeInstanceOf(Array);
+    expect(payload.direction).toBe("callees");
+    expect(payload.reliability.level).toBeDefined();
     expect(payload).toHaveProperty("depth");
     expect(payload).toHaveProperty("maxDepth");
+    expect(payload).toHaveProperty("nodeCount");
+    expect(payload).toHaveProperty("nodeCap");
     expect(payload).toHaveProperty("truncated");
+  });
+
+  it("get_callgraph supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_callgraph", arguments: { name: "UpdateAI", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.root.symbol.qualifiedName).toBe("Game::AIComponent::UpdateAI");
+    expect(payload.root.symbol.type).toBeUndefined();
+  });
+
+  it("get_callgraph supports caller-direction traversal", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "get_callgraph", arguments: { name: "UpdateAI", direction: "callers", depth: 2 } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.direction).toBe("callers");
+    expect(payload.root.callers).toBeInstanceOf(Array);
+    expect(payload.root.callers.length).toBeGreaterThan(0);
+    expect(payload.root.callees).toEqual([]);
+  });
+
+  it("find_callers_recursive returns bounded recursive caller graph", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "find_callers_recursive", arguments: { name: "UpdateAI", depth: 2 } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.direction).toBe("callers");
+    expect(payload.root.callers).toBeInstanceOf(Array);
+    expect(payload.root.callers.length).toBeGreaterThan(0);
+    expect(payload.nodeCount).toBeGreaterThanOrEqual(1);
   });
 
   it("find_callers returns deduplicated callers in deterministic order", async () => {
@@ -216,6 +299,8 @@ describe("MCP payload contracts", () => {
     const res = responses.find((r) => r.id === 3);
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.symbol.name).toBe("Update");
+    expect(payload.reliability.level).toBeDefined();
+    expect(payload.indexCoverage).toBeDefined();
     expect(payload.callers).toBeInstanceOf(Array);
     expect(payload.callers.length).toBeGreaterThan(0);
     expect(payload.totalCount).toBe(payload.callers.length);
@@ -241,6 +326,19 @@ describe("MCP payload contracts", () => {
     expect(payload.window.returnedCount).toBe(payload.symbols.length);
     expect(payload.symbols).toBeInstanceOf(Array);
     expect(payload.symbols.length).toBeGreaterThan(0);
+  });
+
+  it("list_file_symbols supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "src/game_object.h", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.symbols[0].qualifiedName).toBeDefined();
+    expect(payload.symbols[0].endLine).toEqual(expect.any(Number));
+    expect(payload.symbols[0].filePath).toBeUndefined();
   });
 
   it("list_class_members returns exact member overview", async () => {

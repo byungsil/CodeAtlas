@@ -102,6 +102,8 @@ describe("GET /function/:name", () => {
     expect(res.body.matchReasons).toEqual([]);
     expect(res.body.callers).toBeInstanceOf(Array);
     expect(res.body.callees).toBeInstanceOf(Array);
+    expect(res.body.reliability.level).toBeDefined();
+    expect(Array.isArray(res.body.reliability.factors)).toBe(true);
     expect(res.body.callees.length).toBeGreaterThan(0);
     for (const ref of [...res.body.callers, ...res.body.callees]) {
       expect(ref.confidence).toBe("high_confidence_heuristic");
@@ -226,6 +228,10 @@ describe("Heuristic ambiguity metadata", () => {
     expect(res.body.confidence).toBe("ambiguous");
     expect(res.body.matchReasons).toEqual(["ambiguous_top_score"]);
     expect(res.body.ambiguity).toEqual({ candidateCount: 2 });
+    expect(typeof res.body.selectedReason).toBe("string");
+    expect(res.body.topCandidates).toHaveLength(2);
+    expect(res.body.topCandidates[0].qualifiedName).toBe("Gameplay::Actor::Tick");
+    expect(typeof res.body.topCandidates[0].rankScore).toBe("number");
   });
 
   it("uses anchor-qualified context to steer ambiguous HTTP function lookup", async () => {
@@ -365,6 +371,8 @@ describe("Heuristic ambiguity metadata", () => {
     expect(runtimeRes.body.lookupMode).toBe("heuristic");
     expect(runtimeRes.body.confidence).toBe("ambiguous");
     expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+    expect(runtimeRes.body.selectedReason).toBe("Matched artifact kind 'runtime'.");
+    expect(runtimeRes.body.topCandidates[0].qualifiedName).toBe("Game::Runtime::UpdateShot");
 
     const editorRes = await request(anchorAwareApp)
       .get("/function/UpdateShot")
@@ -373,6 +381,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(editorRes.body.lookupMode).toBe("heuristic");
     expect(editorRes.body.confidence).toBe("ambiguous");
     expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+    expect(editorRes.body.selectedReason).toBe("Matched artifact kind 'editor'.");
 
     const runtimeRecentRes = await request(anchorAwareApp)
       .get("/function/UpdateShot")
@@ -381,6 +390,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(runtimeRecentRes.body.lookupMode).toBe("heuristic");
     expect(runtimeRecentRes.body.confidence).toBe("ambiguous");
     expect(runtimeRecentRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+    expect(runtimeRecentRes.body.selectedReason).toBe("Matched artifact kind 'runtime'.");
 
     const editorRecentRes = await request(anchorAwareApp)
       .get("/function/UpdateShot")
@@ -389,6 +399,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(editorRecentRes.body.lookupMode).toBe("heuristic");
     expect(editorRecentRes.body.confidence).toBe("ambiguous");
     expect(editorRecentRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+    expect(editorRecentRes.body.selectedReason).toBe("Matched artifact kind 'editor'.");
   });
 
   it("uses recent exact symbol context to steer ambiguous HTTP caller lookup", async () => {
@@ -556,6 +567,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(runtimeRes.body.lookupMode).toBe("heuristic");
     expect(runtimeRes.body.confidence).toBe("ambiguous");
     expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::UpdateShot");
+    expect(runtimeRes.body.selectedReason).toBe("Matched artifact kind 'runtime'.");
     expect(runtimeRes.body.callers).toHaveLength(1);
     expect(runtimeRes.body.callers[0].qualifiedName).toBe("Game::Runtime::TickRuntimeShot");
 
@@ -566,6 +578,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(editorRes.body.lookupMode).toBe("heuristic");
     expect(editorRes.body.confidence).toBe("ambiguous");
     expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::UpdateShot");
+    expect(editorRes.body.selectedReason).toBe("Matched a direct neighbor of the anchor symbol.");
     expect(editorRes.body.callers).toHaveLength(1);
     expect(editorRes.body.callers[0].qualifiedName).toBe("Game::Editor::RefreshShotPreview");
   });
@@ -707,6 +720,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(runtimeRes.body.lookupMode).toBe("heuristic");
     expect(runtimeRes.body.confidence).toBe("ambiguous");
     expect(runtimeRes.body.symbol.qualifiedName).toBe("Game::Runtime::ShotPanel");
+    expect(runtimeRes.body.selectedReason).toBe("Matched artifact kind 'runtime'.");
 
     const editorRes = await request(recentAwareApp)
       .get("/class/ShotPanel")
@@ -715,6 +729,7 @@ describe("Heuristic ambiguity metadata", () => {
     expect(editorRes.body.lookupMode).toBe("heuristic");
     expect(editorRes.body.confidence).toBe("ambiguous");
     expect(editorRes.body.symbol.qualifiedName).toBe("Game::Editor::ShotPanel");
+    expect(editorRes.body.selectedReason).toBe("Matched artifact kind 'editor'.");
   });
 
   it("prefers direct workflow neighbors when anchor metadata alone would still tie", async () => {
@@ -864,8 +879,56 @@ describe("GET /callgraph/:name", () => {
     expect(res.body.root.symbol.name).toBe("UpdateAI");
     expect(res.body.root.callees).toBeInstanceOf(Array);
     expect(res.body.root.callees.length).toBe(4);
+    expect(res.body.direction).toBe("callees");
+    expect(res.body.reliability.level).toBeDefined();
     expect(res.body.depth).toBeGreaterThanOrEqual(1);
+    expect(res.body.nodeCount).toBeGreaterThanOrEqual(1);
+    expect(res.body.nodeCap).toBeGreaterThanOrEqual(res.body.nodeCount);
     expect(res.body.truncated).toBe(false);
+  });
+
+  it("returns call graph with callers when requested", async () => {
+    const res = await request(app)
+      .get("/callgraph/UpdateAI")
+      .query({ direction: "callers", depth: 2 })
+      .expect(200);
+    expect(res.body.root).toBeDefined();
+    expect(res.body.direction).toBe("callers");
+    expect(res.body.root.callers).toBeInstanceOf(Array);
+    expect(res.body.root.callers.length).toBeGreaterThan(0);
+    expect(res.body.root.callees).toEqual([]);
+  });
+
+  it("returns bidirectional call graph when requested", async () => {
+    const res = await request(app)
+      .get("/callgraph/UpdateAI")
+      .query({ direction: "both", depth: 2 })
+      .expect(200);
+    expect(res.body.direction).toBe("both");
+    expect(res.body.root.callees).toBeInstanceOf(Array);
+    expect(res.body.root.callers).toBeInstanceOf(Array);
+  });
+
+  it("returns compact call graph mode when requested", async () => {
+    const res = await request(app)
+      .get("/callgraph/UpdateAI")
+      .query({ compact: "true" })
+      .expect(200);
+    expect(res.body.responseMode).toBe("compact");
+    expect(res.body.root.symbol.qualifiedName).toBeDefined();
+    expect(res.body.root.symbol.filePath).toBeDefined();
+    expect(res.body.root.symbol.line).toEqual(expect.any(Number));
+    expect(res.body.root.symbol.type).toBeUndefined();
+  });
+
+  it("marks call graph truncated when node cap is too small", async () => {
+    const res = await request(app)
+      .get("/callgraph/UpdateAI")
+      .query({ direction: "callers", depth: 3, nodeCap: 1 })
+      .expect(200);
+    expect(res.body.direction).toBe("callers");
+    expect(res.body.nodeCap).toBe(1);
+    expect(res.body.truncated).toBe(true);
   });
 
   it("returns 404 for unknown symbol", async () => {
@@ -873,6 +936,128 @@ describe("GET /callgraph/:name", () => {
     expect(res.body.code).toBe("NOT_FOUND");
     expect(res.body.error).toBe("Symbol not found");
     expect(res.body.root).toBeUndefined();
+  });
+});
+
+describe("GET /callers-recursive/:name", () => {
+  it("returns recursive caller graph", async () => {
+    const res = await request(app)
+      .get("/callers-recursive/UpdateAI")
+      .query({ depth: 2 })
+      .expect(200);
+    expect(res.body.direction).toBe("callers");
+    expect(res.body.root.symbol.name).toBe("UpdateAI");
+    expect(res.body.root.callers).toBeInstanceOf(Array);
+    expect(res.body.root.callers.length).toBeGreaterThan(0);
+  });
+
+  it("returns 404 for unknown symbol", async () => {
+    const res = await request(app).get("/callers-recursive/FakeFunc").expect(404);
+    expect(res.body.code).toBe("NOT_FOUND");
+    expect(res.body.error).toBe("Symbol not found");
+  });
+});
+
+describe("Reliability signaling", () => {
+  it("surfaces partial and low reliability for fragile zero-result navigation responses", async () => {
+    const symbols: Symbol[] = [
+      {
+        id: "Game::FragileUpdate",
+        name: "FragileUpdate",
+        qualifiedName: "Game::FragileUpdate",
+        language: "cpp",
+        type: "method",
+        filePath: "runtime/fragile.cpp",
+        line: 10,
+        endLine: 20,
+        parseFragility: "elevated",
+      },
+    ];
+
+    const fragileStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const fragileApp = createApp(fragileStore);
+
+    const functionRes = await request(fragileApp).get("/function/FragileUpdate").expect(200);
+    expect(functionRes.body.reliability.level).toBe("partial");
+    expect(functionRes.body.reliability.factors).toContain("elevated_parse_fragility");
+    expect(functionRes.body.indexCoverage).toBeUndefined();
+
+    const callersRes = await request(fragileApp).get("/callers/FragileUpdate").expect(200);
+    expect(callersRes.body.reliability.level).toBe("low");
+    expect(callersRes.body.indexCoverage).toBe("low");
+    expect(callersRes.body.coverageWarning).toContain("Zero callers");
+
+    const refsRes = await request(fragileApp)
+      .get("/references")
+      .query({ qualifiedName: "Game::FragileUpdate" })
+      .expect(200);
+    expect(refsRes.body.reliability.level).toBe("low");
+    expect(refsRes.body.indexCoverage).toBe("low");
+    expect(refsRes.body.coverageWarning).toContain("Zero references");
+
+    const graphRes = await request(fragileApp).get("/callgraph/FragileUpdate").expect(200);
+    expect(graphRes.body.reliability.level).toBe("low");
+    expect(graphRes.body.indexCoverage).toBe("low");
+    expect(graphRes.body.coverageWarning).toContain("Zero callee edges");
   });
 });
 
@@ -900,6 +1085,165 @@ describe("GET /callers/:name", () => {
   });
 });
 
+describe("Enum member references", () => {
+  it("returns exact enum member references and can aggregate enum value usage from the enum type", async () => {
+    const symbols: Symbol[] = [
+      {
+        id: "Game::AIState",
+        name: "AIState",
+        qualifiedName: "Game::AIState",
+        language: "cpp",
+        type: "enum",
+        filePath: "runtime/ai_state.h",
+        line: 1,
+        endLine: 5,
+      },
+      {
+        id: "Game::AIState::Idle",
+        name: "Idle",
+        qualifiedName: "Game::AIState::Idle",
+        language: "cpp",
+        type: "enumMember",
+        filePath: "runtime/ai_state.h",
+        line: 2,
+        endLine: 2,
+        parentId: "Game::AIState",
+      },
+      {
+        id: "Game::AIState::Chase",
+        name: "Chase",
+        qualifiedName: "Game::AIState::Chase",
+        language: "cpp",
+        type: "enumMember",
+        filePath: "runtime/ai_state.h",
+        line: 3,
+        endLine: 3,
+        parentId: "Game::AIState",
+      },
+      {
+        id: "Game::Controller::Update",
+        name: "Update",
+        qualifiedName: "Game::Controller::Update",
+        language: "cpp",
+        type: "method",
+        filePath: "runtime/controller.cpp",
+        line: 10,
+        endLine: 20,
+        parentId: "Game::Controller",
+      },
+    ];
+    const references = [
+      {
+        sourceSymbolId: "Game::Controller::Update",
+        targetSymbolId: "Game::AIState::Idle",
+        category: "enumValueUsage" as const,
+        filePath: "runtime/controller.cpp",
+        line: 12,
+        confidence: "partial" as const,
+      },
+      {
+        sourceSymbolId: "Game::Controller::Update",
+        targetSymbolId: "Game::AIState::Chase",
+        category: "enumValueUsage" as const,
+        filePath: "runtime/controller.cpp",
+        line: 14,
+        confidence: "partial" as const,
+      },
+    ];
+
+    const enumStore: Store = {
+      getSymbolsByName(name: string) {
+        return symbols.filter((symbol) => symbol.name === name);
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getReferences(targetSymbolId: string, category?: any) {
+        return references.filter((reference) =>
+          reference.targetSymbolId === targetSymbolId
+          && (!category || reference.category === category));
+      },
+      getMembers(parentId: string) {
+        return symbols.filter((symbol) => symbol.parentId === parentId);
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const enumApp = createApp(enumStore);
+
+    const memberRes = await request(enumApp)
+      .get("/references")
+      .query({ qualifiedName: "Game::AIState::Idle", category: "enumValueUsage" })
+      .expect(200);
+    expect(memberRes.body.references).toHaveLength(1);
+    expect(memberRes.body.references[0].targetSymbolId).toBe("Game::AIState::Idle");
+
+    const enumRes = await request(enumApp)
+      .get("/references")
+      .query({ qualifiedName: "Game::AIState", includeEnumValueUsage: "true" })
+      .expect(200);
+    expect(enumRes.body.references).toHaveLength(2);
+    expect(enumRes.body.references.map((reference: any) => reference.targetSymbolId).sort()).toEqual([
+      "Game::AIState::Chase",
+      "Game::AIState::Idle",
+    ]);
+
+    const compactRes = await request(enumApp)
+      .get("/references")
+      .query({ qualifiedName: "Game::AIState", includeEnumValueUsage: "true", compact: "true" })
+      .expect(200);
+    expect(compactRes.body.responseMode).toBe("compact");
+    expect(compactRes.body.references).toHaveLength(2);
+    expect(compactRes.body.references[0].sourceQualifiedName).toBeDefined();
+    expect(compactRes.body.references[0].targetQualifiedName).toBeDefined();
+    expect(compactRes.body.references[0].confidence).toBeUndefined();
+  });
+});
+
 describe("Overview queries", () => {
   it("returns file overview in stable order", async () => {
     const res = await request(app)
@@ -911,6 +1255,18 @@ describe("Overview queries", () => {
     expect(res.body.window.totalCount).toBe(res.body.summary.totalCount);
     expect(res.body.window.returnedCount).toBe(res.body.symbols.length);
     expect(res.body.symbols.length).toBeGreaterThan(0);
+  });
+
+  it("returns compact file overview when requested", async () => {
+    const res = await request(app)
+      .get("/file-symbols")
+      .query({ filePath: "src/game_object.h", compact: "true" })
+      .expect(200);
+    expect(res.body.responseMode).toBe("compact");
+    expect(res.body.symbols.length).toBeGreaterThan(0);
+    expect(res.body.symbols[0].qualifiedName).toBeDefined();
+    expect(res.body.symbols[0].endLine).toEqual(expect.any(Number));
+    expect(res.body.symbols[0].filePath).toBeUndefined();
   });
 
   it("returns class member overview for exact class", async () => {

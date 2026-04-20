@@ -96,6 +96,7 @@ function visitClass(node: Parser.SyntaxNode, ctx: ParseContext, kind: "class" | 
     id: classId,
     name: className,
     qualifiedName: classId,
+    language: "cpp",
     type: kind,
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -139,6 +140,7 @@ function visitFieldDeclaration(node: Parser.SyntaxNode, ctx: ParseContext, paren
     id: methodId,
     name: methodName.startsWith("~") ? methodName : methodName,
     qualifiedName: methodId,
+    language: "cpp",
     type: "method",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -165,6 +167,7 @@ function visitMemberDeclaration(node: Parser.SyntaxNode, ctx: ParseContext, pare
     id: methodId,
     name: methodName,
     qualifiedName: methodId,
+    language: "cpp",
     type: "method",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -189,6 +192,7 @@ function visitInlineMethodDef(node: Parser.SyntaxNode, ctx: ParseContext, parent
     id: methodId,
     name: methodName,
     qualifiedName: methodId,
+    language: "cpp",
     type: "method",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -214,11 +218,34 @@ function visitEnum(node: Parser.SyntaxNode, ctx: ParseContext): void {
     id: enumId,
     name: enumName,
     qualifiedName: enumId,
+    language: "cpp",
     type: "enum",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
     endLine: node.endPosition.row + 1,
   });
+
+  const body = findChild(node, "enumerator_list");
+  if (!body) return;
+
+  for (const child of getNamedChildren(body)) {
+    if (child.type !== "enumerator") continue;
+    const memberNameNode = child.childForFieldName("name");
+    if (!memberNameNode) continue;
+    const memberName = memberNameNode.text;
+    const memberId = `${enumId}::${memberName}`;
+    ctx.symbols.push({
+      id: memberId,
+      name: memberName,
+      qualifiedName: memberId,
+      language: "cpp",
+      type: "enumMember",
+      filePath: ctx.filePath,
+      line: child.startPosition.row + 1,
+      endLine: child.endPosition.row + 1,
+      parentId: enumId,
+    });
+  }
 }
 
 function visitFunctionDefinition(node: Parser.SyntaxNode, ctx: ParseContext): void {
@@ -262,6 +289,7 @@ function visitFunctionDefinition(node: Parser.SyntaxNode, ctx: ParseContext): vo
     id: funcId,
     name: funcName,
     qualifiedName: funcId,
+    language: "cpp",
     type: parentId ? "method" : "function",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -296,6 +324,7 @@ function visitDeclaration(node: Parser.SyntaxNode, ctx: ParseContext): void {
     id: funcId,
     name: funcName,
     qualifiedName: funcId,
+    language: "cpp",
     type: "function",
     filePath: ctx.filePath,
     line: node.startPosition.row + 1,
@@ -454,4 +483,15 @@ function findDescendant(node: Parser.SyntaxNode, type: string): Parser.SyntaxNod
     if (found) return found;
   }
   return null;
+}
+
+function getNamedChildren(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const children: Parser.SyntaxNode[] = [];
+  for (let index = 0; index < node.namedChildCount; index += 1) {
+    const child = node.namedChild(index);
+    if (child) {
+      children.push(child);
+    }
+  }
+  return children;
 }

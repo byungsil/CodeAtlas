@@ -10,11 +10,6 @@ pub struct DerivedMetadata {
     pub header_role: Option<String>,
 }
 
-#[allow(dead_code)]
-pub fn apply_metadata_to_symbol(symbol: &mut Symbol) {
-    apply_metadata_to_symbol_with_context(symbol, None);
-}
-
 pub fn apply_metadata_to_symbol_with_context(symbol: &mut Symbol, build_metadata: Option<&BuildMetadataContext>) {
     let metadata = derive_metadata_with_context(&symbol.file_path, build_metadata);
     symbol.module = metadata.module;
@@ -22,11 +17,6 @@ pub fn apply_metadata_to_symbol_with_context(symbol: &mut Symbol, build_metadata
     symbol.project_area = metadata.project_area;
     symbol.artifact_kind = metadata.artifact_kind;
     symbol.header_role = metadata.header_role;
-}
-
-#[allow(dead_code)]
-pub fn apply_metadata_to_file_record(file_record: &mut FileRecord) {
-    apply_metadata_to_file_record_with_context(file_record, None);
 }
 
 pub fn apply_metadata_to_file_record_with_context(
