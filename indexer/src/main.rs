@@ -882,6 +882,7 @@ fn run_full(
     println!("  Stage: parse files");
     let parse_start = Instant::now();
     let mut parse_metrics = ParseMetrics::default();
+    let mut all_relation_events = Vec::new();
     db.begin().expect("Failed to begin full rebuild transaction");
     db.clear().expect("Failed to clear SQLite tables before full rebuild");
     for (batch_index, batch) in discovered_files
@@ -892,7 +893,7 @@ fn run_full(
         let (
             raw_symbols,
             raw_calls,
-            normalized_references,
+            relation_events,
             local_propagation_events,
             callable_flow_summaries,
             file_records,
@@ -910,14 +911,13 @@ fn run_full(
             .expect("Failed to write batch raw symbols");
         db.write_raw_calls(&raw_calls)
             .expect("Failed to write batch raw calls");
-        db.write_references(&normalized_references)
-            .expect("Failed to write batch references");
         db.write_propagation_events(&local_propagation_events)
             .expect("Failed to write batch local propagation");
         db.write_callable_flow_summaries(&callable_flow_summaries, &raw_symbols)
             .expect("Failed to write batch callable summaries");
         db.write_files(&file_records)
             .expect("Failed to write batch file records");
+        all_relation_events.extend(relation_events);
         accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
         if !verbose {
             println!(
@@ -953,38 +953,28 @@ fn run_full(
     db.rebuild_fts()
         .expect("Failed to rebuild symbols FTS");
     let symbol_count = symbols.len();
-    let caller_parent_by_id: HashMap<String, String> = symbols
-        .iter()
-        .filter_map(|symbol| {
-            symbol
-                .parent_id
-                .as_ref()
-                .map(|parent_id| (symbol.id.clone(), parent_id.clone()))
-        })
-        .collect();
-    let callee_name_by_id: HashMap<String, String> = symbols
-        .iter()
-        .map(|symbol| (symbol.id.clone(), symbol.name.clone()))
-        .collect();
-    let valid_symbol_ids: HashSet<String> = symbols.iter().map(|symbol| symbol.id.clone()).collect();
-    let symbol_types: HashMap<String, String> = symbols
-        .iter()
-        .map(|symbol| (symbol.id.clone(), symbol.symbol_type.clone()))
-        .collect();
-    let mut staged_references = db
-        .read_all_references()
-        .expect("Failed to read staged references");
-    let dropped_references =
-        storage::filter_persistable_references(&mut staged_references, &valid_symbol_ids, &symbol_types);
-    if dropped_references > 0 {
-        db.replace_references(&staged_references)
-            .expect("Failed to rewrite filtered references");
-        if verbose {
-            println!(
-                "  FILTER: dropped {} unresolved reference(s)",
-                dropped_references
-            );
-        }
+    let mut staged_references = parser::normalize_relation_events(&all_relation_events, &symbols);
+    let dropped_references = {
+        let valid_symbol_ids: HashSet<String> = symbols.iter().map(|symbol| symbol.id.clone()).collect();
+        let symbol_types: HashMap<String, String> = symbols
+            .iter()
+            .map(|symbol| (symbol.id.clone(), symbol.symbol_type.clone()))
+            .collect();
+        storage::filter_persistable_references(
+            &mut staged_references,
+            &valid_symbol_ids,
+            &symbol_types,
+        )
+    };
+    db.write_references(&staged_references)
+        .expect("Failed to write normalized references");
+    drop(staged_references);
+    drop(all_relation_events);
+    if dropped_references > 0 && verbose {
+        println!(
+            "  FILTER: dropped {} unresolved reference(s)",
+            dropped_references
+        );
     }
     let cleaned_references = db
         .cleanup_dangling_references()
@@ -1016,7 +1006,7 @@ fn run_full(
         let raw_calls = db
             .read_raw_calls_for_paths(file_batch)
             .expect("Failed to read staged raw calls for resolve batch");
-        let calls = resolver::resolve_calls(&raw_calls, &symbols);
+        let calls = resolver::resolve_calls_with_db(&raw_calls, &symbols, &db);
         if !calls.is_empty() {
             db.write_calls(&calls)
                 .expect("Failed to write resolved call batch");
@@ -1039,6 +1029,19 @@ fn run_full(
     if log_diagnostics {
         print_memory_snapshot("after resolve calls");
     }
+    let caller_parent_by_id: HashMap<String, String> = symbols
+        .iter()
+        .filter_map(|symbol| {
+            symbol
+                .parent_id
+                .as_ref()
+                .map(|parent_id| (symbol.id.clone(), parent_id.clone()))
+        })
+        .collect();
+    let callee_name_by_id: HashMap<String, String> = symbols
+        .iter()
+        .map(|symbol| (symbol.id.clone(), symbol.name.clone()))
+        .collect();
     let symbols_for_json = if json_mode { Some(symbols.clone()) } else { None };
     drop(symbols);
 
@@ -1116,8 +1119,6 @@ fn run_full(
     let raw_count: usize = discovered_files.len();
     println!("  Stage: persist sqlite");
     let persist_start = Instant::now();
-    db.clear_raw_calls()
-        .expect("Failed to clear staged raw calls");
     timings.persist_ms = persist_start.elapsed().as_millis();
     println!(
         "  Stage complete: persist sqlite in {}",
@@ -1193,7 +1194,7 @@ fn run_incremental(
     let (
         parsed_symbols,
         new_raw_calls,
-        new_references,
+        new_relation_events,
         new_local_propagation,
         new_callable_summaries,
         new_files,
@@ -1299,7 +1300,7 @@ fn run_incremental(
         }
 
         let mut all_calls = new_raw_calls;
-        let mut all_references = new_references;
+        let mut all_relation_events = new_relation_events;
         let mut all_local_propagation = new_local_propagation;
         let mut all_callable_summaries = new_callable_summaries;
         let plan_to_index_set: HashSet<&str> = plan.to_index.iter().map(|p| p.as_str()).collect();
@@ -1344,10 +1345,17 @@ fn run_incremental(
             db.delete_propagation_for_file(path)
                 .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
             all_calls.extend(result.raw_calls);
-            all_references.extend(result.normalized_references);
+            all_relation_events.extend(
+                result
+                    .relation_events
+                    .into_iter()
+                    .filter(|event| event.relation_kind != crate::models::RawRelationKind::Call),
+            );
             all_local_propagation.extend(result.propagation_events);
             all_callable_summaries.extend(result.callable_flow_summaries);
         }
+        let mut all_references =
+            parser::normalize_relation_events(&all_relation_events, &refreshed_symbols);
         let dropped_references =
             storage::filter_persistable_references(&mut all_references, &valid_symbol_ids, &symbol_types);
         if dropped_references > 0 && verbose {

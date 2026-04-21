@@ -15,7 +15,7 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { IndexDetailsRecord, MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
+import { IndexDetailsRecord, MetadataFilters, RawCallCandidateRecord, WorkspaceLanguageSummaryRecord } from "./store";
 
 export interface IndexData {
   symbols: Symbol[];
@@ -137,6 +137,10 @@ export class JsonStore {
   getCallees(symbolId: string): Call[] {
     const data = this.load();
     return data.calls.filter((c) => c.callerId === symbolId);
+  }
+
+  getRawCallersByCalledName(_calledName: string): RawCallCandidateRecord[] {
+    return [];
   }
 
   getMembers(parentId: string): Symbol[] {

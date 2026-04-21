@@ -11,7 +11,7 @@ import {
   DATA_DIR_NAME,
 } from "./constants";
 import { Store } from "./storage/store";
-import { MetadataFilters } from "./storage/store";
+import { MetadataFilters, RawCallCandidateRecord } from "./storage/store";
 import { SourceLanguage } from "./models/symbol";
 import { resolveActiveDatabasePath, SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
@@ -33,6 +33,7 @@ import {
   InvestigateWorkflowResponse,
   ImpactedFileSummary,
   ImpactedSymbolSummary,
+  MatchReason,
   MetadataGroupSummary,
   NamespaceSymbolsResponse,
   OverrideQueryResponse,
@@ -63,6 +64,7 @@ import {
   buildExactLookupResponse,
   buildFunctionResponse,
   HeuristicLookupContext,
+  makeRecoveredCallReference,
   makeResolvedCallReference,
   rankHeuristicCandidatesDetailed,
 } from "./response-metadata";
@@ -253,6 +255,172 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
     if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
     return true;
+  }
+
+  function isFragileCoverageSymbol(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): boolean {
+    return symbol.parseFragility === "elevated" || symbol.macroSensitivity === "high";
+  }
+
+  function normalizeScopeValue(value?: string): string | undefined {
+    return value?.trim().replace(/\s+/g, "");
+  }
+
+  function qualifierMatchesScope(rawQualifier: string | undefined, scopeValue: string | undefined): boolean {
+    const normalizedQualifier = normalizeScopeValue(rawQualifier);
+    const normalizedScope = normalizeScopeValue(scopeValue);
+    if (!normalizedQualifier || !normalizedScope) {
+      return false;
+    }
+    return normalizedQualifier === normalizedScope
+      || normalizedScope.endsWith(`::${normalizedQualifier}`)
+      || normalizedQualifier.endsWith(`::${normalizedScope}`);
+  }
+
+  function callableNamespace(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): string | undefined {
+    if (symbol.scopeKind === "namespace" && symbol.scopeQualifiedName) {
+      return symbol.scopeQualifiedName;
+    }
+    if (!symbol.qualifiedName.includes("::")) {
+      return undefined;
+    }
+    return symbol.qualifiedName.split("::").slice(0, -1).join("::");
+  }
+
+  function scoreRecoveredTargetCandidate(
+    rawCall: RawCallCandidateRecord,
+    callerSymbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    candidate: NonNullable<ReturnType<Store["getSymbolById"]>>,
+  ): { score: number; matchReasons: MatchReason[] } {
+    if (rawCall.calledName !== candidate.name) {
+      return { score: Number.NEGATIVE_INFINITY, matchReasons: [] };
+    }
+
+    const matchReasons: MatchReason[] = [];
+    let score = 100;
+    const parentSymbol = candidate.parentId ? store.getSymbolById(candidate.parentId) : undefined;
+    const namespaceQualifiedName = callableNamespace(candidate);
+    const callerBases = callerSymbol.parentId ? store.getDirectBases(callerSymbol.parentId) : [];
+
+    if (candidate.type === "method") {
+      if (rawCall.callKind === "memberAccess" || rawCall.callKind === "pointerMemberAccess" || rawCall.callKind === "thisPointerAccess") {
+        score += 180;
+        matchReasons.push("member_call_prefers_method");
+      }
+      if (callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
+        score += 260;
+        matchReasons.push("same_parent_match");
+      }
+      if (rawCall.receiver === "this" && callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
+        score += 260;
+        matchReasons.push("this_receiver_match");
+      }
+      if (candidate.parentId && callerBases.some((baseSymbol) => baseSymbol.id === candidate.parentId)) {
+        score += 220;
+        matchReasons.push("base_parent_match");
+      }
+      if (qualifierMatchesScope(rawCall.qualifier, parentSymbol?.qualifiedName)
+        || qualifierMatchesScope(rawCall.qualifier, parentSymbol?.name)) {
+        score += 240;
+        matchReasons.push("qualified_type_match");
+      } else if (rawCall.qualifier) {
+        score -= 120;
+      }
+    } else {
+      if (rawCall.callKind === "unqualified") {
+        score += 140;
+      }
+      if (qualifierMatchesScope(rawCall.qualifier, namespaceQualifiedName)) {
+        score += 240;
+        matchReasons.push("qualified_namespace_match");
+      } else if (rawCall.qualifier) {
+        score -= 120;
+      }
+    }
+
+    if (candidate.scopeQualifiedName && callerSymbol.scopeQualifiedName && candidate.scopeQualifiedName === callerSymbol.scopeQualifiedName) {
+      score += 80;
+      matchReasons.push("same_namespace_match");
+    }
+    if (candidate.subsystem && callerSymbol.subsystem === candidate.subsystem) {
+      score += 25;
+    }
+    if (candidate.module && callerSymbol.module === candidate.module) {
+      score += 25;
+    }
+    if (candidate.projectArea && callerSymbol.projectArea === candidate.projectArea) {
+      score += 20;
+    }
+
+    return { score, matchReasons: Array.from(new Set(matchReasons)) };
+  }
+
+  function buildRecoveredCallerReferences(
+    symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
+    limit: number,
+    metadataFilters?: MetadataFilters,
+    context?: HeuristicLookupContext,
+  ): { results: CallReference[]; totalCount: number; truncated: boolean } {
+    if (!isFragileCoverageSymbol(symbol) || typeof store.getRawCallersByCalledName !== "function") {
+      return { results: [], totalCount: 0, truncated: false };
+    }
+
+    const callableCandidates = store.getSymbolsByName(symbol.name)
+      .filter((candidate) => candidate.type === "function" || candidate.type === "method");
+    const rawCalls = store.getRawCallersByCalledName(symbol.name);
+    const bestByCaller = new Map<string, { ref: CallReference; rankScore: number }>();
+
+    for (const rawCall of rawCalls) {
+      const callerSymbol = store.getSymbolById(rawCall.callerId);
+      if (!callerSymbol || callerSymbol.id === symbol.id || !matchesMetadataFilters(callerSymbol, metadataFilters)) {
+        continue;
+      }
+
+      const rankedTargets = callableCandidates
+        .map((candidate) => ({
+          candidate,
+          ...scoreRecoveredTargetCandidate(rawCall, callerSymbol, candidate),
+        }))
+        .sort((left, right) =>
+          right.score - left.score
+          || left.candidate.qualifiedName.localeCompare(right.candidate.qualifiedName));
+
+      const best = rankedTargets[0];
+      const runnerUp = rankedTargets[1];
+      if (!best || best.candidate.id !== symbol.id || best.score <= 0) {
+        continue;
+      }
+      if (runnerUp && runnerUp.score === best.score) {
+        continue;
+      }
+
+      const contextScore = rankHeuristicCandidatesDetailed([callerSymbol], context)[0]?.rankScore ?? 0;
+      const rankScore = best.score + contextScore;
+      const ref = makeRecoveredCallReference({
+        symbol: callerSymbol,
+        filePath: rawCall.filePath,
+        line: rawCall.line,
+        confidence: "high_confidence_heuristic",
+        matchReasons: best.matchReasons,
+      });
+      const existing = bestByCaller.get(callerSymbol.id);
+      if (!existing || rankScore > existing.rankScore) {
+        bestByCaller.set(callerSymbol.id, { ref, rankScore });
+      }
+    }
+
+    const recovered = Array.from(bestByCaller.values())
+      .sort((left, right) =>
+        right.rankScore - left.rankScore
+        || left.ref.qualifiedName.localeCompare(right.ref.qualifiedName)
+        || left.ref.filePath.localeCompare(right.ref.filePath)
+        || left.ref.line - right.ref.line)
+      .map((entry) => entry.ref);
+
+    return {
+      results: recovered.slice(0, limit),
+      totalCount: recovered.length,
+      truncated: recovered.length > limit,
+    };
   }
 
   function buildMetadataGroupSummary(
@@ -1106,16 +1274,26 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const callers = buildCallReferences(store.getCallers(sym.id), "callerId");
+      const resolvedCallers = buildCallReferences(store.getCallers(sym.id), "callerId");
+      const recoveredCallers = resolvedCallers.length === 0
+        ? buildRecoveredCallerReferences(sym, CALLERS_DEFAULT_LIMIT, undefined, context).results
+        : [];
       const callees = buildCallReferences(store.getCallees(sym.id), "calleeId");
       const payload = buildFunctionResponse({
         symbol: sym,
         candidateCount,
         rankedCandidates,
-        callers,
+        callers: resolvedCallers.length > 0 ? resolvedCallers : recoveredCallers,
         callees,
       });
-      Object.assign(payload, buildResponseReliability({ symbol: sym }));
+      Object.assign(payload, recoveredCallers.length > 0
+        ? buildResponseReliability({
+          symbol: sym,
+          relatedResultCount: resolvedCallers.length,
+          recoveredResultCount: recoveredCallers.length,
+          zeroResultLabel: "callers",
+        })
+        : buildResponseReliability({ symbol: sym }));
 
       return {
         content: [{
@@ -1151,7 +1329,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const callers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+      const resolvedCallers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+      const recoveredCallers = resolvedCallers.totalCount === 0
+        ? buildRecoveredCallerReferences(sym, limit, metadataFilters, context)
+        : { results: [], totalCount: 0, truncated: false };
+      const callers = resolvedCallers.totalCount > 0 ? resolvedCallers : recoveredCallers;
       const payload: CallerQueryResponse = buildCallerQueryResponse({
         symbol: sym,
         candidateCount,
@@ -1163,7 +1345,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       });
       Object.assign(payload, buildResponseReliability({
         symbol: sym,
-        relatedResultCount: callers.totalCount,
+        relatedResultCount: resolvedCallers.totalCount,
+        recoveredResultCount: recoveredCallers.totalCount,
         zeroResultLabel: "callers",
       }));
       Object.assign(payload, metadataFilterEcho(metadataFilters), {
@@ -1719,27 +1902,65 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   );
 
   function expandCallDirection(
-    symbolId: string,
+    symbol: NonNullable<ReturnType<Store["getSymbolById"]>>,
     currentDepth: number,
     maxDepth: number,
     visited: Set<string>,
     state: { remainingNodeBudget: number },
     direction: "callers" | "callees",
   ): { edges: CallGraphEdge[]; truncated: boolean } {
-    const calls = direction === "callers" ? store.getCallers(symbolId) : store.getCallees(symbolId);
-    if (currentDepth >= maxDepth || visited.has(symbolId)) {
-      return { edges: [], truncated: calls.length > 0 };
+    type CallGraphEdgeCandidate = {
+      target: NonNullable<ReturnType<Store["getSymbolById"]>>;
+      filePath: string;
+      line: number;
+      resolutionKind?: CallReference["resolutionKind"];
+      provenanceKind?: CallReference["provenanceKind"];
+    };
+    const resolvedCalls = direction === "callers" ? store.getCallers(symbol.id) : store.getCallees(symbol.id);
+    const recoveredCallers = direction === "callers" && resolvedCalls.length === 0
+      ? buildRecoveredCallerReferences(symbol, CALLERS_MAX_LIMIT).results
+      : [];
+    if (currentDepth >= maxDepth || visited.has(symbol.id)) {
+      return { edges: [], truncated: resolvedCalls.length > 0 || recoveredCallers.length > 0 };
     }
-    visited.add(symbolId);
+    visited.add(symbol.id);
 
     let anyTruncated = false;
     const edges: CallGraphEdge[] = [];
-    for (const call of calls) {
-      const targetId = direction === "callers" ? call.callerId : call.calleeId;
-      const target = targetId ? store.getSymbolById(targetId) : undefined;
-      if (!target) {
-        continue;
+    const edgeCandidates: CallGraphEdgeCandidate[] = [];
+    if (direction === "callers" && resolvedCalls.length === 0) {
+      for (const ref of recoveredCallers) {
+        const target = store.getSymbolById(ref.symbolId);
+        if (!target) {
+          continue;
+        }
+        edgeCandidates.push({
+          target,
+          filePath: ref.filePath,
+          line: ref.line,
+          resolutionKind: ref.resolutionKind,
+          provenanceKind: ref.provenanceKind,
+        });
       }
+    } else {
+      for (const call of resolvedCalls) {
+        const targetId = direction === "callers" ? call.callerId : call.calleeId;
+        const target = targetId ? store.getSymbolById(targetId) : undefined;
+        if (!target) {
+          continue;
+        }
+        edgeCandidates.push({
+          target,
+          filePath: call.filePath,
+          line: call.line,
+          resolutionKind: "resolved",
+          provenanceKind: "resolved_call_edge",
+        });
+      }
+    }
+
+    for (const edgeCandidate of edgeCandidates) {
+      const target = edgeCandidate.target;
       if (visited.has(target.id)) {
         anyTruncated = true;
         continue;
@@ -1751,7 +1972,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
       state.remainingNodeBudget -= 1;
       const { edges: children, truncated } = expandCallDirection(
-        target.id,
+        target,
         currentDepth + 1,
         maxDepth,
         new Set(visited),
@@ -1763,8 +1984,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         targetId: target.id,
         targetName: target.name,
         targetQualifiedName: target.qualifiedName,
-        filePath: call.filePath,
-        line: call.line,
+        filePath: edgeCandidate.filePath,
+        line: edgeCandidate.line,
+        ...(edgeCandidate.resolutionKind ? { resolutionKind: edgeCandidate.resolutionKind } : {}),
+        ...(edgeCandidate.provenanceKind ? { provenanceKind: edgeCandidate.provenanceKind } : {}),
         ...(children.length > 0 ? { children } : {}),
       });
     }
@@ -1787,22 +2010,24 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     let truncated = false;
 
     if (direction === "callees" || direction === "both") {
-      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callees");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callees");
       root.callees = result.edges;
       truncated = truncated || result.truncated;
     }
     if (direction === "callers" || direction === "both") {
-      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callers");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callers");
       root.callers = result.edges;
       truncated = truncated || result.truncated;
     }
 
     const edgeCount = countGraphEdges(root.callees) + countGraphEdges(root.callers ?? []);
+    const recoveredCallerEdgeCount = countRecoveredGraphEdges(root.callers ?? []);
 
     return {
       ...buildResponseReliability({
         symbol,
         relatedResultCount: edgeCount,
+        recoveredResultCount: recoveredCallerEdgeCount,
         zeroResultLabel: direction === "callers"
           ? "caller edges"
           : direction === "both"
@@ -1839,6 +2064,19 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       count += 1;
       if (edge.children) {
         count += countGraphEdges(edge.children);
+      }
+    }
+    return count;
+  }
+
+  function countRecoveredGraphEdges(edges: CallGraphEdge[]): number {
+    let count = 0;
+    for (const edge of edges) {
+      if (edge.resolutionKind === "recovered") {
+        count += 1;
+      }
+      if (edge.children) {
+        count += countRecoveredGraphEdges(edge.children);
       }
     }
     return count;

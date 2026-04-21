@@ -115,6 +115,8 @@ function cloneCallGraphEdge(edge: CallGraphEdge): CallGraphEdge {
     targetQualifiedName: edge.targetQualifiedName,
     filePath: edge.filePath,
     line: edge.line,
+    ...(edge.resolutionKind ? { resolutionKind: edge.resolutionKind } : {}),
+    ...(edge.provenanceKind ? { provenanceKind: edge.provenanceKind } : {}),
     ...(edge.children ? { children: edge.children.map(cloneCallGraphEdge) } : {}),
   };
 }

@@ -9,21 +9,23 @@ import {
 interface ReliabilityParams {
   symbol: Symbol;
   relatedResultCount?: number;
+  recoveredResultCount?: number;
   zeroResultLabel?: string;
 }
 
 export function buildResponseReliability(params: ReliabilityParams): ReliabilityMetadata {
-  const { symbol, relatedResultCount, zeroResultLabel } = params;
+  const { symbol, relatedResultCount, recoveredResultCount, zeroResultLabel } = params;
   const factors = collectReliabilityFactors(symbol);
-  const indexCoverage = deriveIndexCoverage(factors, relatedResultCount);
-  const reliability = deriveReliabilitySummary(factors, indexCoverage);
+  const indexCoverage = deriveIndexCoverage(factors, relatedResultCount, recoveredResultCount);
+  const reliability = deriveReliabilitySummary(factors, indexCoverage, recoveredResultCount);
 
   return {
     reliability,
     ...(indexCoverage ? { indexCoverage } : {}),
-    ...(indexCoverage === "low" && zeroResultLabel
+    ...(recoveredResultCount && recoveredResultCount > 0 ? { recoveredResultCount } : {}),
+    ...(buildCoverageWarning(indexCoverage, zeroResultLabel, recoveredResultCount)
       ? {
-        coverageWarning: `This symbol has elevated structural fragility. Zero ${zeroResultLabel} may reflect an index gap rather than a true absence.`,
+        coverageWarning: buildCoverageWarning(indexCoverage, zeroResultLabel, recoveredResultCount),
       }
       : {}),
   };
@@ -46,12 +48,16 @@ function collectReliabilityFactors(symbol: Symbol): ReliabilityFactor[] {
 function deriveIndexCoverage(
   factors: ReliabilityFactor[],
   relatedResultCount?: number,
+  recoveredResultCount?: number,
 ): IndexCoverageLevel | undefined {
   if (relatedResultCount === undefined) {
     return undefined;
   }
   if (factors.length === 0) {
     return "full";
+  }
+  if (relatedResultCount === 0 && (recoveredResultCount ?? 0) > 0) {
+    return "partial";
   }
   if (relatedResultCount === 0) {
     return "low";
@@ -62,11 +68,20 @@ function deriveIndexCoverage(
 function deriveReliabilitySummary(
   factors: ReliabilityFactor[],
   indexCoverage?: IndexCoverageLevel,
+  recoveredResultCount?: number,
 ): ReliabilitySummary {
   if (factors.length === 0) {
     return {
       level: "full",
       factors: [],
+    };
+  }
+
+  if ((recoveredResultCount ?? 0) > 0) {
+    return {
+      level: "partial",
+      factors,
+      suggestion: "Recovered results include lower-confidence fallback evidence. Treat them as grounded hints rather than fully resolved graph certainty.",
     };
   }
 
@@ -83,4 +98,22 @@ function deriveReliabilitySummary(
     factors,
     suggestion: "Treat negative results near this symbol with caution because the surrounding structure is more fragile than usual.",
   };
+}
+
+function buildCoverageWarning(
+  indexCoverage?: IndexCoverageLevel,
+  zeroResultLabel?: string,
+  recoveredResultCount?: number,
+): string | undefined {
+  if (!zeroResultLabel) {
+    return undefined;
+  }
+  if ((recoveredResultCount ?? 0) > 0) {
+    const recoveredLabel = recoveredResultCount === 1 ? "result" : "results";
+    return `Resolved ${zeroResultLabel} were empty, but ${recoveredResultCount} recovered ${recoveredLabel} from stored raw-call evidence are included.`;
+  }
+  if (indexCoverage === "low") {
+    return `This symbol has elevated structural fragility. Zero ${zeroResultLabel} may reflect an index gap rather than a true absence.`;
+  }
+  return undefined;
 }

@@ -713,8 +713,11 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.body.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.body.ambiguity).toEqual({ candidateCount: 4 });
       expect(typeof heuristic.body.selectedReason).toBe("string");
+      expect(typeof heuristic.body.bestNextDiscriminator).toBe("string");
+      expect(heuristic.body.suggestedExactQueries).toHaveLength(3);
       expect(heuristic.body.topCandidates).toHaveLength(4);
       expect(heuristic.body.topCandidates[0].qualifiedName).toBe(heuristic.body.symbol.qualifiedName);
+      expect(typeof heuristic.body.topCandidates[0].exactQuery).toBe("string");
 
       const callers = await request(app).get("/callers/Update").expect(200);
       expect(callers.body.lookupMode).toBe("heuristic");
@@ -722,6 +725,8 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(callers.body.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(callers.body.ambiguity).toEqual({ candidateCount: 4 });
       expect(typeof callers.body.selectedReason).toBe("string");
+      expect(typeof callers.body.bestNextDiscriminator).toBe("string");
+      expect(callers.body.suggestedExactQueries).toHaveLength(3);
       expect(callers.body.topCandidates).toHaveLength(4);
       expect(callers.body.totalCount).toBe(1);
       expect(callers.body.truncated).toBe(false);
@@ -943,8 +948,11 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(heuristic.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(heuristic.ambiguity).toEqual({ candidateCount: 4 });
       expect(typeof heuristic.selectedReason).toBe("string");
+      expect(typeof heuristic.bestNextDiscriminator).toBe("string");
+      expect(heuristic.suggestedExactQueries).toHaveLength(3);
       expect(heuristic.topCandidates).toHaveLength(4);
       expect(heuristic.topCandidates[0].qualifiedName).toBe(heuristic.symbol.qualifiedName);
+      expect(typeof heuristic.topCandidates[0].exactQuery).toBe("string");
 
       const callerResponses = await mcpCall([
         INIT,
@@ -962,6 +970,8 @@ describe("ambiguity fixture storage and API contracts", () => {
       expect(callers.matchReasons).toEqual(["ambiguous_top_score"]);
       expect(callers.ambiguity).toEqual({ candidateCount: 4 });
       expect(typeof callers.selectedReason).toBe("string");
+      expect(typeof callers.bestNextDiscriminator).toBe("string");
+      expect(callers.suggestedExactQueries).toHaveLength(3);
       expect(callers.topCandidates).toHaveLength(4);
       expect(callers.totalCount).toBe(1);
       expect(callers.truncated).toBe(false);

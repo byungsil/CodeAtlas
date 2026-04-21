@@ -19,7 +19,7 @@ import {
   TypeHierarchyNode,
 } from "../models/responses";
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
-import { IndexDetailsRecord, MetadataFilters, WorkspaceLanguageSummaryRecord } from "./store";
+import { IndexDetailsRecord, MetadataFilters, RawCallCandidateRecord, WorkspaceLanguageSummaryRecord } from "./store";
 
 export class SqliteStore {
   private db: Database.Database;
@@ -191,6 +191,22 @@ export class SqliteStore {
       .prepare("SELECT * FROM calls WHERE caller_id = ?")
       .all(symbolId) as RawCallRow[];
     return rows.map(toCall);
+  }
+
+  getRawCallersByCalledName(calledName: string): RawCallCandidateRecord[] {
+    if (!this.hasTable("raw_calls")) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(`
+        SELECT caller_id, called_name, call_kind, file_path, line, receiver, qualifier
+        FROM raw_calls
+        WHERE called_name = ?
+        ORDER BY file_path, line, caller_id
+      `)
+      .all(calledName) as RawRecoveredCallRow[];
+    return rows.map(toRawCallCandidate);
   }
 
   getMembers(parentId: string): Symbol[] {
@@ -667,6 +683,16 @@ interface RawCallRow {
   line: number;
 }
 
+interface RawRecoveredCallRow {
+  caller_id: string;
+  called_name: string;
+  call_kind: string | null;
+  file_path: string;
+  line: number;
+  receiver: string | null;
+  qualifier: string | null;
+}
+
 interface RawReferenceRow {
   source_symbol_id: string;
   target_symbol_id: string;
@@ -732,6 +758,18 @@ function toCall(row: RawCallRow): Call {
     calleeId: row.callee_id,
     filePath: row.file_path,
     line: row.line,
+  };
+}
+
+function toRawCallCandidate(row: RawRecoveredCallRow): RawCallCandidateRecord {
+  return {
+    callerId: row.caller_id,
+    calledName: row.called_name,
+    ...(row.call_kind ? { callKind: row.call_kind } : {}),
+    filePath: row.file_path,
+    line: row.line,
+    ...(row.receiver ? { receiver: row.receiver } : {}),
+    ...(row.qualifier ? { qualifier: row.qualifier } : {}),
   };
 }
 

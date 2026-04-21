@@ -21,7 +21,7 @@ use crate::metadata::{
 };
 use crate::models::{
     CallableFlowSummary, FileRecord, FileRiskSignals, IncludeHeaviness, MacroSensitivity,
-    NormalizedReference, ParseFragility, ParseMetrics, ParseResult, PropagationEvent, RawCallSite,
+    ParseFragility, ParseMetrics, ParseResult, PropagationEvent, RawCallSite, RawRelationEvent,
     Symbol,
 };
 use crate::parser;
@@ -334,6 +334,23 @@ fn empty_parse_result() -> ParseResult {
     }
 }
 
+fn discard_runtime_only_parse_payload(parse_result: &mut ParseResult) {
+    // Full/incremental indexing rebuilds references from retained relation events later,
+    // so keeping per-file normalized references alive in collector buffers only inflates memory.
+    parse_result.normalized_references.clear();
+}
+
+fn extend_non_call_relation_events(
+    destination: &mut Vec<RawRelationEvent>,
+    relation_events: Vec<RawRelationEvent>,
+) {
+    destination.extend(
+        relation_events
+            .into_iter()
+            .filter(|event| event.relation_kind != crate::models::RawRelationKind::Call),
+    );
+}
+
 pub fn parse_files(
     workspace_root: &Path,
     relative_paths: &[String],
@@ -342,7 +359,7 @@ pub fn parse_files(
 ) -> (
     Vec<Symbol>,
     Vec<RawCallSite>,
-    Vec<NormalizedReference>,
+    Vec<RawRelationEvent>,
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
@@ -368,7 +385,7 @@ pub fn parse_discovered_files(
 ) -> (
     Vec<Symbol>,
     Vec<RawCallSite>,
-    Vec<NormalizedReference>,
+    Vec<RawRelationEvent>,
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
@@ -396,7 +413,7 @@ pub fn parse_discovered_files_with_progress(
 ) -> (
     Vec<Symbol>,
     Vec<RawCallSite>,
-    Vec<NormalizedReference>,
+    Vec<RawRelationEvent>,
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
@@ -476,7 +493,7 @@ pub fn parse_discovered_files_with_progress(
                     }
                     return (rel_path, Ok(empty_parse_result()), hash, lossy);
                 }
-                let result = registry.parse_file(discovered.language, &rel_path, &content);
+                let mut result = registry.parse_file(discovered.language, &rel_path, &content);
                 let elapsed = {
                     let mut active = active_files.lock().expect("active parse tracker poisoned");
                     active
@@ -548,6 +565,9 @@ pub fn parse_discovered_files_with_progress(
                         Err(_) => {}
                     }
                 }
+                if let Ok(pr) = &mut result {
+                    discard_runtime_only_parse_payload(pr);
+                }
                 (rel_path, result, hash, lossy)
             })
             .collect()
@@ -559,7 +579,7 @@ pub fn parse_discovered_files_with_progress(
 
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
-    let mut normalized_references = Vec::new();
+    let mut relation_events = Vec::new();
     let mut propagation_events = Vec::new();
     let mut callable_flow_summaries = Vec::new();
     let mut file_records = Vec::new();
@@ -585,7 +605,7 @@ pub fn parse_discovered_files_with_progress(
                 apply_metadata_to_file_record_with_context(&mut file_record, build_metadata);
                 apply_risk_signals_to_file_record(&mut file_record, &pr.file_risk_signals);
                 file_records.push(file_record);
-                normalized_references.extend(pr.normalized_references);
+                extend_non_call_relation_events(&mut relation_events, pr.relation_events);
                 propagation_events.extend(pr.propagation_events);
                 callable_flow_summaries.extend(pr.callable_flow_summaries);
                 metrics.tree_sitter_parse_ms += pr.metrics.tree_sitter_parse_ms;
@@ -627,7 +647,7 @@ pub fn parse_discovered_files_with_progress(
     (
         symbols,
         raw_calls,
-        normalized_references,
+        relation_events,
         propagation_events,
         callable_flow_summaries,
         file_records,
@@ -779,7 +799,7 @@ pub fn parse_files_strict(
 ) -> Result<(
     Vec<Symbol>,
     Vec<RawCallSite>,
-    Vec<NormalizedReference>,
+    Vec<RawRelationEvent>,
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
@@ -816,7 +836,7 @@ pub fn parse_discovered_files_strict(
 ) -> Result<(
     Vec<Symbol>,
     Vec<RawCallSite>,
-    Vec<NormalizedReference>,
+    Vec<RawRelationEvent>,
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
@@ -824,7 +844,7 @@ pub fn parse_discovered_files_strict(
 ), String> {
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
-    let mut normalized_references = Vec::new();
+    let mut relation_events = Vec::new();
     let mut propagation_events = Vec::new();
     let mut callable_flow_summaries = Vec::new();
     let mut file_records = Vec::new();
@@ -833,7 +853,7 @@ pub fn parse_discovered_files_strict(
 
     for (index, discovered) in discovered_files.iter().enumerate() {
         let rel_path = make_relative(workspace_root, &discovered.path);
-        let (result, hash, lossy, skipped) =
+        let (mut result, hash, lossy, skipped) =
             parse_discovered_file_strict(workspace_root, discovered, build_metadata, registry)?;
         if verbose {
             if skipped {
@@ -879,7 +899,8 @@ pub fn parse_discovered_files_strict(
         apply_metadata_to_file_record_with_context(&mut file_record, build_metadata);
         apply_risk_signals_to_file_record(&mut file_record, &result.file_risk_signals);
         file_records.push(file_record);
-        normalized_references.extend(result.normalized_references);
+        discard_runtime_only_parse_payload(&mut result);
+        extend_non_call_relation_events(&mut relation_events, result.relation_events);
         propagation_events.extend(result.propagation_events);
         callable_flow_summaries.extend(result.callable_flow_summaries);
         metrics.tree_sitter_parse_ms += result.metrics.tree_sitter_parse_ms;
@@ -905,7 +926,7 @@ pub fn parse_discovered_files_strict(
     Ok((
         symbols,
         raw_calls,
-        normalized_references,
+        relation_events,
         propagation_events,
         callable_flow_summaries,
         file_records,

@@ -23,6 +23,16 @@ export interface WorkspaceLanguageSummaryRecord {
   symbolCount: number;
 }
 
+export interface RawCallCandidateRecord {
+  callerId: string;
+  calledName: string;
+  callKind?: string;
+  filePath: string;
+  line: number;
+  receiver?: string;
+  qualifier?: string;
+}
+
 export interface IndexCountsRecord {
   symbols: number;
   calls: number;
@@ -63,6 +73,7 @@ export interface Store {
   getNamespaceSymbols(namespaceQualifiedName: string): Symbol[];
   getCallers(symbolId: string): Call[];
   getCallees(symbolId: string): Call[];
+  getRawCallersByCalledName?(calledName: string): RawCallCandidateRecord[];
   getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[];
   getMembers(parentId: string): Symbol[];
   getDirectBases(symbolId: string): Symbol[];

@@ -44,6 +44,7 @@ enum ResolutionStatus {
 struct ResolutionContext<'a> {
     caller_parent: Option<&'a str>,
     caller_namespace: Option<&'a str>,
+    caller_bases: &'a [&'a str],
 }
 
 pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call> {
@@ -58,6 +59,7 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
         let context = ResolutionContext {
             caller_parent: parent_of.get(raw.caller_id.as_str()).copied(),
             caller_namespace: namespace_scope(raw.caller_id.as_str(), parent_of.get(raw.caller_id.as_str()).copied()),
+            caller_bases: &[],
         };
         let decision = resolve_one(raw, candidates, context);
 
@@ -160,9 +162,21 @@ fn score_candidates<'a>(
                 }
             }
 
+            if !matches!(raw.call_kind, RawCallKind::Qualified) {
+                if let Some(candidate_parent) = symbol.parent_id.as_deref() {
+                    if context.caller_bases.iter().any(|base_id| *base_id == candidate_parent) {
+                        reasons.push(RankingReason {
+                            kind: "direct_base_parent",
+                            score: 90,
+                        });
+                    }
+                }
+            }
+
             push_receiver_aware_reasons(raw, symbol, context, &mut reasons);
 
             push_arity_hint_reasons(raw, symbol, &mut reasons);
+            push_argument_signature_reasons(raw, symbol, &mut reasons);
 
             let score = reasons.iter().map(|reason| reason.score).sum();
 
@@ -282,6 +296,108 @@ fn push_arity_hint_reasons(
             });
         }
     }
+}
+
+fn push_argument_signature_reasons(
+    raw: &RawCallSite,
+    symbol: &Symbol,
+    reasons: &mut Vec<RankingReason>,
+) {
+    if raw.argument_texts.is_empty() {
+        return;
+    }
+    let Some(signature) = symbol.signature.as_deref() else {
+        return;
+    };
+    let Some(parameter_types) = signature_parameter_types(signature) else {
+        return;
+    };
+
+    for (argument_text, parameter_type) in raw.argument_texts.iter().zip(parameter_types.iter()) {
+        let parameter_type = clean_type_token(parameter_type);
+        if parameter_type.eq_ignore_ascii_case("bool") {
+            let trimmed = argument_text.trim();
+            if trimmed == "true" || trimmed == "false" {
+                reasons.push(RankingReason {
+                    kind: "argument_signature_hint",
+                    score: 70,
+                });
+            }
+            continue;
+        }
+
+        let Some(argument_leaf) = argument_leaf_identifier(argument_text) else {
+            continue;
+        };
+        let Some(type_leaf) = type_leaf_identifier(&parameter_type) else {
+            continue;
+        };
+        if normalize_identifier(argument_leaf) == normalize_identifier(type_leaf) {
+            reasons.push(RankingReason {
+                kind: "argument_signature_hint",
+                score: 90,
+            });
+        }
+    }
+}
+
+fn signature_parameter_types(signature: &str) -> Option<Vec<String>> {
+    let start = signature.find('(')?;
+    let end = signature.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+
+    let params = signature[start + 1..end].trim();
+    if params.is_empty() || params == "void" {
+        return Some(Vec::new());
+    }
+
+    Some(
+        params
+            .split(',')
+            .map(|parameter| {
+                let without_default = parameter.split('=').next().unwrap_or("").trim();
+                let tokens: Vec<&str> = without_default.split_whitespace().collect();
+                if tokens.len() <= 1 {
+                    return without_default.to_string();
+                }
+                tokens[..tokens.len() - 1].join(" ")
+            })
+            .collect(),
+    )
+}
+
+fn clean_type_token(type_text: &str) -> String {
+    type_text
+        .replace('&', " ")
+        .replace('*', " ")
+        .replace("const", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn argument_leaf_identifier(argument_text: &str) -> Option<&str> {
+    argument_text
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|part| !part.is_empty())
+        .next_back()
+}
+
+fn type_leaf_identifier(type_text: &str) -> Option<&str> {
+    type_text
+        .split("::")
+        .filter(|part| !part.is_empty())
+        .last()
+}
+
+fn normalize_identifier(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
 }
 
 pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
@@ -610,6 +726,19 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
     caller_ids.dedup();
 
     let db_parent_of = db.find_parent_ids(&caller_ids).unwrap_or_default();
+    let mut caller_parent_ids: Vec<String> = raw_calls
+        .iter()
+        .filter_map(|raw| {
+            new_parent_of
+                .get(raw.caller_id.as_str())
+                .copied()
+                .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|parent| parent.as_str()))
+                .map(|parent| parent.to_string())
+        })
+        .collect();
+    caller_parent_ids.sort();
+    caller_parent_ids.dedup();
+    let db_bases_by_parent = db.find_direct_base_ids(&caller_parent_ids).unwrap_or_default();
 
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
@@ -622,9 +751,14 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
 
         let owned_candidates = collect_candidates_with_db(raw, &new_by_name, db);
         let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
+        let caller_base_ids: Vec<&str> = caller_parent
+            .and_then(|parent| db_bases_by_parent.get(parent))
+            .map(|base_ids| base_ids.iter().map(|base_id| base_id.as_str()).collect())
+            .unwrap_or_default();
         let context = ResolutionContext {
             caller_parent,
             caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
+            caller_bases: caller_base_ids.as_slice(),
         };
         let decision = resolve_one(raw, candidates, context);
 
@@ -1302,6 +1436,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent,
             caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
+            caller_bases: &[],
         };
         resolve_one(raw, candidates, context)
     }
@@ -1845,6 +1980,108 @@ mod tests {
     }
 
     #[test]
+    fn resolve_calls_with_db_prefers_direct_base_methods_for_unqualified_calls() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.write_symbols(&[
+            make_sym("Gameplay::ShotNormal", "ShotNormal", "class", None),
+            make_sym("Gameplay::ShotSubSystem", "ShotSubSystem", "class", None),
+            make_sym(
+                "Gameplay::ShotNormal::CalcShotInformation",
+                "CalcShotInformation",
+                "method",
+                Some("Gameplay::ShotNormal"),
+            ),
+        ])
+        .unwrap();
+        db.write_references(&[crate::models::NormalizedReference {
+            source_symbol_id: "Gameplay::ShotNormal".into(),
+            target_symbol_id: "Gameplay::ShotSubSystem".into(),
+            category: crate::models::ReferenceCategory::InheritanceMention,
+            file_path: "shotnormal.h".into(),
+            line: 4,
+            confidence: RawExtractionConfidence::Partial,
+        }])
+        .unwrap();
+
+        let new_symbols = vec![
+            make_sym(
+                "Gameplay::ShotSubSystem::SetShotFlags",
+                "SetShotFlags",
+                "method",
+                Some("Gameplay::ShotSubSystem"),
+            ),
+            make_sym(
+                "Gameplay::BallHandler::SetShotFlags",
+                "SetShotFlags",
+                "method",
+                Some("Gameplay::BallHandler"),
+            ),
+        ];
+        let raw = vec![make_raw(
+            "Gameplay::ShotNormal::CalcShotInformation",
+            "SetShotFlags",
+        )];
+
+        let calls = resolve_calls_with_db(&raw, &new_symbols, &db);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].callee_id, "Gameplay::ShotSubSystem::SetShotFlags");
+    }
+
+    #[test]
+    fn argument_signature_hint_prefers_flag_parameter_over_bool_candidate() {
+        let flag_method = Symbol {
+            signature: Some("void SetShotFlags(Gameplay::ShotFlags flags)".into()),
+            parameter_count: Some(1),
+            ..make_sym(
+                "Gameplay::ShotSubSystem::SetShotFlags",
+                "SetShotFlags",
+                "method",
+                Some("Gameplay::ShotSubSystem"),
+            )
+        };
+        let bool_method = Symbol {
+            signature: Some("void SetShotFlags(bool isInitialize)".into()),
+            parameter_count: Some(1),
+            ..make_sym(
+                "Gameplay::BallHandler::SetShotFlags",
+                "SetShotFlags",
+                "method",
+                Some("Gameplay::BallHandler"),
+            )
+        };
+        let raw = RawCallSite {
+            caller_id: "Gameplay::ShotNormal::CalcShotInformation".into(),
+            called_name: "SetShotFlags".into(),
+            call_kind: RawCallKind::Unqualified,
+            argument_count: Some(1),
+            argument_texts: vec!["param.shotFlags".into()],
+            result_target: None,
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "shotnormal.cpp".into(),
+            line: 1634,
+        };
+        let candidates = vec![&bool_method, &flag_method];
+        let context = ResolutionContext {
+            caller_parent: Some("Gameplay::ShotNormal"),
+            caller_namespace: Some("Gameplay"),
+            caller_bases: &[],
+        };
+
+        let decision = resolve_one(&raw, candidates, context);
+        assert_eq!(
+            decision.chosen.map(|symbol| symbol.id.as_str()),
+            Some("Gameplay::ShotSubSystem::SetShotFlags")
+        );
+        assert!(decision.ranked[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.kind == "argument_signature_hint" && reason.score == 90));
+    }
+
+    #[test]
     fn same_parent_score_is_visible_in_ranking_decision() {
         let raw = make_raw("Alpha::Caller", "Target");
         let alpha = make_sym("Alpha::Target", "Target", "method", Some("Alpha"));
@@ -1853,6 +2090,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Alpha"),
             caller_namespace: None,
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -1876,6 +2114,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Gameplay"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -1898,6 +2137,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Game::Player"),
             caller_namespace: Some("Game"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -1917,6 +2157,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Game::Player"),
             caller_namespace: Some("Game"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -1951,6 +2192,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -1985,6 +2227,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2019,6 +2262,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("AI::Controller"),
             caller_namespace: Some("AI"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2053,6 +2297,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("AI::Controller"),
             caller_namespace: Some("AI"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2095,6 +2340,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Math"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2135,6 +2381,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Math"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2153,6 +2400,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, Vec::new(), context);
@@ -2171,6 +2419,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: None,
+            caller_bases: &[],
         };
 
         let decision = resolve_one(&raw, candidates, context);

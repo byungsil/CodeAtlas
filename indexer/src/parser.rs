@@ -137,6 +137,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         };
     let graph_relation_ms = graph_relation_start.elapsed().as_millis();
     let enum_value_references = extract_enum_value_references(tree.root_node(), &ctx, &ctx.symbols);
+    let enum_value_relation_events = extract_enum_value_relation_events(tree.root_node(), &ctx);
     let legacy_raw_calls = ctx.raw_calls;
     let legacy_relation_events: Vec<RawRelationEvent> = legacy_raw_calls
         .iter()
@@ -147,7 +148,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         .filter_map(RawRelationEvent::to_raw_call_site)
         .collect();
 
-    let (relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
+    let (mut relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
     {
         let mut relation_events = graph_relation_events;
         relation_events.extend(legacy_type_usage_events);
@@ -167,8 +168,9 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         );
         (mixed_relation_events, legacy_raw_calls)
     };
+    relation_events.extend(enum_value_relation_events);
     let reference_normalization_start = Instant::now();
-    let mut normalized_references = extract_normalized_references(&relation_events, &ctx.symbols);
+    let mut normalized_references = normalize_relation_events(&relation_events, &ctx.symbols);
     merge_normalized_references(&mut normalized_references, enum_value_references);
     let reference_normalization_ms = reference_normalization_start.elapsed().as_millis();
 
@@ -446,7 +448,7 @@ fn read_enclosing_symbol_id(line: usize, ctx: &Ctx) -> Option<String> {
         .map(|symbol| symbol.id.clone())
 }
 
-fn extract_normalized_references(
+pub fn normalize_relation_events(
     relation_events: &[RawRelationEvent],
     symbols: &[Symbol],
 ) -> Vec<NormalizedReference> {
@@ -517,6 +519,38 @@ fn extract_type_usage_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationE
     events
 }
 
+fn extract_enum_value_relation_events(
+    root: Node,
+    ctx: &Ctx,
+) -> Vec<RawRelationEvent> {
+    let mut events = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "qualified_identifier" || node.kind() == "identifier" {
+            if let Some(reference) = enum_value_event_for_node(node, ctx) {
+                let key = format!(
+                    "{}|{}|{}|{}",
+                    reference.caller_id.as_deref().unwrap_or_default(),
+                    reference.target_name.as_deref().unwrap_or_default(),
+                    reference.file_path,
+                    reference.line
+                );
+                if seen.insert(key) {
+                    events.push(reference);
+                }
+            }
+        }
+
+        for child in named_children(node) {
+            stack.push(child);
+        }
+    }
+
+    events
+}
+
 fn extract_enum_value_references(
     root: Node,
     ctx: &Ctx,
@@ -579,7 +613,14 @@ fn enum_value_reference_for_node(
         file_path: ctx.file_path.clone(),
         line,
     };
-    let target_symbol_id = resolve_reference_target_id(&event, &source_symbol_id, symbol_index)?;
+    let target_symbol_id = resolve_enum_value_target_id(
+        node,
+        &event,
+        &source_symbol_id,
+        ctx,
+        symbol_index,
+    )
+    .or_else(|| resolve_reference_target_id(&event, &source_symbol_id, symbol_index))?;
 
     Some(NormalizedReference {
         source_symbol_id,
@@ -591,14 +632,47 @@ fn enum_value_reference_for_node(
     })
 }
 
+fn enum_value_event_for_node(
+    node: Node,
+    ctx: &Ctx,
+) -> Option<RawRelationEvent> {
+    if !enum_value_usage_context(node) {
+        return None;
+    }
+
+    let line = node.start_position().row + 1;
+    let source_symbol_id = read_enclosing_symbol_id(line, ctx)?;
+    let target_name = ctx.node_text(node);
+    Some(RawRelationEvent {
+        relation_kind: RawRelationKind::EnumValueUsage,
+        source: RawEventSource::LegacyAst,
+        confidence: RawExtractionConfidence::Partial,
+        caller_id: Some(source_symbol_id.clone()),
+        target_name: Some(target_name),
+        call_kind: None,
+        argument_count: None,
+        receiver: None,
+        receiver_kind: None,
+        qualifier: None,
+        qualifier_kind: None,
+        file_path: ctx.file_path.clone(),
+        line,
+    })
+}
+
 fn enum_value_usage_context(node: Node) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "argument_list" | "assignment_expression" | "binary_expression" | "return_statement" => {
+            "argument_list"
+            | "assignment_expression"
+            | "binary_expression"
+            | "return_statement"
+            | "conditional_expression"
+            | "parenthesized_expression" => {
                 return true;
             }
-            "init_declarator" => {
+            "init_declarator" | "initializer_list" => {
                 return true;
             }
             "function_definition" | "declaration" | "field_declaration" | "parameter_declaration" => {
@@ -1716,15 +1790,396 @@ fn build_symbol_index(symbols: &[Symbol]) -> HashMap<String, Vec<Symbol>> {
     index
 }
 
+fn resolve_enum_value_target_id(
+    node: Node,
+    event: &RawRelationEvent,
+    source_symbol_id: &str,
+    ctx: &Ctx,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> Option<String> {
+    let target_name = event.target_name.as_deref()?;
+    let direct = enum_member_candidates_for_lookup(target_name, symbol_index);
+    if direct.is_empty() {
+        return None;
+    }
+    if direct.len() == 1 {
+        return Some(direct[0].id.clone());
+    }
+
+    let preferred_enum_ids = collect_enum_parent_hints(node, source_symbol_id, ctx, symbol_index);
+    let source_namespace = namespace_scope(source_symbol_id);
+    let explicit_namespace = enum_member_explicit_namespace(node, ctx);
+    let mut scored: Vec<(i32, &Symbol)> = direct
+        .iter()
+        .map(|symbol| {
+            let symbol = *symbol;
+            let mut score = 0;
+            if let Some(parent_id) = symbol.parent_id.as_deref() {
+                if preferred_enum_ids.contains(parent_id) {
+                    score += 250;
+                }
+            }
+            if let Some(namespace) = explicit_namespace.as_deref() {
+                if enum_member_namespace(symbol) == Some(namespace) {
+                    score += 180;
+                }
+            }
+            if let Some(namespace) = source_namespace {
+                if symbol_namespace(symbol) == Some(namespace) {
+                    score += 50;
+                }
+            }
+            (score, symbol)
+        })
+        .collect();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.id.cmp(&right.1.id)));
+
+    let best = scored.first()?;
+    let best_score = best.0;
+    if best_score == 0 {
+        return None;
+    }
+    if scored
+        .iter()
+        .take_while(|candidate| candidate.0 == best_score)
+        .count()
+        > 1
+    {
+        return None;
+    }
+
+    Some(best.1.id.clone())
+}
+
+fn enum_member_candidates_for_lookup<'a>(
+    target_name: &str,
+    symbol_index: &'a HashMap<String, Vec<Symbol>>,
+) -> Vec<&'a Symbol> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(direct) = symbol_index.get(target_name) {
+        for symbol in direct {
+            if is_enum_member_symbol(symbol) && seen.insert(symbol.id.clone()) {
+                candidates.push(symbol);
+            }
+        }
+    }
+
+    if let Some((_, leaf_name)) = target_name.rsplit_once("::") {
+        if let Some(by_leaf) = symbol_index.get(leaf_name) {
+            for symbol in by_leaf {
+                if is_enum_member_symbol(symbol) && seen.insert(symbol.id.clone()) {
+                    candidates.push(symbol);
+                }
+            }
+        }
+    }
+
+    candidates
+}
+
+fn enum_member_explicit_namespace(node: Node, ctx: &Ctx) -> Option<String> {
+    if node.kind() != "qualified_identifier" {
+        return None;
+    }
+
+    let text = ctx.node_text(node);
+    let (qualifier, _) = text.rsplit_once("::")?;
+    Some(qualifier.to_string())
+}
+
+fn enum_member_namespace<'a>(symbol: &'a Symbol) -> Option<&'a str> {
+    symbol.parent_id.as_deref().and_then(namespace_scope)
+}
+
+fn collect_enum_parent_hints(
+    node: Node,
+    source_symbol_id: &str,
+    ctx: &Ctx,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+
+    if node.kind() == "qualified_identifier" {
+        let text = ctx.node_text(node);
+        if let Some((qualifier, _)) = text.rsplit_once("::") {
+            for enum_id in resolve_enum_ids_for_type_text(qualifier, symbol_index) {
+                hints.insert(enum_id);
+            }
+        }
+    }
+
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "init_declarator" => {
+                hints.extend(enum_hints_from_typed_declaration(parent, ctx, symbol_index));
+            }
+            "argument_list" => {
+                hints.extend(enum_hints_from_argument_list(parent, node, ctx, symbol_index));
+            }
+            "return_statement" => {
+                hints.extend(enum_hints_from_return_context(source_symbol_id, symbol_index));
+            }
+            _ => {}
+        }
+        if !hints.is_empty() {
+            break;
+        }
+        current = parent.parent();
+    }
+
+    hints
+}
+
+fn enum_hints_from_typed_declaration(
+    init_declarator: Node,
+    ctx: &Ctx,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    let Some(declaration) = init_declarator.parent() else {
+        return hints;
+    };
+    let mut cursor = declaration.walk();
+    for child in declaration.children(&mut cursor) {
+        match child.kind() {
+            "type_identifier" | "qualified_identifier" | "enum_specifier" => {
+                let type_text = declaration_type_text(child, ctx);
+                hints.extend(resolve_enum_ids_for_type_text(&type_text, symbol_index));
+            }
+            kind if kind.contains("declarator") || kind == "init_declarator" => break,
+            _ => {}
+        }
+    }
+    hints
+}
+
+fn declaration_type_text(node: Node, ctx: &Ctx) -> String {
+    if node.kind() != "enum_specifier" {
+        return ctx.node_text(node);
+    }
+    node.child_by_field_name("name")
+        .map(|name| ctx.node_text(name))
+        .unwrap_or_default()
+}
+
+fn enum_hints_from_argument_list(
+    argument_list: Node,
+    target_node: Node,
+    ctx: &Ctx,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    let Some(call_expression) = argument_list.parent() else {
+        return hints;
+    };
+    let Some(function_node) = call_expression.child_by_field_name("function") else {
+        return hints;
+    };
+    let Some(called_name) = callable_leaf_name(function_node, ctx) else {
+        return hints;
+    };
+    let Some(argument_index) = argument_index(argument_list, target_node) else {
+        return hints;
+    };
+
+    let callable_symbols = symbol_index
+        .get(called_name.as_str())
+        .into_iter()
+        .flat_map(|symbols| symbols.iter())
+        .filter(|symbol| matches!(symbol.symbol_type.as_str(), "function" | "method"));
+
+    for symbol in callable_symbols {
+        let Some(parameter_type) =
+            signature_parameter_type(symbol.signature.as_deref().unwrap_or_default(), argument_index)
+        else {
+            continue;
+        };
+        hints.extend(resolve_enum_ids_for_type_text(&parameter_type, symbol_index));
+    }
+
+    hints
+}
+
+fn callable_leaf_name(node: Node, ctx: &Ctx) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" => Some(ctx.node_text(node)),
+        "qualified_identifier" => ctx
+            .node_text(node)
+            .rsplit("::")
+            .next()
+            .map(|name| name.to_string()),
+        "field_expression" => node
+            .child_by_field_name("field")
+            .map(|field| ctx.node_text(field)),
+        _ => None,
+    }
+}
+
+fn argument_index(argument_list: Node, target_node: Node) -> Option<usize> {
+    let mut argument_node = target_node;
+    while let Some(parent) = argument_node.parent() {
+        if parent == argument_list {
+            break;
+        }
+        argument_node = parent;
+    }
+
+    let mut cursor = argument_list.walk();
+    let mut index = 0;
+    for child in argument_list.named_children(&mut cursor) {
+        if child == argument_node {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn signature_parameter_type(signature: &str, argument_index: usize) -> Option<String> {
+    let start = signature.find('(')?;
+    let end = signature.rfind(')')?;
+    if end <= start {
+        return None;
+    }
+    let params = &signature[start + 1..end];
+    let parameters = split_top_level_commas(params);
+    let parameter = parameters.get(argument_index)?.trim();
+    if parameter.is_empty() {
+        return None;
+    }
+    let without_default = parameter.split('=').next()?.trim();
+    let tokens: Vec<&str> = without_default.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    if tokens.len() == 1 {
+        return Some(clean_type_token(tokens[0]));
+    }
+    Some(clean_type_token(&tokens[..tokens.len() - 1].join(" ")))
+}
+
+fn split_top_level_commas(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut angle_depth = 0i32;
+    let mut paren_depth = 0i32;
+
+    for ch in text.chars() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' if angle_depth > 0 => angle_depth -= 1,
+            '(' => paren_depth += 1,
+            ')' if paren_depth > 0 => paren_depth -= 1,
+            ',' if angle_depth == 0 && paren_depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+
+    parts
+}
+
+fn clean_type_token(text: &str) -> String {
+    text.replace('&', "")
+        .replace('*', "")
+        .replace("const ", "")
+        .replace(" const", "")
+        .trim()
+        .to_string()
+}
+
+fn enum_hints_from_return_context(
+    source_symbol_id: &str,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    let Some(symbol) = symbol_index
+        .get(source_symbol_id)
+        .and_then(|symbols| symbols.first())
+    else {
+        return hints;
+    };
+    let Some(signature) = symbol.signature.as_deref() else {
+        return hints;
+    };
+    let Some(paren_index) = signature.find('(') else {
+        return hints;
+    };
+    let prefix = signature[..paren_index].trim();
+    let mut parts: Vec<&str> = prefix.split_whitespace().collect();
+    if parts.len() < 2 {
+        return hints;
+    }
+    parts.pop();
+    let return_type = clean_type_token(&parts.join(" "));
+    hints.extend(resolve_enum_ids_for_type_text(&return_type, symbol_index));
+    hints
+}
+
+fn resolve_enum_ids_for_type_text(
+    type_text: &str,
+    symbol_index: &HashMap<String, Vec<Symbol>>,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    for token in extract_type_lookup_tokens(type_text) {
+        if let Some(symbols) = symbol_index.get(token.as_str()) {
+            for symbol in symbols {
+                if symbol.symbol_type == "enum" {
+                    hints.insert(symbol.id.clone());
+                }
+            }
+        }
+    }
+    hints
+}
+
+fn extract_type_lookup_tokens(type_text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in type_text.chars() {
+        if ch.is_alphanumeric() || ch == '_' || ch == ':' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            tokens.push(current.clone());
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    let mut expanded = Vec::new();
+    for token in tokens {
+        expanded.push(token.clone());
+        if let Some((_, leaf)) = token.rsplit_once("::") {
+            expanded.push(leaf.to_string());
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    expanded
+}
+
 fn resolve_reference_target_id(
     event: &RawRelationEvent,
     source_symbol_id: &str,
     symbol_index: &HashMap<String, Vec<Symbol>>,
 ) -> Option<String> {
     let target_name = event.target_name.as_deref()?;
-    let direct = symbol_index.get(target_name)?;
+    let direct = reference_candidates_for_lookup(event, target_name, symbol_index);
     let direct: Vec<&Symbol> = direct
-        .iter()
+        .into_iter()
         .filter(|symbol| reference_target_allowed(event, symbol))
         .collect();
     if direct.is_empty() {
@@ -1735,6 +2190,7 @@ fn resolve_reference_target_id(
     }
 
     let source_namespace = namespace_scope(source_symbol_id);
+    let target_namespace = target_name.rsplit_once("::").map(|(namespace, _)| namespace);
     let mut scored: Vec<(i32, &Symbol)> = direct
         .iter()
         .map(|symbol| {
@@ -1746,6 +2202,13 @@ fn resolve_reference_target_id(
             if let Some(namespace) = source_namespace {
                 if symbol_namespace(symbol) == Some(namespace) {
                     score += 50;
+                }
+            }
+            if let Some(namespace) = target_namespace {
+                if symbol_namespace(symbol) == Some(namespace)
+                    || enum_member_namespace(symbol) == Some(namespace)
+                {
+                    score += 120;
                 }
             }
             (score, symbol)
@@ -1763,6 +2226,21 @@ fn resolve_reference_target_id(
     }
 
     Some(best.1.id.clone())
+}
+
+fn reference_candidates_for_lookup<'a>(
+    event: &RawRelationEvent,
+    target_name: &str,
+    symbol_index: &'a HashMap<String, Vec<Symbol>>,
+) -> Vec<&'a Symbol> {
+    if event.relation_kind == RawRelationKind::EnumValueUsage {
+        return enum_member_candidates_for_lookup(target_name, symbol_index);
+    }
+
+    symbol_index
+        .get(target_name)
+        .map(|direct| direct.iter().collect())
+        .unwrap_or_default()
 }
 
 fn reference_target_allowed(event: &RawRelationEvent, symbol: &Symbol) -> bool {
@@ -3584,6 +4062,144 @@ public:
     }
 
     #[test]
+    fn emits_enum_value_usage_references_for_flag_composition_arguments_and_returns() {
+        let src = r#"
+namespace Game {
+enum ShotFlags {
+    SHOTFLAG_NONE = 0,
+    SHOTFLAG_CHIP = 1 << 0,
+    SHOTFLAG_FINESSE = 1 << 1
+};
+
+enum OtherFlags {
+    OTHER_NONE = 0,
+    SHOTFLAG_CHIP = 1 << 0,
+    SHOTFLAG_FINESSE = 1 << 1
+};
+
+class ShotController {
+public:
+    void ApplyFlags(ShotFlags flags) {
+        ShotFlags localFlags = SHOTFLAG_CHIP | SHOTFLAG_FINESSE;
+        ApplyFlags(SHOTFLAG_CHIP | SHOTFLAG_FINESSE);
+        localFlags = BuildFlags();
+    }
+
+    ShotFlags BuildFlags() {
+        return SHOTFLAG_CHIP | SHOTFLAG_FINESSE;
+    }
+};
+}
+"#;
+        let result = parse_cpp_file("shot_flags.cpp", src).unwrap();
+        let enum_refs: Vec<_> = result
+            .normalized_references
+            .iter()
+            .filter(|reference| reference.category == ReferenceCategory::EnumValueUsage)
+            .collect();
+
+        let apply_hits: Vec<_> = enum_refs
+            .iter()
+            .filter(|reference| reference.source_symbol_id == "Game::ShotController::ApplyFlags")
+            .collect();
+        let build_hits: Vec<_> = enum_refs
+            .iter()
+            .filter(|reference| reference.source_symbol_id == "Game::ShotController::BuildFlags")
+            .collect();
+
+        assert!(apply_hits
+            .iter()
+            .filter(|reference| reference.target_symbol_id == "Game::ShotFlags::SHOTFLAG_CHIP")
+            .count()
+            >= 2);
+        assert!(apply_hits
+            .iter()
+            .filter(|reference| reference.target_symbol_id == "Game::ShotFlags::SHOTFLAG_FINESSE")
+            .count()
+            >= 2);
+        assert!(build_hits.iter().any(|reference| {
+            reference.target_symbol_id == "Game::ShotFlags::SHOTFLAG_CHIP"
+        }));
+        assert!(build_hits.iter().any(|reference| {
+            reference.target_symbol_id == "Game::ShotFlags::SHOTFLAG_FINESSE"
+        }));
+        assert!(!enum_refs.iter().any(|reference| {
+            reference.target_symbol_id == "Game::OtherFlags::SHOTFLAG_CHIP"
+                || reference.target_symbol_id == "Game::OtherFlags::SHOTFLAG_FINESSE"
+        }));
+    }
+
+    #[test]
+    fn resolves_namespace_qualified_unscoped_enum_members_in_realistic_flag_checks() {
+        let src = r#"
+namespace Gameplay {
+enum ShotFlags {
+    SHOTFLAG_NONE = 0,
+    SHOTFLAG_CHIP = 1 << 4,
+    SHOTFLAG_FINESSE = 1 << 11,
+};
+
+class ShotContext {
+public:
+    bool IsShotFlag(ShotFlags flags) const;
+};
+}
+
+namespace Audio {
+bool UsesChip(const Gameplay::ShotContext& msg, Gameplay::ShotFlags shotFlags) {
+    if (msg.IsShotFlag(Gameplay::SHOTFLAG_CHIP)) {
+        return true;
+    }
+    return (shotFlags & Gameplay::SHOTFLAG_FINESSE) != 0;
+}
+}
+"#;
+        let result = parse_cpp_file("namespace_scoped_flags.cpp", src).unwrap();
+        let enum_refs: Vec<_> = result
+            .normalized_references
+            .iter()
+            .filter(|reference| reference.category == ReferenceCategory::EnumValueUsage)
+            .collect();
+
+        assert!(enum_refs.iter().any(|reference| {
+            reference.source_symbol_id == "Audio::UsesChip"
+                && reference.target_symbol_id == "Gameplay::ShotFlags::SHOTFLAG_CHIP"
+        }));
+        assert!(enum_refs.iter().any(|reference| {
+            reference.source_symbol_id == "Audio::UsesChip"
+                && reference.target_symbol_id == "Gameplay::ShotFlags::SHOTFLAG_FINESSE"
+        }));
+    }
+
+    #[test]
+    fn extracts_unqualified_base_method_calls_from_out_of_line_method_definitions() {
+        let src = r#"
+namespace Gameplay {
+class ShotSubSystem {
+public:
+    void SetShotFlags(int flags);
+};
+
+class ShotNormal : public ShotSubSystem {
+public:
+    void CalcShotInformation(int flags);
+};
+
+void ShotNormal::CalcShotInformation(int flags) {
+    SetShotFlags(flags);
+}
+}
+"#;
+        let result = parse_cpp_file("shotnormal_like.cpp", src).unwrap();
+        assert!(result.raw_calls.iter().any(|call| {
+            call.caller_id == "Gameplay::ShotNormal::CalcShotInformation"
+                && call.called_name == "SetShotFlags"
+                && matches!(call.call_kind, RawCallKind::Unqualified)
+                && call.argument_count == Some(1)
+        }));
+    }
+
+    #[test]
     fn parses_template_class() {
         let src = r#"
 template <typename T>
@@ -3887,7 +4503,7 @@ class Enemy : public Actor {};
             line: 30,
         }];
 
-        let normalized = extract_normalized_references(&relation_events, &symbols);
+        let normalized = normalize_relation_events(&relation_events, &symbols);
 
         assert!(normalized.is_empty());
     }

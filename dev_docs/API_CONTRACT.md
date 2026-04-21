@@ -498,6 +498,8 @@ Retrieve a function or method by name.
 | line          | number | Line number             |
 | confidence    | string | Confidence level        |
 | matchReasons  | array  | Structural match reasons |
+| resolutionKind | string | `resolved` or `recovered` |
+| provenanceKind | string | `resolved_call_edge` or `raw_call` |
 
 **Response 404:**
 
@@ -521,12 +523,20 @@ Retrieve a function or method by name.
   - when multiple short-name candidates exist, callers must treat the result as heuristic rather than exact
   - ambiguity is surfaced through `confidence = "ambiguous"`, `matchReasons = ["ambiguous_top_score"]`, and `ambiguity.candidateCount`
   - `selectedReason` explains the strongest ranking signal that chose the returned candidate
+  - `bestNextDiscriminator` explains the smallest next filter or exact identifier likely to disambiguate the candidates
+  - `suggestedExactQueries` provides a few exact follow-up lookups using qualified name
   - `topCandidates` exposes up to five ranked alternatives with:
     - `id`
     - `qualifiedName`
     - `filePath`
     - `line`
     - optional `signature`
+    - optional `ownerQualifiedName`
+    - optional `artifactKind`
+    - optional `module`
+    - optional `subsystem`
+    - `exactQuery`
+    - `discriminator`
     - `rankScore`
 
 ---
@@ -568,6 +578,11 @@ M12-E5 reliability metadata:
   - `level`: `full` | `partial` | `low`
   - `factors`: compact structural risk hints such as `elevated_parse_fragility` and `macro_sensitive`
   - optional `suggestion`
+- call references may distinguish:
+  - `resolutionKind = "resolved"` for normal persisted call edges
+  - `resolutionKind = "recovered"` for lower-confidence fallback evidence
+  - `provenanceKind = "resolved_call_edge"` or `provenanceKind = "raw_call"` to explain the substrate
+- caller-style responses may include `recoveredResultCount` when fallback evidence is present
 
 ---
 
@@ -1079,6 +1094,7 @@ Retrieve all symbols for one exact workspace-relative file path in stable declar
 
 - top-level `reliability` is included on caller responses
 - `indexCoverage` and optional `coverageWarning` are used to flag fragile zero-result caller answers
+- if fallback recovery is present in a future response, `recoveredResultCount` reports how many caller results came from lower-confidence recovery rather than resolved call edges
 
 ### Tool: `list_namespace_symbols`
 

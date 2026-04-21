@@ -229,9 +229,13 @@ describe("Heuristic ambiguity metadata", () => {
     expect(res.body.matchReasons).toEqual(["ambiguous_top_score"]);
     expect(res.body.ambiguity).toEqual({ candidateCount: 2 });
     expect(typeof res.body.selectedReason).toBe("string");
+    expect(typeof res.body.bestNextDiscriminator).toBe("string");
+    expect(res.body.suggestedExactQueries).toContain("lookup_symbol qualifiedName=Gameplay::Actor::Tick");
     expect(res.body.topCandidates).toHaveLength(2);
     expect(res.body.topCandidates[0].qualifiedName).toBe("Gameplay::Actor::Tick");
     expect(typeof res.body.topCandidates[0].rankScore).toBe("number");
+    expect(res.body.topCandidates[0].ownerQualifiedName).toBe("src/gameplay_actor.h");
+    expect(res.body.topCandidates[0].exactQuery).toBe("lookup_symbol qualifiedName=Gameplay::Actor::Tick");
   });
 
   it("uses anchor-qualified context to steer ambiguous HTTP function lookup", async () => {
@@ -1058,6 +1062,299 @@ describe("Reliability signaling", () => {
     expect(graphRes.body.reliability.level).toBe("low");
     expect(graphRes.body.indexCoverage).toBe("low");
     expect(graphRes.body.coverageWarning).toContain("Zero callee edges");
+  });
+
+  it("recovers fragile callers from stored raw-call evidence when resolved callers are empty", async () => {
+    const target: Symbol = {
+      id: "Gameplay::ShotSystem::SetShotFlags",
+      name: "SetShotFlags",
+      qualifiedName: "Gameplay::ShotSystem::SetShotFlags",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      line: 1500,
+      endLine: 1510,
+      parentId: "Gameplay::ShotSystem",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoy: Symbol = {
+      id: "Gameplay::ReplayShotSystem::SetShotFlags",
+      name: "SetShotFlags",
+      qualifiedName: "Gameplay::ReplayShotSystem::SetShotFlags",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/replay_shot.cpp",
+      line: 80,
+      endLine: 90,
+      parentId: "Gameplay::ReplayShotSystem",
+      subsystem: "Gameplay",
+      module: "Replay",
+      artifactKind: "editor",
+    };
+    const owner: Symbol = {
+      id: "Gameplay::ShotSystem",
+      name: "ShotSystem",
+      qualifiedName: "Gameplay::ShotSystem",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shotnormal.h",
+      line: 10,
+      endLine: 120,
+    };
+    const caller: Symbol = {
+      id: "Gameplay::ShotSystem::ApplyShot",
+      name: "ApplyShot",
+      qualifiedName: "Gameplay::ShotSystem::ApplyShot",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      line: 1600,
+      endLine: 1660,
+      parentId: "Gameplay::ShotSystem",
+      subsystem: "Gameplay",
+      module: "Shot",
+    };
+    const symbols = [target, decoy, owner, caller];
+    const recoveredStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "SetShotFlags" ? [target, decoy] : name === "ApplyShot" ? [caller] : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getRawCallersByCalledName(calledName: string) {
+        return calledName === "SetShotFlags"
+          ? [{
+            callerId: caller.id,
+            calledName,
+            callKind: "thisPointerAccess",
+            filePath: "gameplay/shotnormal.cpp",
+            line: 1634,
+            receiver: "this",
+          }]
+          : [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recoveredApp = createApp(recoveredStore);
+
+    const callersRes = await request(recoveredApp).get("/callers/SetShotFlags").expect(200);
+    expect(callersRes.body.callers).toHaveLength(1);
+    expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::ShotSystem::ApplyShot");
+    expect(callersRes.body.callers[0].resolutionKind).toBe("recovered");
+    expect(callersRes.body.callers[0].provenanceKind).toBe("raw_call");
+    expect(callersRes.body.recoveredResultCount).toBe(1);
+    expect(callersRes.body.indexCoverage).toBe("partial");
+    expect(callersRes.body.coverageWarning).toContain("stored raw-call evidence");
+
+    const graphRes = await request(recoveredApp)
+      .get("/callgraph/SetShotFlags")
+      .query({ direction: "callers" })
+      .expect(200);
+    expect(graphRes.body.root.callers).toHaveLength(1);
+    expect(graphRes.body.root.callers[0].targetQualifiedName).toBe("Gameplay::ShotSystem::ApplyShot");
+    expect(graphRes.body.root.callers[0].resolutionKind).toBe("recovered");
+    expect(graphRes.body.root.callers[0].provenanceKind).toBe("raw_call");
+    expect(graphRes.body.recoveredResultCount).toBe(1);
+  });
+
+  it("prefers direct base methods when recovering unqualified fragile callers", async () => {
+    const target: Symbol = {
+      id: "Gameplay::ShotSubSystem::SetShotFlags",
+      name: "SetShotFlags",
+      qualifiedName: "Gameplay::ShotSubSystem::SetShotFlags",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsubsys.cpp",
+      line: 152,
+      endLine: 160,
+      parentId: "Gameplay::ShotSubSystem",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoy: Symbol = {
+      id: "Gameplay::BallHandler::SetShotFlags",
+      name: "SetShotFlags",
+      qualifiedName: "Gameplay::BallHandler::SetShotFlags",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/ballhandler.cpp",
+      line: 13085,
+      endLine: 13120,
+      parentId: "Gameplay::BallHandler",
+      subsystem: "Gameplay",
+      module: "User",
+      artifactKind: "runtime",
+    };
+    const callerOwner: Symbol = {
+      id: "Gameplay::ShotNormal",
+      name: "ShotNormal",
+      qualifiedName: "Gameplay::ShotNormal",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shotnormal.h",
+      line: 10,
+      endLine: 120,
+    };
+    const baseOwner: Symbol = {
+      id: "Gameplay::ShotSubSystem",
+      name: "ShotSubSystem",
+      qualifiedName: "Gameplay::ShotSubSystem",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shootingsubsys.h",
+      line: 10,
+      endLine: 200,
+    };
+    const caller: Symbol = {
+      id: "Gameplay::ShotNormal::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotNormal::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      line: 1620,
+      endLine: 1665,
+      parentId: "Gameplay::ShotNormal",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const symbols = [target, decoy, callerOwner, baseOwner, caller];
+    const recoveredStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "SetShotFlags" ? [target] : name === "CalcShotInformation" ? [caller] : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getRawCallersByCalledName(calledName: string) {
+        return calledName === "SetShotFlags"
+          ? [{
+            callerId: caller.id,
+            calledName,
+            callKind: "unqualified",
+            filePath: "gameplay/shotnormal.cpp",
+            line: 1634,
+          }]
+          : [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases(symbolId: string) {
+        return symbolId === "Gameplay::ShotNormal" ? [baseOwner] : [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recoveredApp = createApp(recoveredStore);
+    const callersRes = await request(recoveredApp).get("/callers/SetShotFlags").expect(200);
+    expect(callersRes.body.callers).toHaveLength(1);
+    expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::ShotNormal::CalcShotInformation");
+    expect(callersRes.body.callers[0].matchReasons).toContain("base_parent_match");
   });
 });
 

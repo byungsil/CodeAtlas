@@ -3,6 +3,7 @@ import {
   buildExactLookupResponse,
   buildFunctionResponse,
   deriveLegacyLookupMetadata,
+  makeRecoveredCallReference,
   makeResolvedCallReference,
   rankHeuristicCandidatesDetailed,
 } from "../response-metadata";
@@ -45,10 +46,46 @@ describe("response confidence metadata", () => {
       matchReasons: ["ambiguous_top_score"],
       ambiguity: { candidateCount: 3 },
       selectedReason: "Preferred runtime candidate by default heuristic ranking.",
+      bestNextDiscriminator: "Use artifactKind filtering to narrow these candidates.",
+      suggestedExactQueries: [
+        "lookup_symbol qualifiedName=Game::Runtime::Update",
+        "lookup_symbol qualifiedName=Game::Editor::Update",
+        "lookup_symbol qualifiedName=Game::Tests::Update",
+      ],
       topCandidates: [
-        { id: "Game::Runtime::Update", qualifiedName: "Game::Runtime::Update", filePath: "runtime/update.cpp", line: 10, rankScore: 42 },
-        { id: "Game::Editor::Update", qualifiedName: "Game::Editor::Update", filePath: "editor/update.cpp", line: 10, rankScore: 32 },
-        { id: "Game::Tests::Update", qualifiedName: "Game::Tests::Update", filePath: "tests/update.cpp", line: 10, rankScore: 14 },
+        {
+          id: "Game::Runtime::Update",
+          qualifiedName: "Game::Runtime::Update",
+          filePath: "runtime/update.cpp",
+          line: 10,
+          ownerQualifiedName: "Game::GameObject",
+          artifactKind: "runtime",
+          exactQuery: "lookup_symbol qualifiedName=Game::Runtime::Update",
+          discriminator: "owner:Game::GameObject",
+          rankScore: 42,
+        },
+        {
+          id: "Game::Editor::Update",
+          qualifiedName: "Game::Editor::Update",
+          filePath: "editor/update.cpp",
+          line: 10,
+          ownerQualifiedName: "Game::GameObject",
+          artifactKind: "editor",
+          exactQuery: "lookup_symbol qualifiedName=Game::Editor::Update",
+          discriminator: "owner:Game::GameObject",
+          rankScore: 32,
+        },
+        {
+          id: "Game::Tests::Update",
+          qualifiedName: "Game::Tests::Update",
+          filePath: "tests/update.cpp",
+          line: 10,
+          ownerQualifiedName: "Game::GameObject",
+          artifactKind: "test",
+          exactQuery: "lookup_symbol qualifiedName=Game::Tests::Update",
+          discriminator: "owner:Game::GameObject",
+          rankScore: 14,
+        },
       ],
     });
   });
@@ -85,6 +122,21 @@ describe("response confidence metadata", () => {
     expect(ref.confidence).toBe("high_confidence_heuristic");
     expect(ref.matchReasons).toEqual([]);
     expect(ref.ambiguity).toBeUndefined();
+    expect(ref.resolutionKind).toBe("resolved");
+    expect(ref.provenanceKind).toBe("resolved_call_edge");
+  });
+
+  it("builds recovered call references for fallback evidence", () => {
+    const ref = makeRecoveredCallReference({
+      symbol: makeSymbol({ id: "Game::AIComponent::UpdateAI", name: "UpdateAI", qualifiedName: "Game::AIComponent::UpdateAI" }),
+      filePath: "src/game_loop.cpp",
+      line: 42,
+    });
+
+    expect(ref.confidence).toBe("ambiguous");
+    expect(ref.matchReasons).toEqual([]);
+    expect(ref.resolutionKind).toBe("recovered");
+    expect(ref.provenanceKind).toBe("raw_call");
   });
 
   it("propagates ambiguity metadata through function response", () => {
@@ -104,10 +156,16 @@ describe("response confidence metadata", () => {
     expect(response.matchReasons).toEqual(["ambiguous_top_score"]);
     expect(response.ambiguity).toEqual({ candidateCount: 2 });
     expect(response.selectedReason).toBe("Preferred runtime candidate by default heuristic ranking.");
+    expect(response.bestNextDiscriminator).toBe("Use artifactKind filtering to narrow these candidates.");
+    expect(response.suggestedExactQueries).toEqual([
+      "lookup_symbol qualifiedName=Game::Runtime::Update",
+      "lookup_symbol qualifiedName=Game::Editor::Update",
+    ]);
     expect(response.topCandidates?.map((candidate) => candidate.qualifiedName)).toEqual([
       "Game::Runtime::Update",
       "Game::Editor::Update",
     ]);
+    expect(response.topCandidates?.[0].exactQuery).toBe("lookup_symbol qualifiedName=Game::Runtime::Update");
   });
 
   it("propagates heuristic confidence through class response", () => {

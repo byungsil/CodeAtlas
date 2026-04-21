@@ -2,7 +2,7 @@ import * as path from "path";
 import express from "express";
 import { SourceLanguage, Symbol as CodeSymbol } from "./models/symbol";
 import { Store } from "./storage/store";
-import { MetadataFilters } from "./storage/store";
+import { MetadataFilters, RawCallCandidateRecord } from "./storage/store";
 import {
   SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
   CALLERS_DEFAULT_LIMIT, CALLERS_MAX_LIMIT,
@@ -26,6 +26,7 @@ import {
   ImpactedFileSummary,
   ImpactedSymbolSummary,
   MetadataGroupSummary,
+  MatchReason,
   NamespaceSymbolsResponse,
   OverrideQueryResponse,
   ExplainSymbolPropagationResponse,
@@ -62,6 +63,7 @@ import {
   buildExactLookupResponse,
   buildFunctionResponse,
   HeuristicLookupContext,
+  makeRecoveredCallReference,
   makeResolvedCallReference,
   rankHeuristicCandidatesDetailed,
 } from "./response-metadata";
@@ -260,6 +262,172 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
     if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
     return true;
+  }
+
+  function isFragileCoverageSymbol(symbol: CodeSymbol): boolean {
+    return symbol.parseFragility === "elevated" || symbol.macroSensitivity === "high";
+  }
+
+  function normalizeScopeValue(value?: string): string | undefined {
+    return value?.trim().replace(/\s+/g, "");
+  }
+
+  function qualifierMatchesScope(rawQualifier: string | undefined, scopeValue: string | undefined): boolean {
+    const normalizedQualifier = normalizeScopeValue(rawQualifier);
+    const normalizedScope = normalizeScopeValue(scopeValue);
+    if (!normalizedQualifier || !normalizedScope) {
+      return false;
+    }
+    return normalizedQualifier === normalizedScope
+      || normalizedScope.endsWith(`::${normalizedQualifier}`)
+      || normalizedQualifier.endsWith(`::${normalizedScope}`);
+  }
+
+  function callableNamespace(symbol: CodeSymbol): string | undefined {
+    if (symbol.scopeKind === "namespace" && symbol.scopeQualifiedName) {
+      return symbol.scopeQualifiedName;
+    }
+    if (!symbol.qualifiedName.includes("::")) {
+      return undefined;
+    }
+    return symbol.qualifiedName.split("::").slice(0, -1).join("::");
+  }
+
+  function scoreRecoveredTargetCandidate(
+    rawCall: RawCallCandidateRecord,
+    callerSymbol: CodeSymbol,
+    candidate: CodeSymbol,
+  ): { score: number; matchReasons: MatchReason[] } {
+    if (rawCall.calledName !== candidate.name) {
+      return { score: Number.NEGATIVE_INFINITY, matchReasons: [] };
+    }
+
+    const matchReasons: MatchReason[] = [];
+    let score = 100;
+    const parentSymbol = candidate.parentId ? store.getSymbolById(candidate.parentId) : undefined;
+    const namespaceQualifiedName = callableNamespace(candidate);
+    const callerBases = callerSymbol.parentId ? store.getDirectBases(callerSymbol.parentId) : [];
+
+    if (candidate.type === "method") {
+      if (rawCall.callKind === "memberAccess" || rawCall.callKind === "pointerMemberAccess" || rawCall.callKind === "thisPointerAccess") {
+        score += 180;
+        matchReasons.push("member_call_prefers_method");
+      }
+      if (callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
+        score += 260;
+        matchReasons.push("same_parent_match");
+      }
+      if (rawCall.receiver === "this" && callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
+        score += 260;
+        matchReasons.push("this_receiver_match");
+      }
+      if (candidate.parentId && callerBases.some((baseSymbol) => baseSymbol.id === candidate.parentId)) {
+        score += 220;
+        matchReasons.push("base_parent_match");
+      }
+      if (qualifierMatchesScope(rawCall.qualifier, parentSymbol?.qualifiedName)
+        || qualifierMatchesScope(rawCall.qualifier, parentSymbol?.name)) {
+        score += 240;
+        matchReasons.push("qualified_type_match");
+      } else if (rawCall.qualifier) {
+        score -= 120;
+      }
+    } else {
+      if (rawCall.callKind === "unqualified") {
+        score += 140;
+      }
+      if (qualifierMatchesScope(rawCall.qualifier, namespaceQualifiedName)) {
+        score += 240;
+        matchReasons.push("qualified_namespace_match");
+      } else if (rawCall.qualifier) {
+        score -= 120;
+      }
+    }
+
+    if (candidate.scopeQualifiedName && callerSymbol.scopeQualifiedName && candidate.scopeQualifiedName === callerSymbol.scopeQualifiedName) {
+      score += 80;
+      matchReasons.push("same_namespace_match");
+    }
+    if (candidate.subsystem && callerSymbol.subsystem === candidate.subsystem) {
+      score += 25;
+    }
+    if (candidate.module && callerSymbol.module === candidate.module) {
+      score += 25;
+    }
+    if (candidate.projectArea && callerSymbol.projectArea === candidate.projectArea) {
+      score += 20;
+    }
+
+    return { score, matchReasons: Array.from(new Set(matchReasons)) };
+  }
+
+  function buildRecoveredCallerRefs(
+    symbol: CodeSymbol,
+    limit: number,
+    metadataFilters?: MetadataFilters,
+    context?: HeuristicLookupContext,
+  ): { results: CallReference[]; totalCount: number; truncated: boolean } {
+    if (!isFragileCoverageSymbol(symbol) || typeof store.getRawCallersByCalledName !== "function") {
+      return { results: [], totalCount: 0, truncated: false };
+    }
+
+    const callableCandidates = store.getSymbolsByName(symbol.name)
+      .filter((candidate) => candidate.type === "function" || candidate.type === "method");
+    const rawCalls = store.getRawCallersByCalledName(symbol.name);
+    const bestByCaller = new Map<string, { ref: CallReference; rankScore: number }>();
+
+    for (const rawCall of rawCalls) {
+      const callerSymbol = store.getSymbolById(rawCall.callerId);
+      if (!callerSymbol || callerSymbol.id === symbol.id || !matchesMetadataFilters(callerSymbol, metadataFilters)) {
+        continue;
+      }
+
+      const rankedTargets = callableCandidates
+        .map((candidate) => ({
+          candidate,
+          ...scoreRecoveredTargetCandidate(rawCall, callerSymbol, candidate),
+        }))
+        .sort((left, right) =>
+          right.score - left.score
+          || left.candidate.qualifiedName.localeCompare(right.candidate.qualifiedName));
+
+      const best = rankedTargets[0];
+      const runnerUp = rankedTargets[1];
+      if (!best || best.candidate.id !== symbol.id || best.score <= 0) {
+        continue;
+      }
+      if (runnerUp && runnerUp.score === best.score) {
+        continue;
+      }
+
+      const contextScore = rankHeuristicCandidatesDetailed([callerSymbol], context)[0]?.rankScore ?? 0;
+      const rankScore = best.score + contextScore;
+      const ref = makeRecoveredCallReference({
+        symbol: callerSymbol,
+        filePath: rawCall.filePath,
+        line: rawCall.line,
+        confidence: "high_confidence_heuristic",
+        matchReasons: best.matchReasons,
+      });
+      const existing = bestByCaller.get(callerSymbol.id);
+      if (!existing || rankScore > existing.rankScore) {
+        bestByCaller.set(callerSymbol.id, { ref, rankScore });
+      }
+    }
+
+    const recovered = Array.from(bestByCaller.values())
+      .sort((left, right) =>
+        right.rankScore - left.rankScore
+        || left.ref.qualifiedName.localeCompare(right.ref.qualifiedName)
+        || left.ref.filePath.localeCompare(right.ref.filePath)
+        || left.ref.line - right.ref.line)
+      .map((entry) => entry.ref);
+
+    return {
+      results: recovered.slice(0, limit),
+      totalCount: recovered.length,
+      truncated: recovered.length > limit,
+    };
   }
 
   function buildMetadataGroupSummary(
@@ -1149,9 +1317,13 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const base = buildExactLookupResponse({ symbol, matchedBy, representativeMetadata });
 
     if (symbol.type === "function" || symbol.type === "method") {
+      const resolvedCallers = buildCallRefs(store.getCallers(symbol.id), "callerId");
+      const recoveredCallers = resolvedCallers.length === 0
+        ? buildRecoveredCallerRefs(symbol, CALLERS_DEFAULT_LIMIT).results
+        : [];
       return {
         ...base,
-        callers: buildCallRefs(store.getCallers(symbol.id), "callerId"),
+        callers: resolvedCallers.length > 0 ? resolvedCallers : recoveredCallers,
         callees: buildCallRefs(store.getCallees(symbol.id), "calleeId"),
       };
     }
@@ -1217,17 +1389,27 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
-    const callers = buildCallRefs(store.getCallers(sym.id), "callerId");
+    const resolvedCallers = buildCallRefs(store.getCallers(sym.id), "callerId");
+    const recoveredCallers = resolvedCallers.length === 0
+      ? buildRecoveredCallerRefs(sym, CALLERS_DEFAULT_LIMIT, undefined, context).results
+      : [];
     const callees = buildCallRefs(store.getCallees(sym.id), "calleeId");
 
     const response: FunctionResponse = buildFunctionResponse({
       symbol: sym,
       candidateCount,
       rankedCandidates,
-      callers,
+      callers: resolvedCallers.length > 0 ? resolvedCallers : recoveredCallers,
       callees,
     });
-    Object.assign(response, buildResponseReliability({ symbol: sym }));
+    Object.assign(response, recoveredCallers.length > 0
+      ? buildResponseReliability({
+        symbol: sym,
+        relatedResultCount: resolvedCallers.length,
+        recoveredResultCount: recoveredCallers.length,
+        zeroResultLabel: "callers",
+      })
+      : buildResponseReliability({ symbol: sym }));
     return res.json(response);
   });
 
@@ -1242,7 +1424,11 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
-    const callers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+    const resolvedCallers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+    const recoveredCallers = resolvedCallers.totalCount === 0
+      ? buildRecoveredCallerRefs(sym, limit, metadataFilters, context)
+      : { results: [], totalCount: 0, truncated: false };
+    const callers = resolvedCallers.totalCount > 0 ? resolvedCallers : recoveredCallers;
     const response: CallerQueryResponse = buildCallerQueryResponse({
       symbol: sym,
       candidateCount,
@@ -1254,7 +1440,8 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     });
     Object.assign(response, buildResponseReliability({
       symbol: sym,
-      relatedResultCount: callers.totalCount,
+      relatedResultCount: resolvedCallers.totalCount,
+      recoveredResultCount: recoveredCallers.totalCount,
       zeroResultLabel: "callers",
     }));
     const callerIds = callers.results.map((caller) => caller.symbolId);
@@ -1715,27 +1902,65 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   });
 
   function expandCallDirection(
-    symbolId: string,
+    symbol: CodeSymbol,
     currentDepth: number,
     maxDepth: number,
     visited: Set<string>,
     state: { remainingNodeBudget: number },
     direction: "callers" | "callees",
   ): { edges: CallGraphEdge[]; truncated: boolean } {
-    const calls = direction === "callers" ? store.getCallers(symbolId) : store.getCallees(symbolId);
-    if (currentDepth >= maxDepth || visited.has(symbolId)) {
-      return { edges: [], truncated: calls.length > 0 };
+    type CallGraphEdgeCandidate = {
+      target: CodeSymbol;
+      filePath: string;
+      line: number;
+      resolutionKind?: CallReference["resolutionKind"];
+      provenanceKind?: CallReference["provenanceKind"];
+    };
+    const resolvedCalls = direction === "callers" ? store.getCallers(symbol.id) : store.getCallees(symbol.id);
+    const recoveredCallers = direction === "callers" && resolvedCalls.length === 0
+      ? buildRecoveredCallerRefs(symbol, CALLERS_MAX_LIMIT).results
+      : [];
+    if (currentDepth >= maxDepth || visited.has(symbol.id)) {
+      return { edges: [], truncated: resolvedCalls.length > 0 || recoveredCallers.length > 0 };
     }
-    visited.add(symbolId);
+    visited.add(symbol.id);
 
     let anyTruncated = false;
     const edges: CallGraphEdge[] = [];
-    for (const call of calls) {
-      const targetId = direction === "callers" ? call.callerId : call.calleeId;
-      const target = targetId ? store.getSymbolById(targetId) : undefined;
-      if (!target) {
-        continue;
+    const edgeCandidates: CallGraphEdgeCandidate[] = [];
+    if (direction === "callers" && resolvedCalls.length === 0) {
+      for (const ref of recoveredCallers) {
+        const target = store.getSymbolById(ref.symbolId);
+        if (!target) {
+          continue;
+        }
+        edgeCandidates.push({
+          target,
+          filePath: ref.filePath,
+          line: ref.line,
+          resolutionKind: ref.resolutionKind,
+          provenanceKind: ref.provenanceKind,
+        });
       }
+    } else {
+      for (const call of resolvedCalls) {
+        const targetId = direction === "callers" ? call.callerId : call.calleeId;
+        const target = targetId ? store.getSymbolById(targetId) : undefined;
+        if (!target) {
+          continue;
+        }
+        edgeCandidates.push({
+          target,
+          filePath: call.filePath,
+          line: call.line,
+          resolutionKind: "resolved",
+          provenanceKind: "resolved_call_edge",
+        });
+      }
+    }
+
+    for (const edgeCandidate of edgeCandidates) {
+      const target = edgeCandidate.target;
       if (visited.has(target.id)) {
         anyTruncated = true;
         continue;
@@ -1747,7 +1972,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
       state.remainingNodeBudget -= 1;
       const { edges: children, truncated } = expandCallDirection(
-        target.id,
+        target,
         currentDepth + 1,
         maxDepth,
         new Set(visited),
@@ -1759,8 +1984,10 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
         targetId: target.id,
         targetName: target.name,
         targetQualifiedName: target.qualifiedName,
-        filePath: call.filePath,
-        line: call.line,
+        filePath: edgeCandidate.filePath,
+        line: edgeCandidate.line,
+        ...(edgeCandidate.resolutionKind ? { resolutionKind: edgeCandidate.resolutionKind } : {}),
+        ...(edgeCandidate.provenanceKind ? { provenanceKind: edgeCandidate.provenanceKind } : {}),
         ...(children.length > 0 ? { children } : {}),
       });
     }
@@ -1789,22 +2016,24 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     let truncated = false;
 
     if (direction === "callees" || direction === "both") {
-      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callees");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callees");
       root.callees = result.edges;
       truncated = truncated || result.truncated;
     }
     if (direction === "callers" || direction === "both") {
-      const result = expandCallDirection(symbol.id, 0, maxDepth, new Set<string>(), state, "callers");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callers");
       root.callers = result.edges;
       truncated = truncated || result.truncated;
     }
 
     const edgeCount = countCallGraphEdges(root.callees) + countCallGraphEdges(root.callers ?? []);
+    const recoveredCallerEdgeCount = countRecoveredCallGraphEdges(root.callers ?? []);
 
     return {
       ...buildResponseReliability({
         symbol,
         relatedResultCount: edgeCount,
+        recoveredResultCount: recoveredCallerEdgeCount,
         zeroResultLabel: direction === "callers"
           ? "caller edges"
           : direction === "both"
@@ -1877,6 +2106,19 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       count += 1;
       if (edge.children) {
         count += countCallGraphEdges(edge.children);
+      }
+    }
+    return count;
+  }
+
+  function countRecoveredCallGraphEdges(edges: CallGraphEdge[]): number {
+    let count = 0;
+    for (const edge of edges) {
+      if (edge.resolutionKind === "recovered") {
+        count += 1;
+      }
+      if (edge.children) {
+        count += countRecoveredCallGraphEdges(edge.children);
       }
     }
     return count;

@@ -1,5 +1,7 @@
 import {
+  CallProvenanceKind,
   CallReference,
+  CallResolutionKind,
   ConfidenceLevel,
   CallerQueryResponse,
   FunctionResponse,
@@ -293,6 +295,30 @@ export function makeResolvedCallReference(params: {
     line: params.line,
     confidence: params.confidence ?? "high_confidence_heuristic",
     matchReasons: params.matchReasons ?? [],
+    resolutionKind: "resolved",
+    provenanceKind: "resolved_call_edge",
+  };
+}
+
+export function makeRecoveredCallReference(params: {
+  symbol: Symbol;
+  filePath: string;
+  line: number;
+  confidence?: ConfidenceLevel;
+  matchReasons?: MatchReason[];
+  resolutionKind?: CallResolutionKind;
+  provenanceKind?: CallProvenanceKind;
+}): CallReference {
+  return {
+    symbolId: params.symbol.id,
+    symbolName: params.symbol.name,
+    qualifiedName: params.symbol.qualifiedName,
+    filePath: params.filePath,
+    line: params.line,
+    confidence: params.confidence ?? "ambiguous",
+    matchReasons: params.matchReasons ?? [],
+    resolutionKind: params.resolutionKind ?? "recovered",
+    provenanceKind: params.provenanceKind ?? "raw_call",
   };
 }
 
@@ -464,7 +490,13 @@ function buildHeuristicSelectionMetadata(
 
   return {
     selectedReason: selected.selectedReason,
-    ...(candidateCount > 1 ? { topCandidates: toTopCandidates(rankedCandidates) } : {}),
+    ...(candidateCount > 1
+      ? {
+        bestNextDiscriminator: deriveBestNextDiscriminator(rankedCandidates),
+        suggestedExactQueries: toSuggestedExactQueries(rankedCandidates),
+        topCandidates: toTopCandidates(rankedCandidates),
+      }
+      : {}),
   };
 }
 
@@ -475,8 +507,64 @@ function toTopCandidates(rankedCandidates: RankedHeuristicCandidate[]): Heuristi
     filePath: entry.symbol.filePath,
     line: entry.symbol.line,
     ...(entry.symbol.signature ? { signature: entry.symbol.signature } : {}),
+    ...(deriveOwnerQualifiedName(entry.symbol) ? { ownerQualifiedName: deriveOwnerQualifiedName(entry.symbol) } : {}),
+    ...(entry.symbol.artifactKind ? { artifactKind: entry.symbol.artifactKind } : {}),
+    ...(entry.symbol.module ? { module: entry.symbol.module } : {}),
+    ...(entry.symbol.subsystem ? { subsystem: entry.symbol.subsystem } : {}),
+    exactQuery: `lookup_symbol qualifiedName=${entry.symbol.qualifiedName}`,
+    discriminator: describeCandidateDiscriminator(entry.symbol),
     rankScore: entry.rankScore,
   }));
+}
+
+function deriveOwnerQualifiedName(symbol: Symbol): string | undefined {
+  return symbol.parentId ?? symbol.scopeQualifiedName;
+}
+
+function describeCandidateDiscriminator(symbol: Symbol): string {
+  if (symbol.parentId) {
+    return `owner:${symbol.parentId}`;
+  }
+  if (symbol.scopeQualifiedName) {
+    return `scope:${symbol.scopeQualifiedName}`;
+  }
+  if (symbol.module) {
+    return `module:${symbol.module}`;
+  }
+  if (symbol.subsystem) {
+    return `subsystem:${symbol.subsystem}`;
+  }
+  if (symbol.artifactKind) {
+    return `artifact:${symbol.artifactKind}`;
+  }
+  return `file:${symbol.filePath}`;
+}
+
+function deriveBestNextDiscriminator(rankedCandidates: RankedHeuristicCandidate[]): string {
+  const top = rankedCandidates.slice(0, 5).map((entry) => entry.symbol);
+  const ownerCount = new Set(top.map((symbol) => deriveOwnerQualifiedName(symbol)).filter(Boolean)).size;
+  if (ownerCount > 1) {
+    return "Use ownerQualifiedName or exact qualifiedName to disambiguate same-name methods on different types.";
+  }
+  const moduleCount = new Set(top.map((symbol) => symbol.module).filter(Boolean)).size;
+  if (moduleCount > 1) {
+    return "Use module filtering to narrow these candidates.";
+  }
+  const subsystemCount = new Set(top.map((symbol) => symbol.subsystem).filter(Boolean)).size;
+  if (subsystemCount > 1) {
+    return "Use subsystem filtering to narrow these candidates.";
+  }
+  const artifactCount = new Set(top.map((symbol) => symbol.artifactKind).filter(Boolean)).size;
+  if (artifactCount > 1) {
+    return "Use artifactKind filtering to narrow these candidates.";
+  }
+  return "Use the suggested exact qualifiedName query to choose the intended candidate directly.";
+}
+
+function toSuggestedExactQueries(rankedCandidates: RankedHeuristicCandidate[]): string[] {
+  return rankedCandidates
+    .slice(0, 3)
+    .map((entry) => `lookup_symbol qualifiedName=${entry.symbol.qualifiedName}`);
 }
 
 function deriveSelectedReason(symbol: Symbol, context?: HeuristicLookupContext): string {

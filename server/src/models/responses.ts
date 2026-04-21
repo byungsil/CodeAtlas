@@ -13,6 +13,7 @@ export type MatchReason =
   | "exact_id_match"
   | "exact_qualified_name_match"
   | "same_parent_match"
+  | "base_parent_match"
   | "same_namespace_match"
   | "this_receiver_match"
   | "member_call_prefers_method"
@@ -59,11 +60,19 @@ export interface HeuristicTopCandidate {
   filePath: string;
   line: number;
   signature?: string;
+  ownerQualifiedName?: string;
+  artifactKind?: Symbol["artifactKind"];
+  module?: string;
+  subsystem?: string;
+  exactQuery?: string;
+  discriminator?: string;
   rankScore: number;
 }
 
 export interface HeuristicSelectionMetadata {
   selectedReason?: string;
+  bestNextDiscriminator?: string;
+  suggestedExactQueries?: string[];
   topCandidates?: HeuristicTopCandidate[];
 }
 
@@ -82,6 +91,10 @@ export type ReliabilityFactor =
 
 export type IndexCoverageLevel = "full" | "partial" | "low";
 
+export type CallResolutionKind = "resolved" | "recovered";
+
+export type CallProvenanceKind = "resolved_call_edge" | "raw_call";
+
 export interface ReliabilitySummary {
   level: ReliabilityLevel;
   factors: ReliabilityFactor[];
@@ -91,6 +104,7 @@ export interface ReliabilitySummary {
 export interface ReliabilityMetadata {
   reliability: ReliabilitySummary;
   indexCoverage?: IndexCoverageLevel;
+  recoveredResultCount?: number;
   coverageWarning?: string;
 }
 
@@ -205,6 +219,8 @@ export interface CallGraphEdge {
   targetQualifiedName: string;
   filePath: string;
   line: number;
+  resolutionKind?: CallResolutionKind;
+  provenanceKind?: CallProvenanceKind;
   children?: CallGraphEdge[];
 }
 
@@ -240,6 +256,8 @@ export interface CallReference {
   confidence: ConfidenceLevel;
   matchReasons: MatchReason[];
   ambiguity?: AmbiguityInfo;
+  resolutionKind?: CallResolutionKind;
+  provenanceKind?: CallProvenanceKind;
 }
 
 export type ReferenceCategory =

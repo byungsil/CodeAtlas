@@ -507,11 +507,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn replace_references(&self, references: &[NormalizedReference]) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM symbol_references", [])?;
-        self.write_references(references)
-    }
-
     pub fn write_propagation_events(&self, events: &[PropagationEvent]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT INTO propagation_events (
@@ -1015,11 +1010,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn clear_raw_calls(&self) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM raw_calls", [])?;
-        Ok(())
-    }
-
     pub fn delete_callable_flow_summaries_for_file(&self, file_path: &str) -> SqlResult<()> {
         self.conn.execute(
             "DELETE FROM callable_flow_summaries WHERE file_path = ?1",
@@ -1127,6 +1117,36 @@ impl Database {
         }
 
         Ok(parents)
+    }
+
+    pub fn find_direct_base_ids(&self, symbol_ids: &[String]) -> SqlResult<HashMap<String, Vec<String>>> {
+        let mut bases_by_symbol = HashMap::new();
+        if symbol_ids.is_empty() {
+            return Ok(bases_by_symbol);
+        }
+
+        let placeholders = vec!["?"; symbol_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT source_symbol_id, target_symbol_id
+             FROM symbol_references
+             WHERE category = 'inheritanceMention' AND source_symbol_id IN ({})
+             ORDER BY source_symbol_id ASC, line ASC, target_symbol_id ASC",
+            placeholders,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (derived_id, base_id) = row?;
+            bases_by_symbol
+                .entry(derived_id)
+                .or_insert_with(Vec::new)
+                .push(base_id);
+        }
+
+        Ok(bases_by_symbol)
     }
 
     pub fn find_symbols_by_ids(&self, symbol_ids: &[String]) -> SqlResult<Vec<Symbol>> {

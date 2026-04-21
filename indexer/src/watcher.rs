@@ -17,6 +17,7 @@ use crate::discovery;
 use crate::indexing::{default_language_registry, make_relative, parse_file_strict, parse_files, parse_files_strict};
 use crate::ignore::IgnoreRules;
 use crate::incremental;
+use crate::parser;
 use crate::representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
 use crate::resolver;
 use crate::storage::{self, Database};
@@ -477,7 +478,7 @@ fn run_full_index(
     let (
         raw_symbols,
         raw_calls,
-        normalized_references,
+        relation_events,
         local_propagation_events,
         callable_flow_summaries,
         file_records,
@@ -485,6 +486,7 @@ fn run_full_index(
     ) = parse_files(workspace_root, &all_relative, verbose, build_metadata.as_ref());
     let symbols = resolver::merge_symbols(&raw_symbols);
     let calls = resolver::resolve_calls(&raw_calls, &symbols);
+    let normalized_references = parser::normalize_relation_events(&relation_events, &symbols);
     let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
         &raw_calls,
         &calls,
@@ -766,7 +768,7 @@ fn run_incremental_index(
     let (
         parsed_symbols,
         new_raw_calls,
-        new_references,
+        new_relation_events,
         new_local_propagation,
         new_callable_summaries,
         new_files,
@@ -857,7 +859,7 @@ fn run_incremental_index(
             .map_err(|e| format!("DB cleanup references: {}", e))?;
 
         let mut all_raw_calls = new_raw_calls;
-        let mut all_references = new_references;
+        let mut all_relation_events = new_relation_events;
         let mut all_local_propagation = new_local_propagation;
         let mut all_callable_summaries = new_callable_summaries;
         let plan_to_index_set: HashSet<&str> = plan.to_index.iter().map(|p| p.as_str()).collect();
@@ -900,10 +902,17 @@ fn run_incremental_index(
             db.delete_propagation_for_file(path)
                 .map_err(|e| format!("DB delete propagation: {}", e))?;
             all_raw_calls.extend(result.raw_calls);
-            all_references.extend(result.normalized_references);
+            all_relation_events.extend(
+                result
+                    .relation_events
+                    .into_iter()
+                    .filter(|event| event.relation_kind != crate::models::RawRelationKind::Call),
+            );
             all_local_propagation.extend(result.propagation_events);
             all_callable_summaries.extend(result.callable_flow_summaries);
         }
+        let mut all_references =
+            parser::normalize_relation_events(&all_relation_events, &refreshed_symbols);
         let dropped_references =
             storage::filter_persistable_references(&mut all_references, &valid_symbol_ids, &symbol_types);
         if dropped_references > 0 && verbose {

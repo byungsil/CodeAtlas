@@ -459,6 +459,7 @@ pub struct ParseResult {
     pub file_risk_signals: FileRiskSignals,
     #[allow(dead_code)]
     pub relation_events: Vec<RawRelationEvent>,
+    #[allow(dead_code)]
     pub normalized_references: Vec<NormalizedReference>,
     pub propagation_events: Vec<PropagationEvent>,
     pub callable_flow_summaries: Vec<CallableFlowSummary>,
