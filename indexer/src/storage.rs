@@ -1386,6 +1386,23 @@ pub fn cleanup_inactive_generations(
     Ok(removed)
 }
 
+pub fn cleanup_inactive_generations_on_startup(data_dir: &Path) -> io::Result<Vec<String>> {
+    let active_filename = read_active_db_pointer(data_dir)
+        .map_err(io::Error::other)?
+        .map(|pointer| pointer.active_db_filename);
+    let mut generation_files = list_versioned_db_generations(data_dir)?;
+    generation_files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    let previous_active_filename = active_filename.as_deref().and_then(|active| {
+        generation_files
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+            .find(|filename| *filename != active)
+    });
+
+    cleanup_inactive_generations(data_dir, previous_active_filename, 0)
+}
+
 fn validate_active_db_filename(filename: &str) -> Result<(), String> {
     if filename.is_empty() {
         return Err("active db pointer target filename is empty".to_string());
@@ -1421,6 +1438,13 @@ fn list_versioned_db_generations(data_dir: &Path) -> io::Result<Vec<PathBuf>> {
         }
     }
     Ok(generations)
+}
+
+#[cfg(test)]
+pub fn list_versioned_db_generations_for_tests(data_dir: &Path) -> Vec<PathBuf> {
+    let mut generations = list_versioned_db_generations(data_dir).unwrap();
+    generations.sort();
+    generations
 }
 
 fn is_versioned_db_generation_file(filename: &str) -> bool {
@@ -2565,5 +2589,40 @@ mod tests {
         assert!(data_dir.join(generations[2]).exists());
         assert!(data_dir.join(generations[3]).exists());
         assert!(!data_dir.join(generations[0]).exists());
+    }
+
+    #[test]
+    fn cleanup_inactive_generations_on_startup_keeps_active_and_previous_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let generations = [
+            "index-20260420T120000000Z.db",
+            "index-20260420T121000000Z.db",
+            "index-20260420T122000000Z.db",
+            "index-20260420T123000000Z.db",
+        ];
+        for generation in &generations {
+            std::fs::write(data_dir.join(generation), b"sqlite placeholder").unwrap();
+        }
+        write_active_db_pointer(
+            data_dir,
+            &ActiveDbPointer {
+                active_db_filename: generations[3].into(),
+                published_at: "2026-04-20T12:30:00Z".into(),
+                format_version: 1,
+            },
+        )
+        .unwrap();
+
+        let removed = cleanup_inactive_generations_on_startup(data_dir).unwrap();
+
+        assert_eq!(
+            removed,
+            vec![generations[1].to_string(), generations[0].to_string()]
+        );
+        assert!(!data_dir.join(generations[0]).exists());
+        assert!(!data_dir.join(generations[1]).exists());
+        assert!(data_dir.join(generations[2]).exists());
+        assert!(data_dir.join(generations[3]).exists());
     }
 }

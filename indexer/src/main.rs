@@ -155,6 +155,7 @@ fn main() {
             eprintln!("{}", error);
             std::process::exit(1);
         });
+    let _ = storage::cleanup_inactive_generations_on_startup(&data_dir);
     mark_codeatlas_artifacts(&data_dir, None);
     let current_active_db_path = storage::resolve_active_database_path(&data_dir)
         .unwrap_or(None);
@@ -2011,7 +2012,50 @@ mod tests {
         assert_ne!(published, previous_generation);
         let pointer = storage::read_active_db_pointer(&data_dir).unwrap().unwrap();
         assert_eq!(pointer.active_db_filename, published.file_name().unwrap().to_string_lossy());
-        assert!(previous_generation.exists());
+        if cfg!(windows) {
+            assert!(previous_generation.exists());
+        } else {
+            assert!(!previous_generation.exists());
+        }
+    }
+
+    #[test]
+    fn publish_staging_db_prunes_inactive_generations_for_standalone_runs() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join(DATA_DIR_NAME);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let old_generations = [
+            "index-20260420T120000000Z.db",
+            "index-20260420T121000000Z.db",
+            "index-20260420T122000000Z.db",
+        ];
+        for generation in &old_generations {
+            std::fs::write(data_dir.join(generation), b"sqlite placeholder").unwrap();
+        }
+        storage::write_active_db_pointer(
+            &data_dir,
+            &storage::ActiveDbPointer {
+                active_db_filename: old_generations[2].into(),
+                published_at: "2026-04-20T12:20:00Z".into(),
+                format_version: storage::current_index_format_version(),
+            },
+        )
+        .unwrap();
+
+        let staging_db_path = temp.path().join("staging.db");
+        std::fs::write(&staging_db_path, b"new sqlite placeholder").unwrap();
+
+        let published = publish_staging_db(&staging_db_path, &data_dir).unwrap();
+
+        assert!(published.exists());
+        let remaining = storage::list_versioned_db_generations_for_tests(&data_dir)
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(remaining.len(), 3);
+        assert!(remaining.contains(&published.file_name().unwrap().to_string_lossy().into_owned()));
+        assert!(remaining.contains(&old_generations[2].to_string()));
+        assert!(remaining.contains(&old_generations[1].to_string()));
     }
 
     #[test]
