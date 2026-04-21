@@ -1095,6 +1095,32 @@ impl Database {
         rows.collect()
     }
 
+    pub fn read_raw_symbols_for_file(&self, file_path: &str) -> SqlResult<Vec<Symbol>> {
+        let sql = format!(
+            "SELECT {} FROM symbols_raw WHERE file_path = ?1",
+            SYMBOL_SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![file_path], row_to_symbol)?;
+        rows.collect()
+    }
+
+    pub fn read_files_referencing_symbols(&self, symbol_ids: &[String]) -> SqlResult<Vec<String>> {
+        if symbol_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; symbol_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT DISTINCT file_path FROM symbol_references WHERE target_symbol_id IN ({})",
+            placeholders
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(symbol_ids.iter()), |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect()
+    }
+
     pub fn find_parent_ids(&self, symbol_ids: &[String]) -> SqlResult<HashMap<String, String>> {
         let mut parents = HashMap::new();
         if symbol_ids.is_empty() {

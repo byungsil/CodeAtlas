@@ -25,10 +25,39 @@ use crate::storage::{self, Database};
 use chrono::Utc;
 
 const DEBOUNCE_MS: u64 = 500;
-const WATCHER_EVENT_BURST_REBUILD_THRESHOLD: usize = 64;
+const BASE_WATCHER_BURST_THRESHOLD: usize = 64;
 const WATCHER_BURST_WINDOW_MS: u64 = 5_000;
-const WATCHER_BURST_WINDOW_REBUILD_THRESHOLD: usize = 96;
+const BASE_WATCHER_BURST_WINDOW_THRESHOLD: usize = 96;
 const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
+const BASE_PROJECT_SIZE_WATCHER: usize = 5_000;
+
+fn env_override_usize_watcher(var: &str, computed: usize) -> usize {
+    match std::env::var(var) {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(v) => v,
+            Err(_) => computed,
+        },
+        Err(_) => computed,
+    }
+}
+
+fn compute_watcher_burst_threshold(total_files: usize) -> usize {
+    if total_files <= BASE_PROJECT_SIZE_WATCHER {
+        return BASE_WATCHER_BURST_THRESHOLD;
+    }
+    let scale = ((total_files as f64) / (BASE_PROJECT_SIZE_WATCHER as f64)).sqrt();
+    let computed = (BASE_WATCHER_BURST_THRESHOLD as f64 * scale).ceil() as usize;
+    env_override_usize_watcher("CODEATLAS_BURST_THRESHOLD", computed)
+}
+
+fn compute_watcher_burst_window_threshold(total_files: usize) -> usize {
+    if total_files <= BASE_PROJECT_SIZE_WATCHER {
+        return BASE_WATCHER_BURST_WINDOW_THRESHOLD;
+    }
+    let scale = ((total_files as f64) / (BASE_PROJECT_SIZE_WATCHER as f64)).sqrt();
+    let computed = (BASE_WATCHER_BURST_WINDOW_THRESHOLD as f64 * scale).ceil() as usize;
+    env_override_usize_watcher("CODEATLAS_BURST_WINDOW_THRESHOLD", computed)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NormalizedWatchEvent {
@@ -74,25 +103,28 @@ struct WatcherBurstDecision {
     reason: Option<String>,
 }
 
-fn watcher_burst_decision(changed_count: usize, recent_window_total: usize) -> WatcherBurstDecision {
-    if changed_count >= WATCHER_EVENT_BURST_REBUILD_THRESHOLD {
+fn watcher_burst_decision(changed_count: usize, recent_window_total: usize, total_files: usize) -> WatcherBurstDecision {
+    let burst_threshold = compute_watcher_burst_threshold(total_files);
+    if changed_count >= burst_threshold {
         return WatcherBurstDecision {
             rebuild_from_scratch: true,
             reason: Some(format!(
-                "watcher burst exceeded threshold ({} >= {})",
-                changed_count, WATCHER_EVENT_BURST_REBUILD_THRESHOLD
+                "watcher burst exceeded threshold ({} >= {} for {} files)",
+                changed_count, burst_threshold, total_files
             )),
         };
     }
 
-    if recent_window_total >= WATCHER_BURST_WINDOW_REBUILD_THRESHOLD {
+    let window_threshold = compute_watcher_burst_window_threshold(total_files);
+    if recent_window_total >= window_threshold {
         return WatcherBurstDecision {
             rebuild_from_scratch: true,
             reason: Some(format!(
-                "sustained watcher churn exceeded recent-window threshold ({} >= {} over {}ms)",
+                "sustained watcher churn exceeded recent-window threshold ({} >= {} over {}ms for {} files)",
                 recent_window_total,
-                WATCHER_BURST_WINDOW_REBUILD_THRESHOLD,
-                WATCHER_BURST_WINDOW_MS
+                window_threshold,
+                WATCHER_BURST_WINDOW_MS,
+                total_files
             )),
         };
     }
@@ -345,6 +377,14 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
     let debounce = Duration::from_millis(DEBOUNCE_MS);
     let mut burst_window = BurstWindow::default();
 
+    let mut cached_total_files: usize = storage::resolve_active_database_path(&data_dir)
+        .ok()
+        .flatten()
+        .and_then(|db_path| open_database_with_retry(&db_path, "watch read total_files").ok())
+        .and_then(|db| db.count_files().ok())
+        .map(|n| n as usize)
+        .unwrap_or(0);
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => {
@@ -379,13 +419,23 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                 Utc::now().format("%H:%M:%S"),
                 changed.len()
             );
-            let burst_decision = watcher_burst_decision(changed.len(), recent_window_total);
+            let burst_decision = watcher_burst_decision(changed.len(), recent_window_total, cached_total_files);
 
             let result = if burst_decision.rebuild_from_scratch {
                 if let Some(reason) = &burst_decision.reason {
                     println!("  Escalation: {}, rebuilding from scratch", reason);
                 }
-                run_full_index(&workspace_root, workspace_name, &data_dir, verbose)
+                let r = run_full_index(&workspace_root, workspace_name, &data_dir, verbose);
+                if r.is_ok() {
+                    cached_total_files = storage::resolve_active_database_path(&data_dir)
+                        .ok()
+                        .flatten()
+                        .and_then(|db_path| open_database_with_retry(&db_path, "watch refresh total_files").ok())
+                        .and_then(|db| db.count_files().ok())
+                        .map(|n| n as usize)
+                        .unwrap_or(cached_total_files);
+                }
+                r
             } else {
                 run_incremental_index(&workspace_root, workspace_name, &data_dir, verbose, Some(&changed))
             };
@@ -684,7 +734,7 @@ fn run_incremental_index(
             .iter()
             .map(|path| make_relative(workspace_root, path))
             .collect();
-        match incremental::plan_from_changed_paths(&changed_relative, &stored, workspace_root) {
+        match incremental::plan_from_changed_paths(&changed_relative, &stored, workspace_root, Some(&db)) {
             incremental::ChangedSetPlanResult::Narrow(plan) => {
                 if verbose {
                     println!(
@@ -1173,12 +1223,48 @@ mod tests {
 
     #[test]
     fn watcher_burst_decision_rebuilds_for_sustained_recent_churn() {
-        let decision = watcher_burst_decision(20, WATCHER_BURST_WINDOW_REBUILD_THRESHOLD);
+        let decision = watcher_burst_decision(20, BASE_WATCHER_BURST_WINDOW_THRESHOLD, 0);
         assert!(decision.rebuild_from_scratch);
         assert!(decision
             .reason
             .unwrap()
             .contains("sustained watcher churn exceeded recent-window threshold"));
+    }
+
+    #[test]
+    fn compute_watcher_burst_threshold_uses_base_for_small_projects() {
+        assert_eq!(compute_watcher_burst_threshold(0), 64);
+        assert_eq!(compute_watcher_burst_threshold(5000), 64);
+    }
+
+    #[test]
+    fn compute_watcher_burst_threshold_scales_for_large_projects() {
+        // 35K: 64 * sqrt(35000/5000) ≈ 169.3 → ceil = 170
+        let t35k = compute_watcher_burst_threshold(35_000);
+        assert!(t35k >= 169 && t35k <= 171, "35K burst threshold was {}", t35k);
+    }
+
+    #[test]
+    fn watcher_burst_decision_stays_incremental_for_large_project_100_changes() {
+        // 100 changes in a 35K project should stay incremental (burst threshold ~170)
+        let decision = watcher_burst_decision(100, 100, 35_000);
+        assert!(!decision.rebuild_from_scratch);
+    }
+
+    #[test]
+    fn watcher_burst_decision_triggers_rebuild_for_small_project_at_base_threshold() {
+        // BASE_WATCHER_BURST_THRESHOLD (64) changes in a 5K project should rebuild
+        let decision = watcher_burst_decision(BASE_WATCHER_BURST_THRESHOLD, 0, 5_000);
+        assert!(decision.rebuild_from_scratch);
+        assert!(decision.reason.unwrap().contains("watcher burst exceeded threshold"));
+    }
+
+    #[test]
+    fn watcher_burst_decision_reason_includes_project_size() {
+        let decision = watcher_burst_decision(200, 0, 35_000);
+        assert!(decision.rebuild_from_scratch);
+        let reason = decision.reason.unwrap();
+        assert!(reason.contains("35000"), "reason missing project size: {}", reason);
     }
 
     #[test]

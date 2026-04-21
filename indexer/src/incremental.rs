@@ -4,7 +4,266 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::models::FileRecord;
+use crate::indexing::parse_file_strict;
+use crate::models::{FileRecord, Symbol};
+use crate::storage::Database;
+
+const BASE_PROJECT_SIZE: usize = 5_000;
+const BASE_MASS_CHANGE_ABSOLUTE_THRESHOLD: usize = 200;
+const BASE_RENAME_HEAVY_THRESHOLD: usize = 50;
+
+fn compute_mass_change_threshold(total_files: usize) -> usize {
+    if total_files <= BASE_PROJECT_SIZE {
+        return BASE_MASS_CHANGE_ABSOLUTE_THRESHOLD;
+    }
+    let scale = ((total_files as f64) / (BASE_PROJECT_SIZE as f64)).sqrt();
+    let computed = (BASE_MASS_CHANGE_ABSOLUTE_THRESHOLD as f64 * scale).ceil() as usize;
+    env_override_usize("CODEATLAS_ESCALATION_ABSOLUTE", computed)
+}
+
+fn compute_rename_heavy_threshold(total_files: usize) -> usize {
+    if total_files <= BASE_PROJECT_SIZE {
+        return BASE_RENAME_HEAVY_THRESHOLD;
+    }
+    let scale = ((total_files as f64) / (BASE_PROJECT_SIZE as f64)).sqrt();
+    let computed = (BASE_RENAME_HEAVY_THRESHOLD as f64 * scale).ceil() as usize;
+    env_override_usize("CODEATLAS_ESCALATION_RENAME", computed)
+}
+
+fn env_override_usize(var: &str, computed: usize) -> usize {
+    match std::env::var(var) {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(v) => v,
+            Err(_) => computed,
+        },
+        Err(_) => computed,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SymbolSignature {
+    name: String,
+    qualified_name: String,
+    symbol_type: String,
+    signature: Option<String>,
+    parameter_count: Option<usize>,
+}
+
+impl SymbolSignature {
+    fn from_symbol(symbol: &Symbol) -> Self {
+        SymbolSignature {
+            name: symbol.name.clone(),
+            qualified_name: symbol.qualified_name.clone(),
+            symbol_type: symbol.symbol_type.clone(),
+            signature: symbol.signature.clone(),
+            parameter_count: symbol.parameter_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderChangeKind {
+    BodyOnly,
+    SymbolsChanged {
+        changed_ids: Vec<String>,
+        added_ids: Vec<String>,
+        removed_ids: Vec<String>,
+    },
+    MacroSensitive,
+    Unknown,
+}
+
+pub fn analyze_header_change(
+    old_symbols: &[Symbol],
+    new_symbols: &[Symbol],
+    macro_sensitivity: Option<&str>,
+) -> HeaderChangeKind {
+    if macro_sensitivity == Some("high") {
+        return HeaderChangeKind::MacroSensitive;
+    }
+
+    if new_symbols.iter().any(|s| s.symbol_type.contains("template"))
+        || old_symbols.iter().any(|s| s.symbol_type.contains("template"))
+    {
+        let old_sigs: HashSet<SymbolSignature> =
+            old_symbols.iter().map(SymbolSignature::from_symbol).collect();
+        let new_sigs: HashSet<SymbolSignature> =
+            new_symbols.iter().map(SymbolSignature::from_symbol).collect();
+        if old_sigs != new_sigs {
+            return HeaderChangeKind::MacroSensitive;
+        }
+    }
+
+    let old_by_id: HashMap<&str, SymbolSignature> = old_symbols
+        .iter()
+        .map(|s| (s.id.as_str(), SymbolSignature::from_symbol(s)))
+        .collect();
+    let new_by_id: HashMap<&str, SymbolSignature> = new_symbols
+        .iter()
+        .map(|s| (s.id.as_str(), SymbolSignature::from_symbol(s)))
+        .collect();
+
+    let mut changed_ids = Vec::new();
+    let mut added_ids = Vec::new();
+    let mut removed_ids = Vec::new();
+
+    for (id, new_sig) in &new_by_id {
+        match old_by_id.get(id) {
+            Some(old_sig) if old_sig != new_sig => changed_ids.push(id.to_string()),
+            None => added_ids.push(id.to_string()),
+            _ => {}
+        }
+    }
+    for id in old_by_id.keys() {
+        if !new_by_id.contains_key(id) {
+            removed_ids.push(id.to_string());
+        }
+    }
+
+    if changed_ids.is_empty() && added_ids.is_empty() && removed_ids.is_empty() {
+        HeaderChangeKind::BodyOnly
+    } else {
+        HeaderChangeKind::SymbolsChanged {
+            changed_ids,
+            added_ids,
+            removed_ids,
+        }
+    }
+}
+
+pub fn detect_define_changes(old_source: &str, new_source: &str) -> bool {
+    fn extract_defines(source: &str) -> HashSet<String> {
+        source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("#define") || trimmed.starts_with("# define")
+                    || trimmed.starts_with("#undef") || trimmed.starts_with("# undef")
+            })
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+    extract_defines(old_source) != extract_defines(new_source)
+}
+
+enum HeaderAnalysisResult {
+    RequiresFullDiscovery { reason: String },
+    Narrow {
+        headers_to_index: Vec<String>,
+        extra_files_to_index: Vec<String>,
+    },
+}
+
+fn analyze_changed_headers(
+    header_paths: &[String],
+    workspace_root: &Path,
+    db: &Database,
+) -> Result<HeaderAnalysisResult, String> {
+    let mut headers_to_index: Vec<String> = Vec::new();
+    let mut extra_files_to_index: Vec<String> = Vec::new();
+
+    for header_path in header_paths {
+        let abs_path = workspace_root.join(header_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+        // If the header was deleted, treat as normal delete — no fanout needed
+        if !abs_path.exists() {
+            continue;
+        }
+
+        // Read new source to check for #define changes
+        let new_source = fs::read_to_string(&abs_path)
+            .map_err(|e| format!("Failed to read header {}: {}", header_path, e))?;
+
+        // Read old source from DB hash (not available directly, get from file record)
+        // We can only detect define changes by reading old source if we stored it.
+        // We don't store raw source, so we compare new source to detect if defines exist at all.
+        // Instead: re-parse header and compare symbol signatures with DB.
+
+        // Get macro_sensitivity from DB file record
+        let macro_sensitivity = db
+            .read_file_records()
+            .ok()
+            .and_then(|records| records.into_iter().find(|r| r.path == *header_path))
+            .and_then(|r| r.macro_sensitivity);
+
+        if macro_sensitivity.as_deref() == Some("high") {
+            return Ok(HeaderAnalysisResult::RequiresFullDiscovery {
+                reason: format!("header {} has high macro sensitivity", header_path),
+            });
+        }
+
+        // Get old symbols from DB
+        let old_symbols = db
+            .read_raw_symbols_for_file(header_path)
+            .map_err(|e| format!("Failed to read old symbols for {}: {}", header_path, e))?;
+
+        // Re-parse header to get new symbols
+        let parse_result = parse_file_strict(workspace_root, header_path, None);
+        let new_symbols = match parse_result {
+            Ok((result, _, _, _)) => result.symbols,
+            Err(_) => {
+                return Ok(HeaderAnalysisResult::RequiresFullDiscovery {
+                    reason: format!("failed to parse header {}", header_path),
+                });
+            }
+        };
+
+        // Check for #define changes (conservative: if new source has any #define, check carefully)
+        // We compare old source via reading if we have it. Since we don't store old source,
+        // we use a heuristic: if any symbols changed AND defines exist in the file, fallback.
+        let has_defines = new_source
+            .lines()
+            .any(|l| l.trim().starts_with("#define") || l.trim().starts_with("#undef"));
+
+        let change_kind = analyze_header_change(&old_symbols, &new_symbols, macro_sensitivity.as_deref());
+
+        match change_kind {
+            HeaderChangeKind::BodyOnly => {
+                // Body-only: re-index the header itself but no fanout
+                headers_to_index.push(header_path.clone());
+            }
+            HeaderChangeKind::SymbolsChanged { changed_ids, added_ids, removed_ids } => {
+                if has_defines {
+                    // Conservative: if header has #defines and symbols changed, full discovery
+                    return Ok(HeaderAnalysisResult::RequiresFullDiscovery {
+                        reason: format!(
+                            "header {} has #define directives and symbol changes",
+                            header_path
+                        ),
+                    });
+                }
+                headers_to_index.push(header_path.clone());
+                // Find files that reference the changed/removed symbols
+                let affected_ids: Vec<String> = changed_ids
+                    .into_iter()
+                    .chain(removed_ids)
+                    .collect();
+                if !affected_ids.is_empty() {
+                    let referencing = db
+                        .read_files_referencing_symbols(&affected_ids)
+                        .map_err(|e| format!("Failed to query referencing files: {}", e))?;
+                    for f in referencing {
+                        if f != *header_path && !extra_files_to_index.contains(&f) {
+                            extra_files_to_index.push(f);
+                        }
+                    }
+                }
+                // added_ids: new symbols — no existing references, skip
+                let _ = added_ids;
+            }
+            HeaderChangeKind::MacroSensitive | HeaderChangeKind::Unknown => {
+                return Ok(HeaderAnalysisResult::RequiresFullDiscovery {
+                    reason: format!("header {} requires conservative fanout", header_path),
+                });
+            }
+        }
+    }
+
+    Ok(HeaderAnalysisResult::Narrow {
+        headers_to_index,
+        extra_files_to_index,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanDisposition {
@@ -100,10 +359,8 @@ pub enum ChangedSetPlanResult {
     RequiresFullDiscovery { reason: String },
 }
 
-const MASS_CHANGE_ABSOLUTE_THRESHOLD: usize = 200;
 const MASS_CHANGE_PERCENT_THRESHOLD: usize = 40;
 const MASS_CHANGE_MIN_TOTAL_FILES: usize = 20;
-const RENAME_HEAVY_THRESHOLD: usize = 50;
 
 pub fn plan(
     disk_files: &[String],
@@ -207,16 +464,51 @@ pub fn plan_from_changed_paths(
     changed_paths: &[String],
     stored_records: &[FileRecord],
     workspace_root: &Path,
+    db: Option<&Database>,
 ) -> ChangedSetPlanResult {
     let mut unique_paths: Vec<String> = changed_paths.to_vec();
     unique_paths.sort();
     unique_paths.dedup();
 
-    if unique_paths.iter().any(|path| is_header_path(path)) {
-        return ChangedSetPlanResult::RequiresFullDiscovery {
-            reason: "header change requires wider incremental discovery".into(),
-        };
+    let (header_paths, non_header_paths): (Vec<String>, Vec<String>) =
+        unique_paths.into_iter().partition(|p| is_header_path(p));
+
+    // For headers, attempt smart analysis if DB is available
+    if !header_paths.is_empty() {
+        match db {
+            None => {
+                return ChangedSetPlanResult::RequiresFullDiscovery {
+                    reason: "header change requires wider incremental discovery".into(),
+                };
+            }
+            Some(db) => {
+                match analyze_changed_headers(&header_paths, workspace_root, db) {
+                    Ok(HeaderAnalysisResult::RequiresFullDiscovery { reason }) => {
+                        return ChangedSetPlanResult::RequiresFullDiscovery { reason };
+                    }
+                    Ok(HeaderAnalysisResult::Narrow {
+                        headers_to_index,
+                        extra_files_to_index,
+                    }) => {
+                        // Combine header results with non-header paths and proceed
+                        let all_paths: Vec<String> = headers_to_index
+                            .into_iter()
+                            .chain(extra_files_to_index)
+                            .chain(non_header_paths.clone())
+                            .collect();
+                        return plan_from_changed_paths(&all_paths, stored_records, workspace_root, None);
+                    }
+                    Err(_) => {
+                        return ChangedSetPlanResult::RequiresFullDiscovery {
+                            reason: "header analysis failed, falling back to full discovery".into(),
+                        };
+                    }
+                }
+            }
+        }
     }
+
+    let unique_paths = non_header_paths;
 
     let stored_map: HashMap<&str, &FileRecord> = stored_records
         .iter()
@@ -312,22 +604,24 @@ pub fn assess_escalation(total_files: usize, plan: &IncrementalPlan) -> Escalati
         };
     }
 
-    if plan.rename_hints.len() >= RENAME_HEAVY_THRESHOLD {
+    let rename_threshold = compute_rename_heavy_threshold(total_files);
+    if plan.rename_hints.len() >= rename_threshold {
         return EscalationDecision {
             level: EscalationLevel::FullRebuild,
             reason: Some(format!(
-                "rename-heavy churn detected ({} rename/move hints)",
-                plan.rename_hints.len()
+                "rename-heavy churn detected ({} rename/move hints, threshold {} for {} files)",
+                plan.rename_hints.len(), rename_threshold, total_files
             )),
         };
     }
 
-    if changed >= MASS_CHANGE_ABSOLUTE_THRESHOLD {
+    let mass_change_threshold = compute_mass_change_threshold(total_files);
+    if changed >= mass_change_threshold {
         return EscalationDecision {
             level: EscalationLevel::FullRebuild,
             reason: Some(format!(
-                "mass change detected ({} files changed, threshold {})",
-                changed, MASS_CHANGE_ABSOLUTE_THRESHOLD
+                "mass change detected ({} files changed, threshold {} for {} files)",
+                changed, mass_change_threshold, total_files
             )),
         };
     }
@@ -779,7 +1073,7 @@ mod tests {
             to_delete: vec!["old.cpp".into()],
             unchanged: vec![],
             entries: Vec::new(),
-            rename_hints: (0..RENAME_HEAVY_THRESHOLD)
+            rename_hints: (0..BASE_RENAME_HEAVY_THRESHOLD)
                 .map(|i| RenameHint {
                     from_path: format!("from_{i}.cpp"),
                     to_path: format!("to_{i}.cpp"),
@@ -820,7 +1114,7 @@ mod tests {
             make_record("edit.cpp", "stale_hash"),
         ];
 
-        let result = plan_from_changed_paths(&["edit.cpp".into()], &stored, dir.path());
+        let result = plan_from_changed_paths(&["edit.cpp".into()], &stored, dir.path(), None);
         let ChangedSetPlanResult::Narrow(plan) = result else {
             panic!("expected narrow plan");
         };
@@ -831,17 +1125,13 @@ mod tests {
     }
 
     #[test]
-    fn changed_set_plan_falls_back_for_header_changes() {
+    fn changed_set_plan_falls_back_for_header_changes_without_db() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("api.h"), "void f();\n").unwrap();
 
-        let result = plan_from_changed_paths(&["api.h".into()], &[], dir.path());
-        assert_eq!(
-            result,
-            ChangedSetPlanResult::RequiresFullDiscovery {
-                reason: "header change requires wider incremental discovery".into(),
-            }
-        );
+        // Without DB, header changes always fall back to full discovery
+        let result = plan_from_changed_paths(&["api.h".into()], &[], dir.path(), None);
+        assert!(matches!(result, ChangedSetPlanResult::RequiresFullDiscovery { .. }));
     }
 
     #[test]
@@ -857,6 +1147,7 @@ mod tests {
             &["old.cpp".into(), "next/renamed.cpp".into()],
             &stored,
             dir.path(),
+            None,
         );
         let ChangedSetPlanResult::Narrow(plan) = result else {
             panic!("expected narrow plan");
@@ -865,5 +1156,206 @@ mod tests {
         assert_eq!(plan.to_index, vec!["next/renamed.cpp"]);
         assert_eq!(plan.to_delete, vec!["old.cpp"]);
         assert_eq!(plan.rename_hints.len(), 1);
+    }
+
+    #[test]
+    fn compute_mass_change_threshold_uses_base_for_small_projects() {
+        assert_eq!(compute_mass_change_threshold(0), 200);
+        assert_eq!(compute_mass_change_threshold(1000), 200);
+        assert_eq!(compute_mass_change_threshold(5000), 200);
+    }
+
+    #[test]
+    fn compute_mass_change_threshold_scales_for_large_projects() {
+        // 10K: 200 * sqrt(10000/5000) = 200 * 1.414 = 282.8 → ceil = 283
+        assert_eq!(compute_mass_change_threshold(10_000), 283);
+        // 35K: 200 * sqrt(35000/5000) = 200 * 2.646 = 529.1 → ceil = 530
+        let t35k = compute_mass_change_threshold(35_000);
+        assert!(t35k >= 529 && t35k <= 531, "35K threshold was {}", t35k);
+        // 100K: 200 * sqrt(100000/5000) = 200 * 4.472 = 894.4 → ceil = 895
+        let t100k = compute_mass_change_threshold(100_000);
+        assert!(t100k >= 894 && t100k <= 896, "100K threshold was {}", t100k);
+    }
+
+    #[test]
+    fn compute_rename_heavy_threshold_uses_base_for_small_projects() {
+        assert_eq!(compute_rename_heavy_threshold(0), 50);
+        assert_eq!(compute_rename_heavy_threshold(5000), 50);
+    }
+
+    #[test]
+    fn compute_rename_heavy_threshold_scales_for_large_projects() {
+        // 35K: 50 * sqrt(35000/5000) ≈ 132.3 → ceil = 133
+        let t35k = compute_rename_heavy_threshold(35_000);
+        assert!(t35k >= 132 && t35k <= 134, "35K rename threshold was {}", t35k);
+    }
+
+    #[test]
+    fn assess_escalation_stays_incremental_for_large_project_500_changes() {
+        let plan = IncrementalPlan {
+            to_index: (0..499).map(|i| format!("file_{i}.cpp")).collect(),
+            to_delete: vec!["old.cpp".into()],
+            unchanged: vec![],
+            entries: vec![],
+            rename_hints: vec![],
+        };
+        // 500 changes in a 35K project should stay incremental (threshold ~530)
+        let decision = assess_escalation(35_000, &plan);
+        assert_eq!(decision.level, EscalationLevel::Incremental);
+    }
+
+    #[test]
+    fn assess_escalation_triggers_rebuild_for_small_project_200_changes() {
+        let plan = IncrementalPlan {
+            to_index: (0..199).map(|i| format!("file_{i}.cpp")).collect(),
+            to_delete: vec!["old.cpp".into()],
+            unchanged: vec![],
+            entries: vec![],
+            rename_hints: vec![],
+        };
+        // 200 changes in a 5K project should trigger rebuild (threshold = 200)
+        let decision = assess_escalation(5_000, &plan);
+        assert_eq!(decision.level, EscalationLevel::FullRebuild);
+    }
+
+    #[test]
+    fn assess_escalation_reason_includes_threshold_and_project_size() {
+        let plan = IncrementalPlan {
+            to_index: (0..600).map(|i| format!("file_{i}.cpp")).collect(),
+            to_delete: vec![],
+            unchanged: vec![],
+            entries: vec![],
+            rename_hints: vec![],
+        };
+        let decision = assess_escalation(35_000, &plan);
+        assert_eq!(decision.level, EscalationLevel::FullRebuild);
+        let reason = decision.reason.unwrap();
+        assert!(reason.contains("35000"), "reason missing project size: {}", reason);
+    }
+
+    fn make_test_symbol(id: &str, name: &str, qualified: &str, sig: Option<&str>) -> Symbol {
+        Symbol {
+            id: id.into(),
+            name: name.into(),
+            qualified_name: qualified.into(),
+            symbol_type: "function".into(),
+            file_path: "test.h".into(),
+            line: 1,
+            end_line: 5,
+            signature: sig.map(|s| s.into()),
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: None,
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        }
+    }
+
+    #[test]
+    fn analyze_header_change_body_only_when_signatures_identical() {
+        let sym = make_test_symbol("id1", "Foo", "ns::Foo", Some("(int x)"));
+        let old = vec![sym.clone()];
+        let new = vec![sym.clone()];
+        assert_eq!(analyze_header_change(&old, &new, None), HeaderChangeKind::BodyOnly);
+    }
+
+    #[test]
+    fn analyze_header_change_symbols_changed_when_signature_differs() {
+        let old_sym = make_test_symbol("id1", "Foo", "ns::Foo", Some("(int x)"));
+        let mut new_sym = old_sym.clone();
+        new_sym.signature = Some("(int x, int y)".into());
+        let result = analyze_header_change(&[old_sym], &[new_sym], None);
+        assert!(matches!(result, HeaderChangeKind::SymbolsChanged { .. }));
+        if let HeaderChangeKind::SymbolsChanged { changed_ids, added_ids, removed_ids } = result {
+            assert_eq!(changed_ids, vec!["id1"]);
+            assert!(added_ids.is_empty());
+            assert!(removed_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn analyze_header_change_symbols_changed_when_symbol_added() {
+        let old_sym = make_test_symbol("id1", "Foo", "ns::Foo", None);
+        let new_sym1 = old_sym.clone();
+        let new_sym2 = make_test_symbol("id2", "Bar", "ns::Bar", None);
+        let result = analyze_header_change(&[old_sym], &[new_sym1, new_sym2], None);
+        assert!(matches!(result, HeaderChangeKind::SymbolsChanged { .. }));
+        if let HeaderChangeKind::SymbolsChanged { changed_ids, added_ids, removed_ids } = result {
+            assert!(changed_ids.is_empty());
+            assert_eq!(added_ids, vec!["id2"]);
+            assert!(removed_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn analyze_header_change_symbols_changed_when_symbol_removed() {
+        let sym = make_test_symbol("id1", "Foo", "ns::Foo", None);
+        let result = analyze_header_change(&[sym], &[], None);
+        assert!(matches!(result, HeaderChangeKind::SymbolsChanged { .. }));
+        if let HeaderChangeKind::SymbolsChanged { changed_ids, added_ids, removed_ids } = result {
+            assert!(changed_ids.is_empty());
+            assert!(added_ids.is_empty());
+            assert_eq!(removed_ids, vec!["id1"]);
+        }
+    }
+
+    #[test]
+    fn analyze_header_change_macro_sensitive_when_sensitivity_high() {
+        let sym = make_test_symbol("id1", "Foo", "ns::Foo", None);
+        assert_eq!(
+            analyze_header_change(&[sym.clone()], &[sym], Some("high")),
+            HeaderChangeKind::MacroSensitive
+        );
+    }
+
+    #[test]
+    fn analyze_header_change_macro_sensitive_for_template_change() {
+        let mut sym = make_test_symbol("id1", "Foo", "ns::Foo", None);
+        sym.symbol_type = "template_function".into();
+        let mut changed_sym = sym.clone();
+        changed_sym.signature = Some("(T x, U y)".into());
+        let result = analyze_header_change(&[sym], &[changed_sym], None);
+        assert_eq!(result, HeaderChangeKind::MacroSensitive);
+    }
+
+    #[test]
+    fn detect_define_changes_returns_false_for_identical_source() {
+        let src = "#define FOO 1\n#define BAR 2\n";
+        assert!(!detect_define_changes(src, src));
+    }
+
+    #[test]
+    fn detect_define_changes_returns_true_when_define_added() {
+        let old = "#define FOO 1\n";
+        let new = "#define FOO 1\n#define BAR 2\n";
+        assert!(detect_define_changes(old, new));
+    }
+
+    #[test]
+    fn detect_define_changes_returns_true_when_define_changed() {
+        let old = "#define FOO 1\n";
+        let new = "#define FOO 2\n";
+        assert!(detect_define_changes(old, new));
+    }
+
+    #[test]
+    fn detect_define_changes_returns_false_when_only_comments_change() {
+        let old = "#define FOO 1\n// comment\n";
+        let new = "#define FOO 1\n// different comment\n";
+        assert!(!detect_define_changes(old, new));
     }
 }
