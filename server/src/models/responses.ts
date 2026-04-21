@@ -340,6 +340,92 @@ export interface CompactReferenceQueryResponse extends ConfidenceMetadata, Relia
   groupedByLanguage?: MetadataGroupSummary[];
 }
 
+export interface FileGroupedRef {
+  symbol: string;
+  line: number;
+}
+
+export interface FileGroup {
+  file: string;
+  refs: FileGroupedRef[];
+}
+
+export interface CompactFileGroupedReferenceResponse extends ConfidenceMetadata, ReliabilityMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  fileGroups: FileGroup[];
+  totalCount: number;
+  truncated: boolean;
+  category?: ReferenceCategory;
+  groupedBySubsystem?: MetadataGroupSummary[];
+  groupedByModule?: MetadataGroupSummary[];
+  groupedByLanguage?: MetadataGroupSummary[];
+}
+
+export interface CompactCallerQueryResponse extends HeuristicSelectionMetadata, ReliabilityMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  confidence: ConfidenceLevel;
+  matchReasons: MatchReason[];
+  ambiguity?: AmbiguityInfo;
+  window: ResultWindow;
+  fileGroups: FileGroup[];
+  totalCount: number;
+  truncated: boolean;
+  groupedBySubsystem?: MetadataGroupSummary[];
+  groupedByModule?: MetadataGroupSummary[];
+  groupedByLanguage?: MetadataGroupSummary[];
+}
+
+export interface CompactSearchResponse {
+  responseMode: "compact";
+  query: string;
+  window: ResultWindow;
+  results: CompactFileSymbol[];
+  totalCount: number;
+  truncated: boolean;
+  groupedByLanguage?: MetadataGroupSummary[];
+}
+
+export interface CompactImpactAnalysisResponse extends ConfidenceMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  maxDepth: number;
+  callerFileGroups: FileGroup[];
+  calleeFileGroups: FileGroup[];
+  referenceFileGroups: FileGroup[];
+  totalAffectedSymbols: number;
+  totalAffectedFiles: number;
+  topAffectedFiles: ImpactedFileSummary[];
+  suggestedFollowUpQueries: string[];
+  truncated: boolean;
+  affectedSubsystems?: MetadataGroupSummary[];
+  affectedModules?: MetadataGroupSummary[];
+  affectedLanguages?: MetadataGroupSummary[];
+}
+
+export interface CompactClassMembersResponse extends ConfidenceMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  members: CompactFileSymbol[];
+}
+
+export interface CompactNamespaceSymbolsResponse extends ConfidenceMetadata {
+  responseMode: "compact";
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  summary: StructureOverviewSummary;
+  window: ResultWindow;
+  symbols: CompactFileSymbol[];
+}
+
 export interface ImpactedSymbolSummary {
   symbolId: string;
   symbolName: string;

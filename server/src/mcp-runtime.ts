@@ -22,10 +22,14 @@ import {
   CallGraphDirection,
   CallGraphEdge,
   CallerQueryResponse,
+  CompactCallerQueryResponse,
   CompactCallGraphResponse,
+  CompactClassMembersResponse,
+  CompactFileGroupedReferenceResponse,
   CompactFileSymbolsResponse,
-  CompactReferenceQueryResponse,
-  CompactReferenceRecord,
+  CompactImpactAnalysisResponse,
+  CompactNamespaceSymbolsResponse,
+  CompactSearchResponse,
   ExplainSymbolPropagationResponse,
   FileSymbolsResponse,
   ImpactAnalysisResponse,
@@ -43,6 +47,7 @@ import {
   ReferenceCategory,
   ReferenceQueryResponse,
   ResolvedReference,
+  SearchResponse,
   StructureOverviewSummary,
   SymbolLookupResponse,
   TraceVariableFlowResponse,
@@ -52,8 +57,13 @@ import {
 } from "./models/responses";
 import {
   toCompactCallGraphResponse,
+  toCompactCallerQueryResponse,
+  toCompactClassMembersResponse,
   toCompactFileSymbolsResponse,
-  toCompactReferenceQueryResponse,
+  toCompactImpactAnalysisResponse,
+  toCompactNamespaceSymbolsResponse,
+  toCompactSearchResponse,
+  toFileGroupedReferenceQueryResponse,
 } from "./compact-responses";
 import {
   buildClassResponse,
@@ -702,25 +712,6 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       totalCount: references.length,
       truncated: references.length > limit,
     };
-  }
-
-  function buildCompactResolvedReferences(references: ResolvedReference[]): CompactReferenceRecord[] {
-    const targetMap = buildSymbolMap(references.map((reference) => reference.targetSymbolId));
-    return references
-      .map((reference) => {
-        const targetSymbol = targetMap.get(reference.targetSymbolId);
-        if (!targetSymbol) return null;
-        return {
-          sourceSymbolId: reference.sourceSymbolId,
-          sourceQualifiedName: reference.sourceQualifiedName,
-          targetSymbolId: reference.targetSymbolId,
-          targetQualifiedName: targetSymbol.qualifiedName,
-          category: reference.category,
-          filePath: reference.filePath,
-          line: reference.line,
-        };
-      })
-      .filter((reference): reference is CompactReferenceRecord => reference !== null);
   }
 
   function buildReferenceTargetIds(
@@ -1431,9 +1422,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   server.tool(
     "find_callers",
-    "Find direct inbound callers for a function or method. Results are deduplicated by caller symbol and returned in deterministic order.",
+    "Find direct inbound callers for a function or method. Results are deduplicated by caller symbol and returned in deterministic order. Use compact=true for file-grouped navigation payloads.",
     {
       name: z.string().describe("Function or method name to inspect"),
+      compact: z.boolean().optional().describe("When true, return file-grouped compact format"),
       limit: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Maximum deduplicated callers to return"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to caller symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to caller symbols"),
@@ -1443,7 +1435,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
       recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
     },
-    async ({ name, limit, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
+    async ({ name, compact, limit, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1480,8 +1472,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         groupedByLanguage: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.language),
       });
 
+      const response: CallerQueryResponse | CompactCallerQueryResponse = compact
+        ? toCompactCallerQueryResponse(payload)
+        : payload;
+
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
@@ -1618,8 +1614,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
         groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
       };
-      const response: ReferenceQueryResponse | CompactReferenceQueryResponse = compact
-        ? toCompactReferenceQueryResponse(payload, buildCompactResolvedReferences(references.results))
+      const response: ReferenceQueryResponse | CompactFileGroupedReferenceResponse = compact
+        ? toFileGroupedReferenceQueryResponse(payload, references.results)
         : payload;
 
       return {
@@ -1732,10 +1728,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   server.tool(
     "impact_analysis",
-    "Summarize likely impact for changing one exact target symbol using callers, callees, and generalized references with bounded traversal.",
+    "Summarize likely impact for changing one exact target symbol using callers, callees, and generalized references with bounded traversal. Use compact=true for file-grouped navigation payloads.",
     {
       id: z.string().optional().describe("Canonical exact target symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
+      compact: z.boolean().optional().describe("When true, return file-grouped compact format"),
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(2).describe("Maximum caller/callee traversal depth"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum result items per summarized section"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to impacted symbols"),
@@ -1744,7 +1741,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       projectArea: z.string().optional().describe("Optional project-area filter applied to impacted symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to impacted symbols"),
     },
-    async ({ id, qualifiedName, depth, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ id, qualifiedName, compact, depth, limit, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1768,8 +1765,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
+      const payload: ImpactAnalysisResponse = buildImpactAnalysis(symbol, depth, limit, metadataFilters);
+      const response: ImpactAnalysisResponse | CompactImpactAnalysisResponse = compact
+        ? toCompactImpactAnalysisResponse(payload)
+        : payload;
+
       return {
-        content: [{ type: "text", text: JSON.stringify(buildImpactAnalysis(symbol, depth, limit, metadataFilters), null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
@@ -1803,12 +1805,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   server.tool(
     "list_namespace_symbols",
-    "List direct symbols whose enclosing namespace matches one exact namespace qualified name.",
+    "List direct symbols whose enclosing namespace matches one exact namespace qualified name. Use compact=true for lighter navigation payloads.",
     {
       qualifiedName: z.string().describe("Exact namespace qualified name"),
+      compact: z.boolean().optional().describe("When true, return compact symbol records"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum symbols to return"),
     },
-    async ({ qualifiedName, limit }) => {
+    async ({ qualifiedName, compact, limit }) => {
       const symbol = store.getSymbolByQualifiedName(qualifiedName);
       if (!symbol || symbol.type !== "namespace") {
         return notFoundPayload();
@@ -1822,21 +1825,25 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
         symbols: symbols.results,
       };
+      const response: NamespaceSymbolsResponse | CompactNamespaceSymbolsResponse = compact
+        ? toCompactNamespaceSymbolsResponse(payload)
+        : payload;
 
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
 
   server.tool(
     "list_class_members",
-    "List direct members for one exact class or struct qualified name in stable declaration order.",
+    "List direct members for one exact class or struct qualified name in stable declaration order. Use compact=true for lighter navigation payloads.",
     {
       qualifiedName: z.string().describe("Exact class or struct qualified name"),
+      compact: z.boolean().optional().describe("When true, return compact member records"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum members to return"),
     },
-    async ({ qualifiedName, limit }) => {
+    async ({ qualifiedName, compact, limit }) => {
       const symbol = store.getSymbolByQualifiedName(qualifiedName);
       if (!symbol || (symbol.type !== "class" && symbol.type !== "struct")) {
         return notFoundPayload();
@@ -1852,9 +1859,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(members.results.length, members.totalCount, members.truncated, limit),
         members: members.results,
       };
+      const response: ClassMembersOverviewResponse | CompactClassMembersResponse = compact
+        ? toCompactClassMembersResponse(payload)
+        : payload;
 
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );
@@ -1981,9 +1991,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
 
   server.tool(
     "search_symbols",
-    "Search symbols by name substring. Returns matching symbols with truncation indicator. Minimum query length is 3 characters.",
+    "Search symbols by name substring. Returns matching symbols with truncation indicator. Minimum query length is 3 characters. Use compact=true for lighter navigation payloads.",
     {
       query: z.string().describe(`Search query (minimum ${SEARCH_MIN_QUERY_LENGTH} characters; shorter queries return an empty result set)`),
+      compact: z.boolean().optional().describe("When true, return compact symbol records"),
       type: z.enum(["function", "method", "class", "struct", "enum", "enumMember", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum results to return"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to result symbols"),
@@ -1992,27 +2003,29 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       projectArea: z.string().optional().describe("Optional project-area filter applied to result symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to result symbols"),
     },
-    async ({ query, type, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ query, compact, type, limit, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
       const { results, totalCount } = store.searchSymbols(query, type, limit, metadataFilters);
       const truncated = totalCount > limit;
 
+      const payload: SearchResponse = {
+        query,
+        window: buildResultWindow(results.length, totalCount, truncated, limit),
+        results,
+        totalCount,
+        truncated,
+        language: metadataFilters?.language,
+        ...metadataFilterEcho(metadataFilters),
+        groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
+      };
+      const response: SearchResponse | CompactSearchResponse = compact
+        ? toCompactSearchResponse(payload)
+        : payload;
+
       return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            query,
-            window: buildResultWindow(results.length, totalCount, truncated, limit),
-            results,
-            totalCount,
-            truncated,
-            language: metadataFilters?.language,
-            ...metadataFilterEcho(metadataFilters),
-            groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
-          }, null, 2),
-        }],
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
       };
     },
   );

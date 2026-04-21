@@ -2037,10 +2037,16 @@ describe("Enum member references", () => {
       .query({ qualifiedName: "Game::AIState", includeEnumValueUsage: "true", compact: "true" })
       .expect(200);
     expect(compactRes.body.responseMode).toBe("compact");
-    expect(compactRes.body.references).toHaveLength(2);
-    expect(compactRes.body.references[0].sourceQualifiedName).toBeDefined();
-    expect(compactRes.body.references[0].targetQualifiedName).toBeDefined();
-    expect(compactRes.body.references[0].confidence).toBeUndefined();
+    expect(compactRes.body.fileGroups).toBeInstanceOf(Array);
+    expect(compactRes.body.references).toBeUndefined();
+    if (compactRes.body.fileGroups.length > 0) {
+      expect(typeof compactRes.body.fileGroups[0].file).toBe("string");
+      expect(compactRes.body.fileGroups[0].refs).toBeInstanceOf(Array);
+      if (compactRes.body.fileGroups[0].refs.length > 0) {
+        expect(typeof compactRes.body.fileGroups[0].refs[0].symbol).toBe("string");
+        expect(typeof compactRes.body.fileGroups[0].refs[0].line).toBe("number");
+      }
+    }
   });
 });
 
@@ -2080,6 +2086,61 @@ describe("Overview queries", () => {
     expect(res.body.window.totalCount).toBe(res.body.summary.totalCount);
     expect(res.body.window.returnedCount).toBe(res.body.members.length);
     expect(res.body.members.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Compact mode for overview endpoints", () => {
+  it("list_class_members compact returns compact member records", async () => {
+    const res = await request(app)
+      .get("/class-members")
+      .query({ qualifiedName: "Game::AIComponent", compact: "true" })
+      .expect(200);
+    expect(res.body.responseMode).toBe("compact");
+    expect(res.body.members).toBeInstanceOf(Array);
+    if (res.body.members.length > 0) {
+      expect(res.body.members[0].id).toBeDefined();
+      expect(res.body.members[0].qualifiedName).toBeDefined();
+      expect(res.body.members[0].filePath).toBeUndefined();
+    }
+  });
+
+  it("list_namespace_symbols compact returns compact symbol records via mock store", async () => {
+    const nsSymbol: Symbol = {
+      id: "MyNS",
+      name: "MyNS",
+      qualifiedName: "MyNS",
+      language: "cpp",
+      type: "namespace",
+      filePath: "src/myns.h",
+      line: 1,
+      endLine: 100,
+    };
+    const childSymbol: Symbol = {
+      id: "MyNS::Foo",
+      name: "Foo",
+      qualifiedName: "MyNS::Foo",
+      language: "cpp",
+      type: "function",
+      filePath: "src/myns.h",
+      line: 5,
+      endLine: 10,
+    };
+    const nsStore: Store = {
+      ...store,
+      getSymbolByQualifiedName: (qn: string) => qn === "MyNS" ? nsSymbol : undefined,
+      getNamespaceSymbols: () => [childSymbol],
+    } as unknown as Store;
+    const nsApp = createApp(nsStore);
+    const res = await request(nsApp)
+      .get("/namespace-symbols")
+      .query({ qualifiedName: "MyNS", compact: "true" })
+      .expect(200);
+    expect(res.body.responseMode).toBe("compact");
+    expect(res.body.symbols).toBeInstanceOf(Array);
+    expect(res.body.symbols.length).toBe(1);
+    expect(res.body.symbols[0].id).toBe("MyNS::Foo");
+    expect(res.body.symbols[0].qualifiedName).toBe("MyNS::Foo");
+    expect(res.body.symbols[0].filePath).toBeUndefined();
   });
 });
 

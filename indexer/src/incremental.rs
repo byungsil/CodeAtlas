@@ -70,7 +70,6 @@ pub enum HeaderChangeKind {
         removed_ids: Vec<String>,
     },
     MacroSensitive,
-    Unknown,
 }
 
 pub fn analyze_header_change(
@@ -131,6 +130,7 @@ pub fn analyze_header_change(
     }
 }
 
+#[cfg(test)]
 pub fn detect_define_changes(old_source: &str, new_source: &str) -> bool {
     fn extract_defines(source: &str) -> HashSet<String> {
         source
@@ -251,7 +251,7 @@ fn analyze_changed_headers(
                 // added_ids: new symbols — no existing references, skip
                 let _ = added_ids;
             }
-            HeaderChangeKind::MacroSensitive | HeaderChangeKind::Unknown => {
+            HeaderChangeKind::MacroSensitive => {
                 return Ok(HeaderAnalysisResult::RequiresFullDiscovery {
                     reason: format!("header {} requires conservative fanout", header_path),
                 });

@@ -32,8 +32,6 @@ import {
   ExplainSymbolPropagationResponse,
   CompactCallGraphResponse,
   CompactFileSymbolsResponse,
-  CompactReferenceRecord,
-  CompactReferenceQueryResponse,
   PropagationEventRecord,
   PropagationKind,
   PropagationPathStep,
@@ -51,8 +49,13 @@ import {
 } from "./models/responses";
 import {
   toCompactCallGraphResponse,
+  toCompactCallerQueryResponse,
+  toCompactClassMembersResponse,
   toCompactFileSymbolsResponse,
-  toCompactReferenceQueryResponse,
+  toCompactImpactAnalysisResponse,
+  toCompactNamespaceSymbolsResponse,
+  toCompactSearchResponse,
+  toFileGroupedReferenceQueryResponse,
 } from "./compact-responses";
 import {
   buildClassResponse,
@@ -789,24 +792,6 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     };
   }
 
-  function buildCompactResolvedReferences(references: ResolvedReference[]): CompactReferenceRecord[] {
-    const targetMap = buildSymbolMap(references.map((reference) => reference.targetSymbolId));
-    return references
-      .map((reference) => {
-        const targetSymbol = targetMap.get(reference.targetSymbolId);
-        if (!targetSymbol) return null;
-        return {
-          sourceSymbolId: reference.sourceSymbolId,
-          sourceQualifiedName: reference.sourceQualifiedName,
-          targetSymbolId: reference.targetSymbolId,
-          targetQualifiedName: targetSymbol.qualifiedName,
-          category: reference.category,
-          filePath: reference.filePath,
-          line: reference.line,
-        };
-      })
-      .filter((reference): reference is CompactReferenceRecord => reference !== null);
-  }
 
   function buildReferenceTargetIds(
     symbol: CodeSymbol,
@@ -1531,6 +1516,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
   app.get("/callers/:name", (req, res) => {
     const { name } = req.params;
+    const compact = parseCompactMode(req.query.compact);
     const limit = Math.min(parseInt((req.query.limit as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
     const context = parseCallerLookupContext(req.query as Record<string, unknown>);
@@ -1566,6 +1552,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       groupedByModule: buildMetadataGroupSummary(callerIds, (caller) => caller.module),
       groupedByLanguage: buildMetadataGroupSummary(callerIds, (caller) => caller.language),
     });
+    if (compact) {
+      return res.json(toCompactCallerQueryResponse(response));
+    }
     return res.json(response);
   });
 
@@ -1660,11 +1649,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
     };
     if (compact) {
-      const compactResponse: CompactReferenceQueryResponse = toCompactReferenceQueryResponse(
-        response,
-        buildCompactResolvedReferences(references.results),
-      );
-      return res.json(compactResponse);
+      return res.json(toFileGroupedReferenceQueryResponse(response, references.results));
     }
     return res.json(response);
   });
@@ -1765,6 +1750,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   app.get("/impact", (req, res) => {
     const id = typeof req.query.id === "string" ? req.query.id : undefined;
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const compact = parseCompactMode(req.query.compact);
     const maxDepth = Math.min(parseInt((req.query.depth as string) || "2", 10), CALLGRAPH_MAX_DEPTH);
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
@@ -1789,7 +1775,11 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
-    return res.json(buildImpactAnalysis(symbol, maxDepth, limit, metadataFilters));
+    const payload = buildImpactAnalysis(symbol, maxDepth, limit, metadataFilters);
+    if (compact) {
+      return res.json(toCompactImpactAnalysisResponse(payload));
+    }
+    return res.json(payload);
   });
 
   app.get("/workspace-summary", (_req, res) => {
@@ -1867,6 +1857,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
   app.get("/namespace-symbols", (req, res) => {
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const compact = parseCompactMode(req.query.compact);
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     if (!qualifiedName) {
       return badRequest(res);
@@ -1879,17 +1870,21 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
     const allSymbols = store.getNamespaceSymbols(symbol.qualifiedName);
     const symbols = applyLimit(allSymbols, limit);
-    const response: NamespaceSymbolsResponse = {
+    const payload: NamespaceSymbolsResponse = {
       ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
       summary: buildStructureOverviewSummary(allSymbols),
       window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
       symbols: symbols.results,
     };
-    return res.json(response);
+    if (compact) {
+      return res.json(toCompactNamespaceSymbolsResponse(payload));
+    }
+    return res.json(payload);
   });
 
   app.get("/class-members", (req, res) => {
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const compact = parseCompactMode(req.query.compact);
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     if (!qualifiedName) {
       return badRequest(res);
@@ -1904,13 +1899,16 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       .slice()
       .sort((a, b) => a.line - b.line || a.endLine - b.endLine || a.qualifiedName.localeCompare(b.qualifiedName));
     const members = applyLimit(allMembers, limit);
-    const response: ClassMembersOverviewResponse = {
+    const payload: ClassMembersOverviewResponse = {
       ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }),
       summary: buildStructureOverviewSummary(allMembers),
       window: buildResultWindow(members.results.length, members.totalCount, members.truncated, limit),
       members: members.results,
     };
-    return res.json(response);
+    if (compact) {
+      return res.json(toCompactClassMembersResponse(payload));
+    }
+    return res.json(payload);
   });
 
   app.get("/type-hierarchy", (req, res) => {
@@ -1974,6 +1972,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
   app.get("/search", (req, res) => {
     const q = (req.query.q as string) || "";
+    const compact = parseCompactMode(req.query.compact);
     const type = req.query.type as string | undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
@@ -1993,6 +1992,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       ...metadataFilterEcho(metadataFilters),
       groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
     };
+    if (compact) {
+      return res.json(toCompactSearchResponse(response));
+    }
     return res.json(response);
   });
 

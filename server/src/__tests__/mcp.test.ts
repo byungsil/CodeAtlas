@@ -226,12 +226,94 @@ describe("MCP payload contracts", () => {
     const payload = JSON.parse(res.result.content[0].text);
     expect(payload.responseMode).toBe("compact");
     expect(payload.reliability.level).toBeDefined();
-    expect(payload.references).toBeInstanceOf(Array);
-    if (payload.references.length > 0) {
-      expect(payload.references[0].sourceQualifiedName).toBeDefined();
-      expect(payload.references[0].targetQualifiedName).toBeDefined();
-      expect(payload.references[0].confidence).toBeUndefined();
+    expect(payload.fileGroups).toBeInstanceOf(Array);
+    expect(payload.references).toBeUndefined();
+    if (payload.fileGroups.length > 0) {
+      expect(typeof payload.fileGroups[0].file).toBe("string");
+      expect(payload.fileGroups[0].refs).toBeInstanceOf(Array);
+      if (payload.fileGroups[0].refs.length > 0) {
+        expect(typeof payload.fileGroups[0].refs[0].symbol).toBe("string");
+        expect(typeof payload.fileGroups[0].refs[0].line).toBe("number");
+      }
     }
+  });
+
+  it("find_callers supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "find_callers", arguments: { name: "UpdateAI", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.fileGroups).toBeInstanceOf(Array);
+    expect(payload.callers).toBeUndefined();
+    if (payload.fileGroups.length > 0) {
+      expect(typeof payload.fileGroups[0].file).toBe("string");
+      expect(payload.fileGroups[0].refs).toBeInstanceOf(Array);
+    }
+  });
+
+  it("search_symbols supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search_symbols", arguments: { query: "Update", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.results).toBeInstanceOf(Array);
+    if (payload.results.length > 0) {
+      expect(payload.results[0].id).toBeDefined();
+      expect(payload.results[0].qualifiedName).toBeDefined();
+      expect(payload.results[0].filePath).toBeUndefined();
+      expect(payload.results[0].language).toBeUndefined();
+    }
+  });
+
+  it("impact_analysis supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "impact_analysis", arguments: { qualifiedName: "Game::AIComponent::UpdateAI", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.callerFileGroups).toBeInstanceOf(Array);
+    expect(payload.calleeFileGroups).toBeInstanceOf(Array);
+    expect(payload.referenceFileGroups).toBeInstanceOf(Array);
+    expect(payload.directCallers).toBeUndefined();
+    expect(payload.directCallees).toBeUndefined();
+    expect(payload.directReferences).toBeUndefined();
+  });
+
+  it("list_class_members supports compact mode", async () => {
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_class_members", arguments: { qualifiedName: "Game::AIComponent", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.responseMode).toBe("compact");
+    expect(payload.members).toBeInstanceOf(Array);
+    if (payload.members.length > 0) {
+      expect(payload.members[0].id).toBeDefined();
+      expect(payload.members[0].qualifiedName).toBeDefined();
+      expect(payload.members[0].filePath).toBeUndefined();
+    }
+  });
+
+  it("list_namespace_symbols accepts compact parameter", async () => {
+    // sample DB has no namespace symbols — tool returns not_found for unknown qualifiedName
+    // compact shape is validated in endpoints.test.ts with a mock store
+    const responses = await mcpCall([
+      INIT, INITIALIZED,
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_namespace_symbols", arguments: { qualifiedName: "Game::NonExistent", compact: true } } },
+    ], DATA_DIR);
+    const res = responses.find((r) => r.id === 3);
+    const payload = JSON.parse(res.result.content[0].text);
+    // not_found or error expected — just assert the call does not crash
+    expect(payload).toBeDefined();
   });
 
   it("get_callgraph returns correct shape", async () => {
