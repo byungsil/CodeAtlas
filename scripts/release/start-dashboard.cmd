@@ -21,6 +21,8 @@ if not exist "%DATA_DIR%" (
   exit /b 1
 )
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%show-indexer-status.ps1" -DataDir "%DATA_DIR%" -Prefix "Existing CodeAtlas indexer status before dashboard start:"
+
 if not "%~2"=="" (
   set "CODEATLAS_DASHBOARD_DATA_DIRS=%~2"
 )

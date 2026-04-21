@@ -276,6 +276,63 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       || normalizedQualifier.endsWith(`::${normalizedScope}`);
   }
 
+  function normalizeNameTokens(value?: string): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    return value
+      .replace(/^[mp]_?/i, "")
+      .replace(/[^a-zA-Z0-9]+/g, "")
+      .toLowerCase();
+  }
+
+  function receiverMatchesParentName(
+    receiver: string | undefined,
+    parentSymbol: NonNullable<ReturnType<Store["getSymbolById"]>> | undefined,
+  ): boolean {
+    const normalizedReceiver = normalizeNameTokens(receiver);
+    const parentName = parentSymbol?.name ?? parentSymbol?.qualifiedName.split("::").pop();
+    const normalizedParent = normalizeNameTokens(parentName);
+    if (!normalizedReceiver || !normalizedParent) {
+      return false;
+    }
+    return normalizedReceiver === normalizedParent
+      || normalizedReceiver.endsWith(normalizedParent)
+      || normalizedParent.endsWith(normalizedReceiver);
+  }
+
+  const ownerFactoryTypeCache = new Map<string, boolean>();
+
+  function ownerCreatesCandidateType(
+    ownerId: string | undefined,
+    candidate: NonNullable<ReturnType<Store["getSymbolById"]>>,
+  ): boolean {
+    if (!ownerId || !candidate.parentId || typeof store.getRawCallsByCallerId !== "function") {
+      return false;
+    }
+    const cacheKey = `${ownerId}=>${candidate.parentId}`;
+    const cached = ownerFactoryTypeCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const targetOwner = store.getSymbolById(candidate.parentId);
+    const targetNames = Array.from(new Set([
+      targetOwner?.name,
+      targetOwner?.qualifiedName,
+      candidate.parentId,
+      candidate.qualifiedName.split("::")[0],
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+    const ownerMethods = store.getMembers(ownerId)
+      .filter((member) => member.type === "function" || member.type === "method");
+    const created = ownerMethods.some((member) =>
+      store.getRawCallsByCallerId?.(member.id).some((rawCall) =>
+        rawCall.calledName === "Create"
+        && targetNames.some((targetName) => qualifierMatchesScope(rawCall.qualifier, targetName))));
+    ownerFactoryTypeCache.set(cacheKey, created);
+    return created;
+  }
+
   function callableNamespace(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): string | undefined {
     if (symbol.scopeKind === "namespace" && symbol.scopeQualifiedName) {
       return symbol.scopeQualifiedName;
@@ -284,6 +341,59 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       return undefined;
     }
     return symbol.qualifiedName.split("::").slice(0, -1).join("::");
+  }
+
+  function candidateLocationPaths(symbol: NonNullable<ReturnType<Store["getSymbolById"]>>): string[] {
+    return Array.from(new Set([
+      symbol.filePath,
+      symbol.definitionFilePath,
+      symbol.declarationFilePath,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+  }
+
+  function directoryPath(filePath: string): string | undefined {
+    const normalized = filePath.replace(/\\/g, "/");
+    const lastSlash = normalized.lastIndexOf("/");
+    if (lastSlash <= 0) {
+      return undefined;
+    }
+    return normalized.slice(0, lastSlash);
+  }
+
+  function fileStem(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, "/");
+    const leaf = normalized.split("/").pop() ?? normalized;
+    return leaf.replace(/\.[^.]+$/, "");
+  }
+
+  function fileAffinityScore(
+    rawFilePath: string,
+    candidate: NonNullable<ReturnType<Store["getSymbolById"]>>,
+  ): { score: number; matchReasons: MatchReason[] } {
+    const candidatePaths = candidateLocationPaths(candidate);
+    const matchReasons: MatchReason[] = [];
+    let score = 0;
+
+    if (candidatePaths.includes(rawFilePath)) {
+      return {
+        score: 240,
+        matchReasons: ["same_file_match"],
+      };
+    }
+
+    const rawDirectory = directoryPath(rawFilePath);
+    if (rawDirectory && candidatePaths.some((candidatePath) => directoryPath(candidatePath) === rawDirectory)) {
+      score += 90;
+      matchReasons.push("same_directory_match");
+    }
+
+    const rawStem = fileStem(rawFilePath);
+    if (candidatePaths.some((candidatePath) => fileStem(candidatePath) === rawStem)) {
+      score += 45;
+      matchReasons.push("same_file_stem_match");
+    }
+
+    return { score, matchReasons };
   }
 
   function scoreRecoveredTargetCandidate(
@@ -313,6 +423,14 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       if (rawCall.receiver === "this" && callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
         score += 260;
         matchReasons.push("this_receiver_match");
+      }
+      if (receiverMatchesParentName(rawCall.receiver, parentSymbol)) {
+        score += 280;
+        matchReasons.push("receiver_parent_name_match");
+      }
+      if (ownerCreatesCandidateType(callerSymbol.parentId, candidate)) {
+        score += 760;
+        matchReasons.push("owner_factory_type_match");
       }
       if (candidate.parentId && callerBases.some((baseSymbol) => baseSymbol.id === candidate.parentId)) {
         score += 220;
@@ -351,6 +469,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       score += 20;
     }
 
+    const fileAffinity = fileAffinityScore(rawCall.filePath, candidate);
+    score += fileAffinity.score;
+    matchReasons.push(...fileAffinity.matchReasons);
+
     return { score, matchReasons: Array.from(new Set(matchReasons)) };
   }
 
@@ -360,13 +482,16 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     metadataFilters?: MetadataFilters,
     context?: HeuristicLookupContext,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
-    if (!isFragileCoverageSymbol(symbol) || typeof store.getRawCallersByCalledName !== "function") {
+    if (typeof store.getRawCallersByCalledName !== "function") {
       return { results: [], totalCount: 0, truncated: false };
     }
 
     const callableCandidates = store.getSymbolsByName(symbol.name)
       .filter((candidate) => candidate.type === "function" || candidate.type === "method");
     const rawCalls = store.getRawCallersByCalledName(symbol.name);
+    if (!isFragileCoverageSymbol(symbol) && !rawCalls.some((rawCall) => rawCall.receiver || rawCall.qualifier)) {
+      return { results: [], totalCount: 0, truncated: false };
+    }
     const bestByCaller = new Map<string, { ref: CallReference; rankScore: number }>();
 
     for (const rawCall of rawCalls) {
@@ -2147,10 +2272,41 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
   const { loadConfig, resolveWorkspace } = await import("./config");
   const { createApp } = await import("./app");
   const childProcess = await import("child_process");
+  const fs = await import("fs");
+  const path = await import("path");
   const config = loadConfig();
   const { server, store, close } = createMcpServer(dataDir);
 
   let watcherProcess: ReturnType<typeof childProcess.spawn> | null = null;
+  let watcherStderr = "";
+
+  function readIndexerStatuses(): Array<{ pid: number; mode: string; workspace_root: string; acquired_at: string }> {
+    try {
+      return fs.readdirSync(dataDir)
+        .filter((entry) => entry.startsWith("indexer-status-") && entry.endsWith(".json"))
+        .map((entry) => {
+          const raw = fs.readFileSync(path.join(dataDir, entry), "utf8");
+          return JSON.parse(raw);
+        })
+        .filter((item): item is { pid: number; mode: string; workspace_root: string; acquired_at: string } =>
+          item && typeof item.pid === "number" && typeof item.mode === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  function printIndexerStatuses(prefix: string) {
+    const statuses = readIndexerStatuses();
+    if (statuses.length === 0) {
+      return;
+    }
+    process.stderr.write(`${prefix}\n`);
+    for (const status of statuses.sort((a, b) => a.pid - b.pid)) {
+      process.stderr.write(
+        `  pid=${status.pid} mode=${status.mode} acquired_at=${status.acquired_at} workspace=${status.workspace_root}\n`,
+      );
+    }
+  }
 
   if (config.watcher.enabled) {
     const workspaceRoot = resolveWorkspace(dataDir);
@@ -2165,7 +2321,9 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
       process.stderr.write(`[watcher] ${data.toString().trimEnd()}\n`);
     });
     watcherProcess.stderr?.on("data", (data: Buffer) => {
-      process.stderr.write(`[watcher:err] ${data.toString().trimEnd()}\n`);
+      const text = data.toString().trimEnd();
+      watcherStderr += `${text}\n`;
+      process.stderr.write(`[watcher:err] ${text}\n`);
     });
     watcherProcess.on("error", (err) => {
       process.stderr.write(`Watcher failed to start: ${err.message}\n`);
@@ -2173,6 +2331,10 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
     });
     watcherProcess.on("exit", (code) => {
       process.stderr.write(`Watcher exited with code ${code}\n`);
+      if (code && watcherStderr.includes("Another indexer is already using")) {
+        printIndexerStatuses("Active indexer status files:");
+      }
+      watcherStderr = "";
       watcherProcess = null;
     });
   }

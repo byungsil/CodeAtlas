@@ -3,6 +3,7 @@ mod constants;
 mod discovery;
 mod graph_rules;
 mod ignore;
+mod index_lock;
 mod incremental;
 mod indexing;
 mod language;
@@ -142,6 +143,18 @@ fn main() {
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    let index_mode = if watch_mode {
+        "watch"
+    } else if requested_full_mode {
+        "full"
+    } else {
+        "incremental"
+    };
+    let _indexer_lock = index_lock::IndexerLock::acquire(&data_dir, &workspace_root, index_mode)
+        .unwrap_or_else(|error| {
+            eprintln!("{}", error);
+            std::process::exit(1);
+        });
     mark_codeatlas_artifacts(&data_dir, None);
     let current_active_db_path = storage::resolve_active_database_path(&data_dir)
         .unwrap_or(None);
@@ -515,6 +528,8 @@ fn print_help() {
     println!("Output:");
     println!("  The active index is stored in <workspace-root>/.codeatlas/current-db.json");
     println!("  Published generations are stored as <workspace-root>/.codeatlas/index-<timestamp>.db");
+    println!("  Active indexer process metadata is stored in <workspace-root>/.codeatlas/indexer.lock");
+    println!("  Per-process status is stored in <workspace-root>/.codeatlas/indexer-status-<pid>.json");
     println!(
         "  Supported file extensions: {}",
         EXTENSIONS

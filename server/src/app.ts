@@ -283,6 +283,57 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       || normalizedQualifier.endsWith(`::${normalizedScope}`);
   }
 
+  function normalizeNameTokens(value?: string): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    return value
+      .replace(/^[mp]_?/i, "")
+      .replace(/[^a-zA-Z0-9]+/g, "")
+      .toLowerCase();
+  }
+
+  function receiverMatchesParentName(receiver: string | undefined, parentSymbol: CodeSymbol | undefined): boolean {
+    const normalizedReceiver = normalizeNameTokens(receiver);
+    const parentName = parentSymbol?.name ?? parentSymbol?.qualifiedName.split("::").pop();
+    const normalizedParent = normalizeNameTokens(parentName);
+    if (!normalizedReceiver || !normalizedParent) {
+      return false;
+    }
+    return normalizedReceiver === normalizedParent
+      || normalizedReceiver.endsWith(normalizedParent)
+      || normalizedParent.endsWith(normalizedReceiver);
+  }
+
+  const ownerFactoryTypeCache = new Map<string, boolean>();
+
+  function ownerCreatesCandidateType(ownerId: string | undefined, candidate: CodeSymbol): boolean {
+    if (!ownerId || !candidate.parentId || typeof store.getRawCallsByCallerId !== "function") {
+      return false;
+    }
+    const cacheKey = `${ownerId}=>${candidate.parentId}`;
+    const cached = ownerFactoryTypeCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const targetOwner = store.getSymbolById(candidate.parentId);
+    const targetNames = Array.from(new Set([
+      targetOwner?.name,
+      targetOwner?.qualifiedName,
+      candidate.parentId,
+      candidate.qualifiedName.split("::")[0],
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+    const ownerMethods = store.getMembers(ownerId)
+      .filter((member) => member.type === "function" || member.type === "method");
+    const created = ownerMethods.some((member) =>
+      store.getRawCallsByCallerId?.(member.id).some((rawCall) =>
+        rawCall.calledName === "Create"
+        && targetNames.some((targetName) => qualifierMatchesScope(rawCall.qualifier, targetName))));
+    ownerFactoryTypeCache.set(cacheKey, created);
+    return created;
+  }
+
   function callableNamespace(symbol: CodeSymbol): string | undefined {
     if (symbol.scopeKind === "namespace" && symbol.scopeQualifiedName) {
       return symbol.scopeQualifiedName;
@@ -291,6 +342,56 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return undefined;
     }
     return symbol.qualifiedName.split("::").slice(0, -1).join("::");
+  }
+
+  function candidateLocationPaths(symbol: CodeSymbol): string[] {
+    return Array.from(new Set([
+      symbol.filePath,
+      symbol.definitionFilePath,
+      symbol.declarationFilePath,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+  }
+
+  function directoryPath(filePath: string): string | undefined {
+    const normalized = filePath.replace(/\\/g, "/");
+    const lastSlash = normalized.lastIndexOf("/");
+    if (lastSlash <= 0) {
+      return undefined;
+    }
+    return normalized.slice(0, lastSlash);
+  }
+
+  function fileStem(filePath: string): string {
+    const normalized = filePath.replace(/\\/g, "/");
+    const leaf = normalized.split("/").pop() ?? normalized;
+    return leaf.replace(/\.[^.]+$/, "");
+  }
+
+  function fileAffinityScore(rawFilePath: string, candidate: CodeSymbol): { score: number; matchReasons: MatchReason[] } {
+    const candidatePaths = candidateLocationPaths(candidate);
+    const matchReasons: MatchReason[] = [];
+    let score = 0;
+
+    if (candidatePaths.includes(rawFilePath)) {
+      return {
+        score: 240,
+        matchReasons: ["same_file_match"],
+      };
+    }
+
+    const rawDirectory = directoryPath(rawFilePath);
+    if (rawDirectory && candidatePaths.some((candidatePath) => directoryPath(candidatePath) === rawDirectory)) {
+      score += 90;
+      matchReasons.push("same_directory_match");
+    }
+
+    const rawStem = fileStem(rawFilePath);
+    if (candidatePaths.some((candidatePath) => fileStem(candidatePath) === rawStem)) {
+      score += 45;
+      matchReasons.push("same_file_stem_match");
+    }
+
+    return { score, matchReasons };
   }
 
   function scoreRecoveredTargetCandidate(
@@ -320,6 +421,14 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       if (rawCall.receiver === "this" && callerSymbol.parentId && candidate.parentId && callerSymbol.parentId === candidate.parentId) {
         score += 260;
         matchReasons.push("this_receiver_match");
+      }
+      if (receiverMatchesParentName(rawCall.receiver, parentSymbol)) {
+        score += 280;
+        matchReasons.push("receiver_parent_name_match");
+      }
+      if (ownerCreatesCandidateType(callerSymbol.parentId, candidate)) {
+        score += 760;
+        matchReasons.push("owner_factory_type_match");
       }
       if (candidate.parentId && callerBases.some((baseSymbol) => baseSymbol.id === candidate.parentId)) {
         score += 220;
@@ -358,6 +467,10 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       score += 20;
     }
 
+    const fileAffinity = fileAffinityScore(rawCall.filePath, candidate);
+    score += fileAffinity.score;
+    matchReasons.push(...fileAffinity.matchReasons);
+
     return { score, matchReasons: Array.from(new Set(matchReasons)) };
   }
 
@@ -367,13 +480,16 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     metadataFilters?: MetadataFilters,
     context?: HeuristicLookupContext,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
-    if (!isFragileCoverageSymbol(symbol) || typeof store.getRawCallersByCalledName !== "function") {
+    if (typeof store.getRawCallersByCalledName !== "function") {
       return { results: [], totalCount: 0, truncated: false };
     }
 
     const callableCandidates = store.getSymbolsByName(symbol.name)
       .filter((candidate) => candidate.type === "function" || candidate.type === "method");
     const rawCalls = store.getRawCallersByCalledName(symbol.name);
+    if (!isFragileCoverageSymbol(symbol) && !rawCalls.some((rawCall) => rawCall.receiver || rawCall.qualifier)) {
+      return { results: [], totalCount: 0, truncated: false };
+    }
     const bestByCaller = new Map<string, { ref: CallReference; rankScore: number }>();
 
     for (const rawCall of rawCalls) {

@@ -70,18 +70,18 @@ function deriveReliabilitySummary(
   indexCoverage?: IndexCoverageLevel,
   recoveredResultCount?: number,
 ): ReliabilitySummary {
-  if (factors.length === 0) {
-    return {
-      level: "full",
-      factors: [],
-    };
-  }
-
   if ((recoveredResultCount ?? 0) > 0) {
     return {
       level: "partial",
       factors,
       suggestion: "Recovered results include lower-confidence fallback evidence. Treat them as grounded hints rather than fully resolved graph certainty.",
+    };
+  }
+
+  if (factors.length === 0) {
+    return {
+      level: "full",
+      factors: [],
     };
   }
 

@@ -143,6 +143,10 @@ export class JsonStore {
     return [];
   }
 
+  getRawCallsByCallerId(_callerId: string): RawCallCandidateRecord[] {
+    return [];
+  }
+
   getMembers(parentId: string): Symbol[] {
     const data = this.load();
     return data.symbols.filter((s) => s.parentId === parentId);

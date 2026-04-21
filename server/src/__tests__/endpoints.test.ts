@@ -1356,6 +1356,509 @@ describe("Reliability signaling", () => {
     expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::ShotNormal::CalcShotInformation");
     expect(callersRes.body.callers[0].matchReasons).toContain("base_parent_match");
   });
+
+  it("uses callee file affinity to break recovered caller ties for macro-sensitive methods", async () => {
+    const target: Symbol = {
+      id: "Gameplay::ShotNormal::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotNormal::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      definitionFilePath: "gameplay/shotnormal.cpp",
+      declarationFilePath: "gameplay/shotnormal.h",
+      line: 1620,
+      endLine: 1665,
+      parentId: "Gameplay::ShotNormal",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoy: Symbol = {
+      id: "Gameplay::ReplayShotNormal::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ReplayShotNormal::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/replay_shot.cpp",
+      definitionFilePath: "gameplay/replay_shot.cpp",
+      declarationFilePath: "gameplay/replay_shot.h",
+      line: 400,
+      endLine: 460,
+      parentId: "Gameplay::ReplayShotNormal",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Replay",
+      artifactKind: "editor",
+    };
+    const caller: Symbol = {
+      id: "Gameplay::ShotController::UpdatePreview",
+      name: "UpdatePreview",
+      qualifiedName: "Gameplay::ShotController::UpdatePreview",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotcontroller.cpp",
+      line: 200,
+      endLine: 260,
+      parentId: "Gameplay::ShotController",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const symbols = [target, decoy, caller];
+    const recoveredStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "CalcShotInformation" ? [target, decoy] : name === "UpdatePreview" ? [caller] : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getRawCallersByCalledName(calledName: string) {
+        return calledName === "CalcShotInformation"
+          ? [{
+            callerId: caller.id,
+            calledName,
+            callKind: "memberAccess",
+            filePath: "gameplay/shotnormal.cpp",
+            line: 211,
+            receiver: "m_shotNormal",
+          }]
+          : [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recoveredApp = createApp(recoveredStore);
+    const callersRes = await request(recoveredApp).get("/callers/CalcShotInformation").expect(200);
+    expect(callersRes.body.callers).toHaveLength(1);
+    expect(callersRes.body.symbol.qualifiedName).toBe("Gameplay::ShotNormal::CalcShotInformation");
+    expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::ShotController::UpdatePreview");
+    expect(callersRes.body.callers[0].matchReasons).toContain("same_file_match");
+  });
+
+  it("recovers non-fragile callers when receiver names strongly match the owner type", async () => {
+    const target: Symbol = {
+      id: "Gameplay::ShootingSys::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShootingSys::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsys.cpp",
+      line: 61,
+      endLine: 90,
+      parentId: "Gameplay::ShootingSys",
+      parseFragility: "low",
+      macroSensitivity: "low",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoyA: Symbol = {
+      id: "Gameplay::ShotNormal::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotNormal::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      line: 1600,
+      endLine: 1665,
+      parentId: "Gameplay::ShotNormal",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoyB: Symbol = {
+      id: "Gameplay::ShotSubSystem::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotSubSystem::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsubsys.h",
+      line: 97,
+      endLine: 104,
+      parentId: "Gameplay::ShotSubSystem",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const caller: Symbol = {
+      id: "Gameplay::BallHandler::UpdateShot",
+      name: "UpdateShot",
+      qualifiedName: "Gameplay::BallHandler::UpdateShot",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/ballhandler.cpp",
+      line: 12600,
+      endLine: 12680,
+      parentId: "Gameplay::BallHandler",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const owner: Symbol = {
+      id: "Gameplay::ShootingSys",
+      name: "ShootingSys",
+      qualifiedName: "Gameplay::ShootingSys",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shootingsys.h",
+      line: 1,
+      endLine: 120,
+    };
+    const decoyOwnerA: Symbol = {
+      id: "Gameplay::ShotNormal",
+      name: "ShotNormal",
+      qualifiedName: "Gameplay::ShotNormal",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shotnormal.h",
+      line: 1,
+      endLine: 120,
+    };
+    const decoyOwnerB: Symbol = {
+      id: "Gameplay::ShotSubSystem",
+      name: "ShotSubSystem",
+      qualifiedName: "Gameplay::ShotSubSystem",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shootingsubsys.h",
+      line: 1,
+      endLine: 120,
+    };
+    const symbols = [target, decoyA, decoyB, caller, owner, decoyOwnerA, decoyOwnerB];
+    const recoveredStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "CalcShotInformation" ? [target, decoyA, decoyB] : name === "UpdateShot" ? [caller] : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getRawCallersByCalledName(calledName: string) {
+        return calledName === "CalcShotInformation"
+          ? [{
+            callerId: caller.id,
+            calledName,
+            callKind: "pointerMemberAccess",
+            filePath: "gameplay/ballhandler.cpp",
+            line: 12627,
+            receiver: "mShootingSys",
+          }]
+          : [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers() {
+        return [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recoveredApp = createApp(recoveredStore);
+    const callersRes = await request(recoveredApp).get("/callers/CalcShotInformation").expect(200);
+    expect(callersRes.body.symbol.qualifiedName).toBe("Gameplay::ShootingSys::CalcShotInformation");
+    expect(callersRes.body.callers).toHaveLength(1);
+    expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::BallHandler::UpdateShot");
+    expect(callersRes.body.callers[0].matchReasons).toContain("receiver_parent_name_match");
+    expect(callersRes.body.reliability.level).toBe("partial");
+    expect(callersRes.body.recoveredResultCount).toBe(1);
+  });
+
+  it("uses owner factory evidence to recover exact override-style callers", async () => {
+    const target: Symbol = {
+      id: "Gameplay::ShotNormal::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotNormal::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shotnormal.cpp",
+      line: 1615,
+      endLine: 1665,
+      parentId: "Gameplay::ShotNormal",
+      parseFragility: "elevated",
+      macroSensitivity: "high",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoyA: Symbol = {
+      id: "Gameplay::ShotSubSystem::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShotSubSystem::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsubsys.h",
+      line: 97,
+      endLine: 104,
+      parentId: "Gameplay::ShotSubSystem",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const decoyB: Symbol = {
+      id: "Gameplay::ShootingSys::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShootingSys::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsys.cpp",
+      line: 61,
+      endLine: 90,
+      parentId: "Gameplay::ShootingSys",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const caller: Symbol = {
+      id: "Gameplay::ShootingSys::CalcShotInformation",
+      name: "CalcShotInformation",
+      qualifiedName: "Gameplay::ShootingSys::CalcShotInformation",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsys.cpp",
+      line: 61,
+      endLine: 90,
+      parentId: "Gameplay::ShootingSys",
+      subsystem: "Gameplay",
+      module: "Shot",
+      artifactKind: "runtime",
+    };
+    const owner: Symbol = {
+      id: "Gameplay::ShootingSys",
+      name: "ShootingSys",
+      qualifiedName: "Gameplay::ShootingSys",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shootingsys.h",
+      line: 1,
+      endLine: 120,
+    };
+    const targetOwner: Symbol = {
+      id: "Gameplay::ShotNormal",
+      name: "ShotNormal",
+      qualifiedName: "Gameplay::ShotNormal",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shotnormal.h",
+      line: 1,
+      endLine: 120,
+    };
+    const baseOwner: Symbol = {
+      id: "Gameplay::ShotSubSystem",
+      name: "ShotSubSystem",
+      qualifiedName: "Gameplay::ShotSubSystem",
+      language: "cpp",
+      type: "class",
+      filePath: "gameplay/shootingsubsys.h",
+      line: 1,
+      endLine: 120,
+    };
+    const createMethod: Symbol = {
+      id: "Gameplay::ShootingSys::CreateSubSystem",
+      name: "CreateSubSystem",
+      qualifiedName: "Gameplay::ShootingSys::CreateSubSystem",
+      language: "cpp",
+      type: "method",
+      filePath: "gameplay/shootingsys.cpp",
+      line: 40,
+      endLine: 58,
+      parentId: "Gameplay::ShootingSys",
+    };
+    const symbols = [target, decoyA, decoyB, caller, owner, targetOwner, baseOwner, createMethod];
+    const recoveredStore: Store = {
+      getSymbolsByName(name: string) {
+        return name === "CalcShotInformation" ? [target, decoyA, decoyB] : [];
+      },
+      getSymbolById(id: string) {
+        return symbols.find((symbol) => symbol.id === id);
+      },
+      getSymbolsByIds(ids: string[]) {
+        return symbols.filter((symbol) => ids.includes(symbol.id));
+      },
+      getRepresentativeCandidates(symbolId: string) {
+        return symbols.filter((symbol) => symbol.id === symbolId);
+      },
+      getSymbolByQualifiedName(qualifiedName: string) {
+        return symbols.find((symbol) => symbol.qualifiedName === qualifiedName);
+      },
+      searchSymbols() {
+        return { results: [], totalCount: 0 };
+      },
+      getFileSymbols() {
+        return [];
+      },
+      getNamespaceSymbols() {
+        return [];
+      },
+      getCallers() {
+        return [];
+      },
+      getCallees() {
+        return [];
+      },
+      getRawCallersByCalledName(calledName: string) {
+        return calledName === "CalcShotInformation"
+          ? [{
+            callerId: caller.id,
+            calledName,
+            callKind: "pointerMemberAccess",
+            filePath: "gameplay/shootingsys.cpp",
+            line: 63,
+            receiver: "mSubSystem",
+          }]
+          : [];
+      },
+      getRawCallsByCallerId(callerId: string) {
+        return callerId === createMethod.id
+          ? [{
+            callerId,
+            calledName: "Create",
+            callKind: "qualified",
+            filePath: "gameplay/shootingsys.cpp",
+            line: 46,
+            qualifier: "ShotNormal",
+          }]
+          : [];
+      },
+      getReferences() {
+        return [];
+      },
+      getMembers(parentId: string) {
+        return parentId === owner.id ? [caller, createMethod] : [];
+      },
+      getDirectBases() {
+        return [];
+      },
+      getDirectDerived() {
+        return [];
+      },
+      getBaseMethods() {
+        return [];
+      },
+      getOverrides() {
+        return [];
+      },
+      getIncomingPropagation() {
+        return [];
+      },
+      getOutgoingPropagation() {
+        return [];
+      },
+      getWorkspaceLanguageSummary() {
+        return [];
+      },
+    };
+
+    const recoveredApp = createApp(recoveredStore);
+    const callersRes = await request(recoveredApp)
+      .get("/symbol")
+      .query({ qualifiedName: "Gameplay::ShotNormal::CalcShotInformation" })
+      .expect(200);
+    expect(callersRes.body.callers).toHaveLength(1);
+    expect(callersRes.body.callers[0].qualifiedName).toBe("Gameplay::ShootingSys::CalcShotInformation");
+    expect(callersRes.body.callers[0].matchReasons).toContain("owner_factory_type_match");
+  });
 });
 
 describe("GET /callers/:name", () => {

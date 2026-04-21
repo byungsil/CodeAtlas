@@ -209,6 +209,22 @@ export class SqliteStore {
     return rows.map(toRawCallCandidate);
   }
 
+  getRawCallsByCallerId(callerId: string): RawCallCandidateRecord[] {
+    if (!this.hasTable("raw_calls")) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare(`
+        SELECT caller_id, called_name, call_kind, file_path, line, receiver, qualifier
+        FROM raw_calls
+        WHERE caller_id = ?
+        ORDER BY file_path, line, called_name
+      `)
+      .all(callerId) as RawRecoveredCallRow[];
+    return rows.map(toRawCallCandidate);
+  }
+
   getMembers(parentId: string): Symbol[] {
     const rows = this.db
       .prepare("SELECT * FROM symbols WHERE parent_id = ?")

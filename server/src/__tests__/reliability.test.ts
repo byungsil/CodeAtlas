@@ -45,4 +45,20 @@ describe("buildResponseReliability", () => {
     expect(reliability.coverageWarning).toContain("stored raw-call evidence");
     expect(reliability.reliability.suggestion).toContain("Recovered results include lower-confidence fallback evidence");
   });
+
+  it("marks recovered non-fragile results as partial reliability", () => {
+    const reliability = buildResponseReliability({
+      symbol: makeFragileSymbol({
+        parseFragility: "low",
+        macroSensitivity: "low",
+      }),
+      relatedResultCount: 0,
+      recoveredResultCount: 1,
+      zeroResultLabel: "callers",
+    });
+
+    expect(reliability.reliability.level).toBe("partial");
+    expect(reliability.recoveredResultCount).toBe(1);
+    expect(reliability.coverageWarning).toContain("stored raw-call evidence");
+  });
 });
