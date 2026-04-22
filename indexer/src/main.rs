@@ -14,8 +14,10 @@ mod parser;
 mod python_parser;
 mod representative_rules;
 mod resolver;
+mod retry;
 mod rust_parser;
 mod storage;
+mod summary;
 mod typescript_parser;
 mod watcher;
 
@@ -25,8 +27,6 @@ use std::io;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS, INDEX_EXTENSIONS_ENV, parse_extension_list};
@@ -36,9 +36,8 @@ use indexing::{
 };
 use models::ParseMetrics;
 use representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
-use rusqlite::ErrorCode;
-
-const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
+use retry::{retry_io, open_database_with_retry};
+use summary::{load_missing_callable_summaries, merge_callable_summaries};
 const FULL_REBUILD_PARSE_BATCH_SIZE: usize = 2048;
 const FULL_REBUILD_PARSE_BATCH_SIZE_ENV: &str = "CODEATLAS_FULL_REBUILD_PARSE_BATCH_SIZE";
 const LOG_DIAGNOSTICS_ENV: &str = "CODEATLAS_LOG_DIAGNOSTICS";
@@ -777,75 +776,6 @@ fn publish_staging_db(staging_db_path: &Path, data_dir: &Path) -> std::io::Resul
     Ok(publish_path)
 }
 
-fn retry_io<T, F>(operation: &str, mut action: F) -> io::Result<T>
-where
-    F: FnMut() -> io::Result<T>,
-{
-    let mut last_error = None;
-
-    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
-        if *delay_ms > 0 {
-            thread::sleep(Duration::from_millis(*delay_ms));
-        }
-
-        match action() {
-            Ok(value) => return Ok(value),
-            Err(err) if should_retry_io_error(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
-                last_error = Some(err);
-            }
-            Err(err) => {
-                return Err(io::Error::new(
-                    err.kind(),
-                    format!("{} failed: {}", operation, err),
-                ));
-            }
-        }
-    }
-
-    let err = last_error.unwrap_or_else(|| io::Error::other("retry failed without an error"));
-    Err(io::Error::new(
-        err.kind(),
-        format!("{} failed after retries: {}", operation, err),
-    ))
-}
-
-fn should_retry_io_error(err: &io::Error) -> bool {
-    matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock)
-}
-
-fn open_database_with_retry(path: &Path, operation: &str) -> Result<storage::Database, String> {
-    let mut last_error = None;
-
-    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
-        if *delay_ms > 0 {
-            thread::sleep(Duration::from_millis(*delay_ms));
-        }
-
-        match storage::Database::open(path) {
-            Ok(db) => return Ok(db),
-            Err(err) if should_retry_sqlite_open(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
-                last_error = Some(err.to_string());
-            }
-            Err(err) => {
-                return Err(format!("{} failed: {}", operation, err));
-            }
-        }
-    }
-
-    Err(format!(
-        "{} failed after retries: {}",
-        operation,
-        last_error.unwrap_or_else(|| "unknown error".to_string())
-    ))
-}
-
-fn should_retry_sqlite_open(err: &rusqlite::Error) -> bool {
-    matches!(
-        err,
-        rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::CannotOpen || code.code == ErrorCode::DatabaseBusy
-    )
-}
-
 fn mark_codeatlas_artifacts(data_dir: &Path, db_path: Option<&Path>) {
     #[cfg(windows)]
     {
@@ -1490,42 +1420,6 @@ fn write_json<T: serde::Serialize>(path: &Path, data: &T) {
     fs::write(path, json).expect("Failed to write JSON file");
 }
 
-fn load_missing_callable_summaries(
-    db: &storage::Database,
-    calls: &[models::Call],
-    in_memory: &[models::CallableFlowSummary],
-) -> rusqlite::Result<Vec<models::CallableFlowSummary>> {
-    let existing: HashSet<&str> = in_memory
-        .iter()
-        .map(|summary| summary.callable_symbol_id.as_str())
-        .collect();
-    let mut missing: Vec<String> = calls
-        .iter()
-        .map(|call| call.callee_id.clone())
-        .filter(|callee_id| !existing.contains(callee_id.as_str()))
-        .collect();
-    missing.sort();
-    missing.dedup();
-    db.read_callable_flow_summaries_for_ids(&missing)
-}
-
-fn merge_callable_summaries(
-    primary: &[models::CallableFlowSummary],
-    secondary: &[models::CallableFlowSummary],
-) -> Vec<models::CallableFlowSummary> {
-    let mut merged = primary.to_vec();
-    let mut seen: HashSet<String> = merged
-        .iter()
-        .map(|summary| summary.callable_symbol_id.clone())
-        .collect();
-    for summary in secondary {
-        if seen.insert(summary.callable_symbol_id.clone()) {
-            merged.push(summary.clone());
-        }
-    }
-    merged
-}
-
 fn log_incremental_plan(plan: &incremental::IncrementalPlan, verbose: bool) {
     if !plan.rename_hints.is_empty() {
         println!("  Planner: {} rename/move hint(s)", plan.rename_hints.len());
@@ -1557,7 +1451,8 @@ fn log_incremental_plan(plan: &incremental::IncrementalPlan, verbose: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::{params, Connection};
+    use rusqlite::{params, Connection, ErrorCode};
+    use crate::retry::should_retry_sqlite_open;
     use tempfile::tempdir;
 
     fn copy_snapshot(src: &Path, dst: &Path) {

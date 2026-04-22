@@ -1,15 +1,12 @@
 use std::collections::HashSet;
-use std::io;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 use std::fs;
 
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use rusqlite::ErrorCode;
 
 use crate::build_metadata;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
@@ -20,7 +17,9 @@ use crate::incremental;
 use crate::parser;
 use crate::representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
 use crate::resolver;
-use crate::storage::{self, Database};
+use crate::retry::{retry_io, open_database_with_retry};
+use crate::storage;
+use crate::summary::{load_missing_callable_summaries, merge_callable_summaries};
 
 use chrono::Utc;
 
@@ -28,7 +27,6 @@ const DEBOUNCE_MS: u64 = 500;
 const BASE_WATCHER_BURST_THRESHOLD: usize = 64;
 const WATCHER_BURST_WINDOW_MS: u64 = 5_000;
 const BASE_WATCHER_BURST_WINDOW_THRESHOLD: usize = 96;
-const IO_RETRY_BACKOFF_MS: &[u64] = &[0, 100, 250, 500];
 const BASE_PROJECT_SIZE_WATCHER: usize = 5_000;
 
 fn env_override_usize_watcher(var: &str, computed: usize) -> usize {
@@ -607,109 +605,6 @@ fn make_watch_staging_db_path(data_dir: &Path, tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("codeatlas-watch-{}-{}-{}.db", tag, key, DB_FILENAME))
 }
 
-fn retry_io<T, F>(operation: &str, mut action: F) -> io::Result<T>
-where
-    F: FnMut() -> io::Result<T>,
-{
-    let mut last_error = None;
-
-    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
-        if *delay_ms > 0 {
-            thread::sleep(Duration::from_millis(*delay_ms));
-        }
-
-        match action() {
-            Ok(value) => return Ok(value),
-            Err(err) if should_retry_io_error(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
-                last_error = Some(err);
-            }
-            Err(err) => {
-                return Err(io::Error::new(
-                    err.kind(),
-                    format!("{} failed: {}", operation, err),
-                ));
-            }
-        }
-    }
-
-    let err = last_error.unwrap_or_else(|| io::Error::other("retry failed without an error"));
-    Err(io::Error::new(
-        err.kind(),
-        format!("{} failed after retries: {}", operation, err),
-    ))
-}
-
-fn should_retry_io_error(err: &io::Error) -> bool {
-    matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock)
-}
-
-fn open_database_with_retry(path: &Path, operation: &str) -> Result<Database, String> {
-    let mut last_error = None;
-
-    for (attempt, delay_ms) in IO_RETRY_BACKOFF_MS.iter().enumerate() {
-        if *delay_ms > 0 {
-            thread::sleep(Duration::from_millis(*delay_ms));
-        }
-
-        match Database::open(path) {
-            Ok(db) => return Ok(db),
-            Err(err) if should_retry_sqlite_open(&err) && attempt + 1 < IO_RETRY_BACKOFF_MS.len() => {
-                last_error = Some(err.to_string());
-            }
-            Err(err) => return Err(format!("{} failed: {}", operation, err)),
-        }
-    }
-
-    Err(format!(
-        "{} failed after retries: {}",
-        operation,
-        last_error.unwrap_or_else(|| "unknown error".to_string())
-    ))
-}
-
-fn should_retry_sqlite_open(err: &rusqlite::Error) -> bool {
-    matches!(
-        err,
-        rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::CannotOpen || code.code == ErrorCode::DatabaseBusy
-    )
-}
-
-fn load_missing_callable_summaries(
-    db: &Database,
-    calls: &[crate::models::Call],
-    in_memory: &[crate::models::CallableFlowSummary],
-) -> rusqlite::Result<Vec<crate::models::CallableFlowSummary>> {
-    let existing: HashSet<&str> = in_memory
-        .iter()
-        .map(|summary| summary.callable_symbol_id.as_str())
-        .collect();
-    let mut missing: Vec<String> = calls
-        .iter()
-        .map(|call| call.callee_id.clone())
-        .filter(|callee_id| !existing.contains(callee_id.as_str()))
-        .collect();
-    missing.sort();
-    missing.dedup();
-    db.read_callable_flow_summaries_for_ids(&missing)
-}
-
-fn merge_callable_summaries(
-    primary: &[crate::models::CallableFlowSummary],
-    secondary: &[crate::models::CallableFlowSummary],
-) -> Vec<crate::models::CallableFlowSummary> {
-    let mut merged = primary.to_vec();
-    let mut seen: HashSet<String> = merged
-        .iter()
-        .map(|summary| summary.callable_symbol_id.clone())
-        .collect();
-    for summary in secondary {
-        if seen.insert(summary.callable_symbol_id.clone()) {
-            merged.push(summary.clone());
-        }
-    }
-    merged
-}
-
 fn run_incremental_index(
     workspace_root: &Path,
     workspace_name: &str,
@@ -1041,8 +936,11 @@ fn run_incremental_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
     use std::path::PathBuf;
     use std::sync::mpsc;
+    use rusqlite::ErrorCode;
+    use crate::retry::should_retry_sqlite_open;
 
     #[test]
     fn is_tracked_accepts_cpp_extensions() {

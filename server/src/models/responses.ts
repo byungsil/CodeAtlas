@@ -311,35 +311,6 @@ export interface ReferenceQueryResponse extends ConfidenceMetadata, ReliabilityM
   groupedByLanguage?: MetadataGroupSummary[];
 }
 
-export interface CompactReferenceRecord {
-  sourceSymbolId: string;
-  sourceQualifiedName: string;
-  targetSymbolId: string;
-  targetQualifiedName: string;
-  category: ReferenceCategory;
-  filePath: string;
-  line: number;
-}
-
-export interface CompactReferenceQueryResponse extends ConfidenceMetadata, ReliabilityMetadata {
-  responseMode: "compact";
-  lookupMode: LookupMode;
-  symbol: Symbol;
-  window: ResultWindow;
-  references: CompactReferenceRecord[];
-  totalCount: number;
-  truncated: boolean;
-  category?: ReferenceCategory;
-  filePath?: string;
-  subsystem?: string;
-  module?: string;
-  projectArea?: string;
-  artifactKind?: "runtime" | "editor" | "tool" | "test" | "generated";
-  groupedBySubsystem?: MetadataGroupSummary[];
-  groupedByModule?: MetadataGroupSummary[];
-  groupedByLanguage?: MetadataGroupSummary[];
-}
-
 export interface FileGroupedRef {
   symbol: string;
   line: number;

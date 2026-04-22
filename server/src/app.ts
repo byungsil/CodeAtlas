@@ -79,6 +79,22 @@ import {
   buildPropagationWorkflowSteps as sharedBuildPropagationWorkflowSteps,
   toInvestigationAnchorSummary as sharedToInvestigationAnchorSummary,
 } from "./investigation-workflow";
+import {
+  metadataFilterEcho,
+  collectAnchorScopePrefixes,
+  normalizeScopeValue,
+  qualifierMatchesScope,
+  normalizeNameTokens,
+  receiverMatchesParentName,
+  callableNamespace,
+  candidateLocationPaths,
+  directoryPath,
+  fileStem,
+  fileAffinityScore,
+  matchesMetadataFilters,
+  isFragileCoverageSymbol,
+  applyLimit,
+} from "./query-helpers";
 
 interface DashboardWorkspaceSource {
   id: string;
@@ -243,71 +259,6 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     return recentSymbol;
   }
 
-  function collectAnchorScopePrefixes(qualifiedName: string): string[] {
-    const parts = qualifiedName.split("::");
-    const prefixes: string[] = [];
-    for (let index = 1; index < parts.length; index += 1) {
-      prefixes.push(parts.slice(0, index).join("::"));
-    }
-    return prefixes;
-  }
-
-  function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
-    return filters ?? {};
-  }
-
-  function matchesMetadataFilters(symbol: CodeSymbol | undefined, filters?: MetadataFilters): boolean {
-    if (!filters) return true;
-    if (!symbol) return false;
-    if (filters.language && symbol.language !== filters.language) return false;
-    if (filters.subsystem && symbol.subsystem !== filters.subsystem) return false;
-    if (filters.module && symbol.module !== filters.module) return false;
-    if (filters.projectArea && symbol.projectArea !== filters.projectArea) return false;
-    if (filters.artifactKind && symbol.artifactKind !== filters.artifactKind) return false;
-    return true;
-  }
-
-  function isFragileCoverageSymbol(symbol: CodeSymbol): boolean {
-    return symbol.parseFragility === "elevated" || symbol.macroSensitivity === "high";
-  }
-
-  function normalizeScopeValue(value?: string): string | undefined {
-    return value?.trim().replace(/\s+/g, "");
-  }
-
-  function qualifierMatchesScope(rawQualifier: string | undefined, scopeValue: string | undefined): boolean {
-    const normalizedQualifier = normalizeScopeValue(rawQualifier);
-    const normalizedScope = normalizeScopeValue(scopeValue);
-    if (!normalizedQualifier || !normalizedScope) {
-      return false;
-    }
-    return normalizedQualifier === normalizedScope
-      || normalizedScope.endsWith(`::${normalizedQualifier}`)
-      || normalizedQualifier.endsWith(`::${normalizedScope}`);
-  }
-
-  function normalizeNameTokens(value?: string): string | undefined {
-    if (!value) {
-      return undefined;
-    }
-    return value
-      .replace(/^[mp]_?/i, "")
-      .replace(/[^a-zA-Z0-9]+/g, "")
-      .toLowerCase();
-  }
-
-  function receiverMatchesParentName(receiver: string | undefined, parentSymbol: CodeSymbol | undefined): boolean {
-    const normalizedReceiver = normalizeNameTokens(receiver);
-    const parentName = parentSymbol?.name ?? parentSymbol?.qualifiedName.split("::").pop();
-    const normalizedParent = normalizeNameTokens(parentName);
-    if (!normalizedReceiver || !normalizedParent) {
-      return false;
-    }
-    return normalizedReceiver === normalizedParent
-      || normalizedReceiver.endsWith(normalizedParent)
-      || normalizedParent.endsWith(normalizedReceiver);
-  }
-
   const ownerFactoryTypeCache = new Map<string, boolean>();
 
   function ownerCreatesCandidateType(ownerId: string | undefined, candidate: CodeSymbol): boolean {
@@ -335,66 +286,6 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
         && targetNames.some((targetName) => qualifierMatchesScope(rawCall.qualifier, targetName))));
     ownerFactoryTypeCache.set(cacheKey, created);
     return created;
-  }
-
-  function callableNamespace(symbol: CodeSymbol): string | undefined {
-    if (symbol.scopeKind === "namespace" && symbol.scopeQualifiedName) {
-      return symbol.scopeQualifiedName;
-    }
-    if (!symbol.qualifiedName.includes("::")) {
-      return undefined;
-    }
-    return symbol.qualifiedName.split("::").slice(0, -1).join("::");
-  }
-
-  function candidateLocationPaths(symbol: CodeSymbol): string[] {
-    return Array.from(new Set([
-      symbol.filePath,
-      symbol.definitionFilePath,
-      symbol.declarationFilePath,
-    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
-  }
-
-  function directoryPath(filePath: string): string | undefined {
-    const normalized = filePath.replace(/\\/g, "/");
-    const lastSlash = normalized.lastIndexOf("/");
-    if (lastSlash <= 0) {
-      return undefined;
-    }
-    return normalized.slice(0, lastSlash);
-  }
-
-  function fileStem(filePath: string): string {
-    const normalized = filePath.replace(/\\/g, "/");
-    const leaf = normalized.split("/").pop() ?? normalized;
-    return leaf.replace(/\.[^.]+$/, "");
-  }
-
-  function fileAffinityScore(rawFilePath: string, candidate: CodeSymbol): { score: number; matchReasons: MatchReason[] } {
-    const candidatePaths = candidateLocationPaths(candidate);
-    const matchReasons: MatchReason[] = [];
-    let score = 0;
-
-    if (candidatePaths.includes(rawFilePath)) {
-      return {
-        score: 240,
-        matchReasons: ["same_file_match"],
-      };
-    }
-
-    const rawDirectory = directoryPath(rawFilePath);
-    if (rawDirectory && candidatePaths.some((candidatePath) => directoryPath(candidatePath) === rawDirectory)) {
-      score += 90;
-      matchReasons.push("same_directory_match");
-    }
-
-    const rawStem = fileStem(rawFilePath);
-    if (candidatePaths.some((candidatePath) => fileStem(candidatePath) === rawStem)) {
-      score += 45;
-      matchReasons.push("same_file_stem_match");
-    }
-
-    return { score, matchReasons };
   }
 
   function scoreRecoveredTargetCandidate(
@@ -742,13 +633,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     };
   }
 
-  function applyLimit<T>(items: T[], limit: number): { results: T[]; totalCount: number; truncated: boolean } {
-    return {
-      results: items.slice(0, limit),
-      totalCount: items.length,
-      truncated: items.length > limit,
-    };
-  }
+
 
   function buildResolvedReferences(
     targetSymbolIds: string[],

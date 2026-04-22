@@ -12,8 +12,6 @@ import {
   CompactFileSymbol,
   CompactImpactAnalysisResponse,
   CompactNamespaceSymbolsResponse,
-  CompactReferenceQueryResponse,
-  CompactReferenceRecord,
   CompactSearchResponse,
   ClassMembersOverviewResponse,
   FileGroup,
@@ -74,51 +72,6 @@ export function toCompactCallGraphResponse(response: CallGraphResponse): Compact
     nodeCount: response.nodeCount,
     nodeCap: response.nodeCap,
     truncated: response.truncated,
-  };
-}
-
-export function toCompactReferenceRecord(
-  reference: ResolvedReference,
-  targetQualifiedName: string,
-): CompactReferenceRecord {
-  return {
-    sourceSymbolId: reference.sourceSymbolId,
-    sourceQualifiedName: reference.sourceQualifiedName,
-    targetSymbolId: reference.targetSymbolId,
-    targetQualifiedName,
-    category: reference.category,
-    filePath: reference.filePath,
-    line: reference.line,
-  };
-}
-
-export function toCompactReferenceQueryResponse(
-  response: ReferenceQueryResponse,
-  references: CompactReferenceRecord[],
-): CompactReferenceQueryResponse {
-  return {
-    responseMode: "compact",
-    reliability: response.reliability,
-    ...(response.indexCoverage ? { indexCoverage: response.indexCoverage } : {}),
-    ...(response.coverageWarning ? { coverageWarning: response.coverageWarning } : {}),
-    lookupMode: response.lookupMode,
-    symbol: response.symbol,
-    confidence: response.confidence,
-    matchReasons: response.matchReasons,
-    ...(response.ambiguity ? { ambiguity: response.ambiguity } : {}),
-    window: response.window,
-    references,
-    totalCount: response.totalCount,
-    truncated: response.truncated,
-    ...(response.category ? { category: response.category } : {}),
-    ...(response.filePath ? { filePath: response.filePath } : {}),
-    ...(response.subsystem ? { subsystem: response.subsystem } : {}),
-    ...(response.module ? { module: response.module } : {}),
-    ...(response.projectArea ? { projectArea: response.projectArea } : {}),
-    ...(response.artifactKind ? { artifactKind: response.artifactKind } : {}),
-    ...(response.groupedBySubsystem ? { groupedBySubsystem: response.groupedBySubsystem } : {}),
-    ...(response.groupedByModule ? { groupedByModule: response.groupedByModule } : {}),
-    ...(response.groupedByLanguage ? { groupedByLanguage: response.groupedByLanguage } : {}),
   };
 }
 
