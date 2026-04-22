@@ -2,7 +2,7 @@
 
 Status:
 
-- In Progress
+- Complete
 
 ## 1. Objective
 
@@ -169,7 +169,7 @@ Execution rule:
 
 Status:
 
-- Pending
+- Complete
 
 Goal:
 
@@ -340,7 +340,7 @@ Acceptance:
 
 Status:
 
-- Pending
+- Complete
 
 Goal:
 
@@ -459,7 +459,7 @@ Acceptance:
 
 Status:
 
-- Pending
+- Complete
 
 Goal:
 
@@ -539,7 +539,7 @@ Acceptance:
 
 Status:
 
-- Pending
+- Complete
 
 Goal:
 
