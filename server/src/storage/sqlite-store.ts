@@ -19,7 +19,7 @@ import {
   ReferenceRecord,
   TypeHierarchyNode,
 } from "../models/responses";
-import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH } from "../constants";
+import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH, REFERENCE_QUERY_CAP } from "../constants";
 import { IndexDetailsRecord, MetadataFilters, RawCallCandidateRecord, WorkspaceLanguageSummaryRecord } from "./store";
 
 export class SqliteStore {
@@ -338,6 +338,7 @@ export class SqliteStore {
       FROM symbol_references
       WHERE ${filters.join(" AND ")}
       ORDER BY category, file_path, line, source_symbol_id
+      LIMIT ${REFERENCE_QUERY_CAP}
     `;
     const rows = this.db.prepare(sql).all(...values) as RawReferenceRow[];
     return rows.map(toReference);
@@ -350,7 +351,7 @@ export class SqliteStore {
 
     const filters = [
       "called_name = ?",
-      "call_kind IN ('memberAccess', 'pointerMemberAccess')",
+      "call_kind IN ('memberAccess', 'pointerMemberAccess', 'fieldAccess', 'pointerFieldAccess', 'thisFieldAccess')",
     ];
     const values: Array<string> = [symbolName];
     if (ownerNames && ownerNames.length > 0) {
@@ -368,6 +369,7 @@ export class SqliteStore {
       FROM raw_calls
       WHERE ${filters.join(" AND ")}
       ORDER BY file_path, line, caller_id
+      LIMIT ${REFERENCE_QUERY_CAP}
     `;
     const rows = this.db.prepare(sql).all(...values) as Array<{
       caller_id: string;

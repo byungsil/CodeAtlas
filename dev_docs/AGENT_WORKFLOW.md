@@ -27,6 +27,7 @@ Operational notes:
 - If the workspace should only index selected languages or file types, pass `--extensions cpp,h,hpp,py` or set `CODEATLAS_INDEX_EXTENSIONS`.
 - Watch mode honors the same `--extensions` and `--parse-timeout-ms` overrides, so steady-state reindexing can stay aligned with the initial indexing scope.
 - C/C++ files that look like embedded binary dumps or giant numeric blobs are skipped before parsing. The default size threshold is `2097152` bytes and can be overridden with `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES`.
+- `find_references` and related queries apply a per-source safety cap to prevent memory pressure on very common symbols. The default is `2000` rows per query and can be overridden with `CODEATLAS_REFERENCE_QUERY_CAP`.
 
 ### 2. Start the MCP server
 

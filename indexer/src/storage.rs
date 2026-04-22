@@ -172,6 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_callee_order ON calls(callee_id, file_path,
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_path);
 CREATE INDEX IF NOT EXISTS idx_raw_calls_caller_order ON raw_calls(caller_id, file_path, line, called_name);
 CREATE INDEX IF NOT EXISTS idx_raw_calls_file ON raw_calls(file_path);
+CREATE INDEX IF NOT EXISTS idx_raw_calls_called_name_kind ON raw_calls(called_name, call_kind);
 CREATE INDEX IF NOT EXISTS idx_references_source ON symbol_references(source_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_target_category_file ON symbol_references(target_symbol_id, category, file_path, line, source_symbol_id);
@@ -1719,6 +1720,9 @@ fn raw_call_kind_key(kind: &RawCallKind) -> &'static str {
         RawCallKind::PointerMemberAccess => "pointerMemberAccess",
         RawCallKind::ThisPointerAccess => "thisPointerAccess",
         RawCallKind::Qualified => "qualified",
+        RawCallKind::FieldAccess => "fieldAccess",
+        RawCallKind::PointerFieldAccess => "pointerFieldAccess",
+        RawCallKind::ThisFieldAccess => "thisFieldAccess",
     }
 }
 
@@ -1728,6 +1732,9 @@ fn raw_call_kind_from_key(value: &str) -> RawCallKind {
         "pointerMemberAccess" => RawCallKind::PointerMemberAccess,
         "thisPointerAccess" => RawCallKind::ThisPointerAccess,
         "qualified" => RawCallKind::Qualified,
+        "fieldAccess" => RawCallKind::FieldAccess,
+        "pointerFieldAccess" => RawCallKind::PointerFieldAccess,
+        "thisFieldAccess" => RawCallKind::ThisFieldAccess,
         _ => RawCallKind::Unqualified,
     }
 }
@@ -1890,7 +1897,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 31);
+        assert_eq!(idx_count, 32);
     }
 
     #[test]

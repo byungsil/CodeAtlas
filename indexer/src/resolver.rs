@@ -264,7 +264,10 @@ fn push_receiver_aware_reasons(
                 }
             }
         }
-        RawCallKind::Unqualified => {}
+        RawCallKind::Unqualified
+        | RawCallKind::FieldAccess
+        | RawCallKind::PointerFieldAccess
+        | RawCallKind::ThisFieldAccess => {}
     }
 }
 

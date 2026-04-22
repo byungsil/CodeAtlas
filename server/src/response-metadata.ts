@@ -435,6 +435,7 @@ export function buildResultWindow(
 ): ResultWindow {
   const effectiveOffset = offset ?? 0;
   const hasMore = effectiveOffset + returnedCount < totalCount;
+  const nextOffset = hasMore ? effectiveOffset + returnedCount : undefined;
   return {
     returnedCount,
     totalCount,
@@ -442,6 +443,8 @@ export function buildResultWindow(
     ...(limitApplied !== undefined ? { limitApplied } : {}),
     ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
     ...(hasMore ? { hasMore } : {}),
+    ...(nextOffset !== undefined ? { nextOffset } : {}),
+    ...(hasMore ? { hint: `Showing ${returnedCount} of ${totalCount} results (offset ${effectiveOffset}). Use offset=${nextOffset} to fetch the next page.` } : {}),
   };
 }
 

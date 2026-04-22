@@ -108,6 +108,7 @@ If `CODEATLAS_WATCHER=true`, the MCP server launches the Rust watcher automatica
 | `CODEATLAS_INDEX_EXTENSIONS` | built-in defaults | Default extension allowlist |
 | `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS` | `60000000` | Default C/C++ parse timeout |
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory name |
+| `CODEATLAS_REFERENCE_QUERY_CAP` | `2000` | Max rows per reference query (safety cap) |
 
 ## Supported Indexer Commands
 

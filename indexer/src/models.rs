@@ -150,6 +150,9 @@ pub enum RawCallKind {
     PointerMemberAccess,
     ThisPointerAccess,
     Qualified,
+    FieldAccess,
+    PointerFieldAccess,
+    ThisFieldAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

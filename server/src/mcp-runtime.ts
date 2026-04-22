@@ -104,6 +104,7 @@ import {
   isFragileCoverageSymbol,
   applyLimit,
   shouldCompact,
+  deduplicateReferences,
 } from "./query-helpers";
 
 export const DEFAULT_DATA_DIR = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
@@ -573,7 +574,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     const symbolMap = buildSymbolMap(
       rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
     );
-    const references = rawReferences
+    const resolved = rawReferences
       .map((reference) => {
         const sourceSymbol = symbolMap.get(reference.sourceSymbolId);
         if (!sourceSymbol || !matchesMetadataFilters(sourceSymbol, metadataFilters)) return null;
@@ -583,14 +584,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           sourceQualifiedName: sourceSymbol.qualifiedName,
         };
       })
-      .filter((reference): reference is ResolvedReference => reference !== null)
-      .filter((reference, index, all) =>
-        all.findIndex((candidate) =>
-          candidate.sourceSymbolId === reference.sourceSymbolId
-          && candidate.targetSymbolId === reference.targetSymbolId
-          && candidate.category === reference.category
-          && candidate.filePath === reference.filePath
-          && candidate.line === reference.line) === index)
+      .filter((reference): reference is ResolvedReference => reference !== null);
+    const references = deduplicateReferences(resolved)
       .sort((a, b) =>
         a.category.localeCompare(b.category)
         || a.filePath.localeCompare(b.filePath)

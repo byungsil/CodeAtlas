@@ -141,3 +141,18 @@ export function applyLimit<T>(items: T[], limit: number): { results: T[]; totalC
     truncated: items.length > limit,
   };
 }
+
+export function deduplicateReferences<T extends { sourceSymbolId: string; targetSymbolId: string; category: string; filePath: string; line: number }>(
+  references: T[],
+): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const ref of references) {
+    const key = `${ref.sourceSymbolId}\0${ref.targetSymbolId}\0${ref.category}\0${ref.filePath}\0${ref.line}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(ref);
+    }
+  }
+  return result;
+}

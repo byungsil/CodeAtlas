@@ -446,6 +446,8 @@ export interface ResultWindow {
   limitApplied?: number;
   offset?: number;
   hasMore?: boolean;
+  nextOffset?: number;
+  hint?: string;
 }
 
 export interface FileSymbolsResponse {

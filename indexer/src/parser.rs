@@ -247,10 +247,9 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     }
     let legacy_type_usage_events = extract_type_usage_relation_events(tree.root_node(), &ctx);
     let legacy_inheritance_events = extract_inheritance_relation_events(tree.root_node(), &ctx);
-    let graph_call_candidates_exist = !ctx.raw_calls.is_empty();
     let graph_relation_start = Instant::now();
     let (graph_relation_events, graph_rule_compile_ms, graph_rule_execute_ms) =
-        if graph_call_extraction_enabled() && graph_call_candidates_exist {
+        if graph_call_extraction_enabled() {
             extract_graph_relation_events(file_path, source, &tree, &ctx)
         } else {
             (Vec::new(), 0, 0)
@@ -263,14 +262,28 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         .iter()
         .map(|raw_call| RawRelationEvent::from_raw_call_site(raw_call, RawEventSource::LegacyAst))
         .collect();
-    let graph_raw_calls: Vec<RawCallSite> = graph_relation_events
+    // Separate field access events from method call events for parity comparison.
+    // Field access events exist only in graph extraction (no legacy equivalent),
+    // so they must be excluded from graph-vs-legacy parity checks and always kept.
+    let (field_access_events, method_graph_events): (Vec<_>, Vec<_>) =
+        graph_relation_events.into_iter().partition(|event| {
+            matches!(
+                event.call_kind,
+                Some(RawCallKind::FieldAccess | RawCallKind::PointerFieldAccess | RawCallKind::ThisFieldAccess)
+            )
+        });
+    let field_access_raw_calls: Vec<RawCallSite> = field_access_events
+        .iter()
+        .filter_map(RawRelationEvent::to_raw_call_site)
+        .collect();
+    let graph_raw_calls: Vec<RawCallSite> = method_graph_events
         .iter()
         .filter_map(RawRelationEvent::to_raw_call_site)
         .collect();
 
-    let (mut relation_events, raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
+    let (mut relation_events, mut raw_calls) = if graph_matches_legacy_calls(&graph_raw_calls, &legacy_raw_calls)
     {
-        let mut relation_events = graph_relation_events;
+        let mut relation_events = method_graph_events;
         relation_events.extend(legacy_type_usage_events);
         relation_events.extend(legacy_inheritance_events);
         (
@@ -282,12 +295,15 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         mixed_relation_events.extend(legacy_type_usage_events);
         mixed_relation_events.extend(legacy_inheritance_events);
         mixed_relation_events.extend(
-            graph_relation_events
+            method_graph_events
                 .into_iter()
                 .filter(|event| event.relation_kind != RawRelationKind::Call),
         );
         (mixed_relation_events, legacy_raw_calls)
     };
+    // Always include field access events and raw calls regardless of parity result.
+    relation_events.extend(field_access_events);
+    raw_calls.extend(field_access_raw_calls);
     relation_events.extend(enum_value_relation_events);
     let reference_normalization_start = Instant::now();
     let mut normalized_references = normalize_relation_events(&relation_events, &ctx.symbols);
@@ -519,6 +535,39 @@ fn extract_graph_relation_events(
             events.push(event);
         }
 
+        // Deduplicate: field access events that overlap with method call events
+        // at the same (line, target_name, receiver) are suppressed. Method call
+        // events carry richer data (argument_count) and take priority.
+        let mut seen_method_calls: HashSet<(usize, String, Option<String>)> = HashSet::new();
+        for event in &events {
+            if matches!(
+                event.call_kind,
+                Some(RawCallKind::MemberAccess | RawCallKind::PointerMemberAccess | RawCallKind::ThisPointerAccess)
+            ) {
+                let key = (
+                    event.line,
+                    event.target_name.clone().unwrap_or_default(),
+                    event.receiver.clone(),
+                );
+                seen_method_calls.insert(key);
+            }
+        }
+        events.retain(|event| {
+            if matches!(
+                event.call_kind,
+                Some(RawCallKind::FieldAccess | RawCallKind::PointerFieldAccess | RawCallKind::ThisFieldAccess)
+            ) {
+                let key = (
+                    event.line,
+                    event.target_name.clone().unwrap_or_default(),
+                    event.receiver.clone(),
+                );
+                !seen_method_calls.contains(&key)
+            } else {
+                true
+            }
+        });
+
         (events, compile_ms, execute_ms)
     })
 }
@@ -625,7 +674,18 @@ fn extract_type_usage_relation_events(root: Node, ctx: &Ctx) -> Vec<RawRelationE
         match node.kind() {
             "declaration" | "field_declaration" | "parameter_declaration" => {
                 if let Some(type_node) = node.child_by_field_name("type") {
-                    push_type_usage_event(type_node, ctx, &mut events);
+                    push_type_usage_events_recursive(type_node, ctx, &mut events);
+                }
+                for child in named_children(node) {
+                    stack.push(child);
+                }
+            }
+            "function_definition" => {
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    push_type_usage_events_recursive(type_node, ctx, &mut events);
+                }
+                for child in named_children(node) {
+                    stack.push(child);
                 }
             }
             _ => {
@@ -889,6 +949,36 @@ fn push_type_usage_event(node: Node, ctx: &Ctx, events: &mut Vec<RawRelationEven
         file_path: ctx.file_path.clone(),
         line,
     });
+}
+
+fn push_type_usage_events_recursive(node: Node, ctx: &Ctx, events: &mut Vec<RawRelationEvent>) {
+    match node.kind() {
+        "type_identifier" | "qualified_identifier" => {
+            push_type_usage_event(node, ctx, events);
+        }
+        "template_type" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                push_type_usage_events_recursive(name_node, ctx, events);
+            }
+            if let Some(args) = node.child_by_field_name("arguments") {
+                for child in named_children(args) {
+                    push_type_usage_events_recursive(child, ctx, events);
+                }
+            }
+        }
+        "type_descriptor" => {
+            if let Some(type_node) = node.child_by_field_name("type") {
+                push_type_usage_events_recursive(type_node, ctx, events);
+            }
+        }
+        "pointer_declarator" | "reference_declarator" | "abstract_pointer_declarator"
+        | "abstract_reference_declarator" => {
+            for child in named_children(node) {
+                push_type_usage_events_recursive(child, ctx, events);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn push_inheritance_event(class_node: Node, base_node: Node, ctx: &Ctx, events: &mut Vec<RawRelationEvent>) {
@@ -2421,6 +2511,9 @@ fn parse_call_kind(value: &str) -> Option<RawCallKind> {
         "pointer_member_access" => Some(RawCallKind::PointerMemberAccess),
         "this_pointer_access" => Some(RawCallKind::ThisPointerAccess),
         "qualified" => Some(RawCallKind::Qualified),
+        "field_access" => Some(RawCallKind::FieldAccess),
+        "pointer_field_access" => Some(RawCallKind::PointerFieldAccess),
+        "this_field_access" => Some(RawCallKind::ThisFieldAccess),
         _ => None,
     }
 }
@@ -2468,6 +2561,9 @@ fn raw_call_kind_key(kind: &RawCallKind) -> &'static str {
         RawCallKind::PointerMemberAccess => "pointer_member_access",
         RawCallKind::ThisPointerAccess => "this_pointer_access",
         RawCallKind::Qualified => "qualified",
+        RawCallKind::FieldAccess => "field_access",
+        RawCallKind::PointerFieldAccess => "pointer_field_access",
+        RawCallKind::ThisFieldAccess => "this_field_access",
     }
 }
 
@@ -5146,5 +5242,185 @@ public:
         assert_eq!(pointer_call.called_name, "Update");
         assert_eq!(pointer_call.receiver.as_deref(), Some("other"));
         assert_eq!(pointer_call.receiver_kind, Some(RawReceiverKind::Identifier));
+    }
+
+    #[test]
+    fn field_access_extraction_and_dedup() {
+        let source = r#"
+class Foo {
+public:
+    int mValue;
+    void doStuff();
+};
+
+void bar(Foo* ptr, Foo obj) {
+    int x = ptr->mValue;
+    int y = obj.mValue;
+    ptr->doStuff();
+    obj.doStuff();
+}
+"#;
+        let result = parse_cpp_file("test_field_access.cpp", source).unwrap();
+
+        // Field access raw calls should be present for standalone field reads
+        let field_accesses: Vec<_> = result
+            .raw_calls
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.call_kind,
+                    RawCallKind::FieldAccess | RawCallKind::PointerFieldAccess | RawCallKind::ThisFieldAccess
+                )
+            })
+            .collect();
+        assert!(
+            !field_accesses.is_empty(),
+            "expected field access raw calls, found none"
+        );
+
+        // ptr->mValue should produce PointerFieldAccess
+        let ptr_field = field_accesses
+            .iter()
+            .find(|c| c.called_name == "mValue" && c.receiver.as_deref() == Some("ptr"))
+            .expect("expected PointerFieldAccess for ptr->mValue");
+        assert!(matches!(ptr_field.call_kind, RawCallKind::PointerFieldAccess));
+
+        // obj.mValue should produce FieldAccess
+        let obj_field = field_accesses
+            .iter()
+            .find(|c| c.called_name == "mValue" && c.receiver.as_deref() == Some("obj"))
+            .expect("expected FieldAccess for obj.mValue");
+        assert!(matches!(obj_field.call_kind, RawCallKind::FieldAccess));
+
+        // Method calls should still be member/pointer_member, NOT field access
+        let method_calls: Vec<_> = result
+            .raw_calls
+            .iter()
+            .filter(|c| c.called_name == "doStuff")
+            .collect();
+        assert!(
+            method_calls.len() >= 2,
+            "expected at least 2 method calls for doStuff"
+        );
+        for mc in &method_calls {
+            assert!(
+                matches!(mc.call_kind, RawCallKind::MemberAccess | RawCallKind::PointerMemberAccess),
+                "doStuff() should be MemberAccess/PointerMemberAccess, got {:?}",
+                mc.call_kind
+            );
+        }
+
+        // Deduplication: no field access event at the same line as a method call for doStuff
+        let dedup_violations: Vec<_> = field_accesses
+            .iter()
+            .filter(|fa| fa.called_name == "doStuff")
+            .collect();
+        assert!(
+            dedup_violations.is_empty(),
+            "field access events should be deduplicated against method calls: {:?}",
+            dedup_violations
+        );
+    }
+
+    #[test]
+    fn this_field_access_extraction() {
+        let source = r#"
+class Widget {
+public:
+    int mSize;
+    void update() {
+        int s = this->mSize;
+    }
+};
+"#;
+        let result = parse_cpp_file("test_this_field.cpp", source).unwrap();
+
+        let this_field: Vec<_> = result
+            .raw_calls
+            .iter()
+            .filter(|c| matches!(c.call_kind, RawCallKind::ThisFieldAccess))
+            .collect();
+        assert!(
+            !this_field.is_empty(),
+            "expected ThisFieldAccess for this->mSize"
+        );
+        assert_eq!(this_field[0].called_name, "mSize");
+        assert_eq!(this_field[0].receiver.as_deref(), Some("this"));
+    }
+
+    fn extract_type_usage_events(source: &str) -> Vec<RawRelationEvent> {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_cpp::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut ctx = Ctx {
+            file_path: "test_type_usage.cpp".to_string(),
+            source: source.as_bytes().to_vec(),
+            symbols: Vec::new(),
+            raw_calls: Vec::new(),
+            ns_stack: Vec::new(),
+            namespace_ids: HashSet::new(),
+        };
+        visit_tree(tree.root_node(), &mut ctx);
+        extract_type_usage_relation_events(tree.root_node(), &ctx)
+    }
+
+    #[test]
+    fn template_type_argument_extraction() {
+        let source = r#"
+class ShotFlags {};
+class MyVec {};
+
+void foo(MyVec<ShotFlags> param);
+ShotFlags bar();
+void baz(MyVec<MyVec<ShotFlags>> nested);
+"#;
+        let events = extract_type_usage_events(source);
+        let type_names: Vec<String> = events
+            .iter()
+            .filter(|e| e.relation_kind == RawRelationKind::TypeUsage)
+            .filter_map(|e| e.target_name.clone())
+            .collect();
+
+        assert!(
+            type_names.contains(&"ShotFlags".to_string()),
+            "ShotFlags should appear as typeUsage, got: {:?}",
+            type_names
+        );
+        assert!(
+            type_names.contains(&"MyVec".to_string()),
+            "MyVec should appear as typeUsage, got: {:?}",
+            type_names
+        );
+        let sf_count = type_names.iter().filter(|n| *n == "ShotFlags").count();
+        assert!(
+            sf_count >= 3,
+            "ShotFlags should appear at least 3 times (param, return, nested), got {}",
+            sf_count
+        );
+    }
+
+    #[test]
+    fn return_type_in_function_definition() {
+        let source = r#"
+class Widget {};
+
+Widget createWidget() {
+    return Widget();
+}
+"#;
+        let events = extract_type_usage_events(source);
+        let type_names: Vec<String> = events
+            .iter()
+            .filter(|e| e.relation_kind == RawRelationKind::TypeUsage)
+            .filter_map(|e| e.target_name.clone())
+            .collect();
+
+        assert!(
+            type_names.contains(&"Widget".to_string()),
+            "Widget return type should be captured as typeUsage, got: {:?}",
+            type_names
+        );
     }
 }

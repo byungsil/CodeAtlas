@@ -100,3 +100,46 @@
   attr (@call.event) qualifier = (source-text @qualifier)
   attr (@call.event) line = (plus (start-row @call) 1)
 }
+
+; ── Field access rules (MS19) ──────────────────────────────────────────
+; These match ALL field_expression nodes, including those inside
+; call_expression. Deduplication against method-call events happens in
+; the Rust parser (extract_graph_relation_events).
+
+(field_expression
+  argument: (identifier) @receiver
+  operator: "->"
+  field: (field_identifier) @field_name) @field_access
+{
+  node @field_access.event
+  attr (@field_access.event) relation_kind = "call"
+  attr (@field_access.event) call_kind = "pointer_field_access"
+  attr (@field_access.event) target_name = (source-text @field_name)
+  attr (@field_access.event) receiver = (source-text @receiver)
+  attr (@field_access.event) line = (plus (start-row @field_access) 1)
+}
+
+(field_expression
+  argument: (identifier) @receiver
+  operator: "."
+  field: (field_identifier) @field_name) @field_access
+{
+  node @field_access.event
+  attr (@field_access.event) relation_kind = "call"
+  attr (@field_access.event) call_kind = "field_access"
+  attr (@field_access.event) target_name = (source-text @field_name)
+  attr (@field_access.event) receiver = (source-text @receiver)
+  attr (@field_access.event) line = (plus (start-row @field_access) 1)
+}
+
+(field_expression
+  argument: (this) @receiver
+  field: (field_identifier) @field_name) @field_access
+{
+  node @field_access.event
+  attr (@field_access.event) relation_kind = "call"
+  attr (@field_access.event) call_kind = "this_field_access"
+  attr (@field_access.event) target_name = (source-text @field_name)
+  attr (@field_access.event) receiver = (source-text @receiver)
+  attr (@field_access.event) line = (plus (start-row @field_access) 1)
+}
