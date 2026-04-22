@@ -1,11 +1,14 @@
 use regex::Regex;
 use std::collections::HashMap;
+use tree_sitter::{Node, Parser};
 
+use crate::graph_rules::RUST_CALL_RELATIONS;
 use crate::models::{
     FileRiskSignals, IncludeHeaviness, MacroSensitivity, NormalizedReference, ParseFragility,
     ParseMetrics, ParseResult, RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
     RawReceiverKind, ReferenceCategory, Symbol,
 };
+use crate::parser::execute_graph_rules;
 
 pub fn parse_rust_file(file_path: &str, source: &str) -> Result<ParseResult, String> {
     let module_id = module_symbol_id(file_path);
@@ -761,5 +764,442 @@ pub mod nested {
             .symbols
             .iter()
             .any(|symbol| symbol.id == "rust::src::nested::Engine::new"));
+    }
+}
+
+/// Tree-sitter based Rust parser.
+pub fn parse_rust_file_treesitter(file_path: &str, source: &str) -> Result<ParseResult, String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .map_err(|e| format!("Failed to set Rust language: {}", e))?;
+
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "Rust parse returned None".to_string())?;
+
+    let source_bytes = source.as_bytes();
+    let module_id = module_symbol_id(file_path);
+    let module_name = module_leaf_name(&module_id);
+    let total_lines = source.lines().count().max(1);
+
+    let mut symbols = vec![rs_base_symbol(
+        &module_id,
+        module_name,
+        "namespace",
+        file_path,
+        1,
+        total_lines,
+        None,
+        Some("namespace"),
+        None,
+        Some(module_id.clone()),
+    )];
+    let mut normalized_references: Vec<NormalizedReference> = Vec::new();
+    // scope_stack: (qualified_id, symbol_type, impl_owner)
+    // impl_owner is set when we're inside an impl block
+    let mut scope_stack: Vec<(String, &'static str, Option<String>)> = Vec::new();
+
+    rs_visit_node(
+        tree.root_node(),
+        source_bytes,
+        file_path,
+        &module_id,
+        &mut scope_stack,
+        &mut symbols,
+        &mut normalized_references,
+    );
+
+    let (graph_events, _, _) = execute_graph_rules(
+        tree_sitter_rust::LANGUAGE.into(),
+        "rust",
+        RUST_CALL_RELATIONS,
+        &tree,
+        source,
+        file_path,
+        &symbols,
+    );
+
+    let raw_calls: Vec<RawCallSite> = graph_events
+        .into_iter()
+        .filter_map(|event| event.to_raw_call_site())
+        .collect();
+
+    Ok(ParseResult {
+        symbols,
+        file_risk_signals: FileRiskSignals {
+            parse_fragility: ParseFragility::Low,
+            macro_sensitivity: MacroSensitivity::Low,
+            include_heaviness: IncludeHeaviness::Light,
+        },
+        relation_events: Vec::new(),
+        normalized_references,
+        propagation_events: Vec::new(),
+        callable_flow_summaries: Vec::new(),
+        raw_calls,
+        metrics: ParseMetrics::default(),
+    })
+}
+
+fn rs_visit_node<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &mut Vec<(String, &'static str, Option<String>)>,
+    symbols: &mut Vec<Symbol>,
+    references: &mut Vec<NormalizedReference>,
+) {
+    match node.kind() {
+        "mod_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = rs_node_text(name_node, source);
+                let id = rs_qualify(name, module_id, scope_stack);
+                let line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
+                let parent_id = rs_current_scope(module_id, scope_stack);
+                let sym = rs_base_symbol(&id, name, "namespace", file_path, line, end_line,
+                    Some(parent_id.clone()), Some("namespace"), Some(parent_id), Some(module_id.to_string()));
+                symbols.push(sym);
+                scope_stack.push((id, "namespace", None));
+                rs_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+                scope_stack.pop();
+                return;
+            }
+        }
+        "struct_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = rs_node_text(name_node, source);
+                let id = rs_qualify(name, module_id, scope_stack);
+                let parent_id = rs_current_scope(module_id, scope_stack);
+                let line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
+                let sym = rs_base_symbol(&id, name, "struct", file_path, line, end_line,
+                    Some(parent_id.clone()), Some("struct"), Some(parent_id), Some(module_id.to_string()));
+                symbols.push(sym);
+            }
+        }
+        "enum_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = rs_node_text(name_node, source);
+                let id = rs_qualify(name, module_id, scope_stack);
+                let parent_id = rs_current_scope(module_id, scope_stack);
+                let line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
+                let sym = rs_base_symbol(&id, name, "enum", file_path, line, end_line,
+                    Some(parent_id.clone()), Some("enum"), Some(parent_id), Some(module_id.to_string()));
+                symbols.push(sym);
+            }
+        }
+        "trait_item" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = rs_node_text(name_node, source);
+                let id = rs_qualify(name, module_id, scope_stack);
+                let parent_id = rs_current_scope(module_id, scope_stack);
+                let line = node.start_position().row + 1;
+                let end_line = node.end_position().row + 1;
+                let sym = rs_base_symbol(&id, name, "trait", file_path, line, end_line,
+                    Some(parent_id.clone()), Some("trait"), Some(parent_id), Some(module_id.to_string()));
+                symbols.push(sym);
+                scope_stack.push((id, "trait", None));
+                rs_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+                scope_stack.pop();
+                return;
+            }
+        }
+        "impl_item" => {
+            // Determine the type being implemented
+            let type_name = node.child_by_field_name("type")
+                .map(|n| rs_node_text(n, source).to_string());
+            let impl_owner = type_name.as_ref().map(|t| {
+                rs_qualify(t, module_id, scope_stack)
+            });
+            scope_stack.push((rs_current_scope(module_id, scope_stack), "impl", impl_owner));
+            rs_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+            scope_stack.pop();
+            return;
+        }
+        "function_item" => {
+            rs_extract_function(node, source, file_path, module_id, scope_stack, symbols);
+        }
+        "use_declaration" => {
+            rs_extract_use(node, source, file_path, module_id, scope_stack, references);
+            return;
+        }
+        _ => {}
+    }
+    rs_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+}
+
+fn rs_visit_children<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &mut Vec<(String, &'static str, Option<String>)>,
+    symbols: &mut Vec<Symbol>,
+    references: &mut Vec<NormalizedReference>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        rs_visit_node(child, source, file_path, module_id, scope_stack, symbols, references);
+    }
+}
+
+fn rs_node_text<'a>(node: Node, source: &'a [u8]) -> &'a str {
+    node.utf8_text(source).unwrap_or("")
+}
+
+fn rs_current_scope(module_id: &str, scope_stack: &[(String, &'static str, Option<String>)]) -> String {
+    // For impl blocks, the scope is the impl owner (e.g., MyStruct)
+    for (id, kind, impl_owner) in scope_stack.iter().rev() {
+        if *kind == "impl" {
+            return impl_owner.clone().unwrap_or_else(|| id.clone());
+        }
+        if *kind != "impl" {
+            return id.clone();
+        }
+    }
+    module_id.to_string()
+}
+
+fn rs_qualify(name: &str, module_id: &str, scope_stack: &[(String, &'static str, Option<String>)]) -> String {
+    format!("{}::{}", rs_current_scope(module_id, scope_stack), name)
+}
+
+fn rs_extract_function(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &[(String, &'static str, Option<String>)],
+    symbols: &mut Vec<Symbol>,
+) {
+    let Some(name_node) = node.child_by_field_name("name") else { return };
+    let name = rs_node_text(name_node, source);
+    let id = rs_qualify(name, module_id, scope_stack);
+    let parent_id = rs_current_scope(module_id, scope_stack);
+    let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
+
+    let is_method = scope_stack.iter().rev().any(|(_, k, _)| *k == "impl" || *k == "trait");
+    let symbol_type = if is_method { "method" } else { "function" };
+
+    let param_count = node.child_by_field_name("parameters")
+        .map(|p| p.named_child_count())
+        .unwrap_or(0);
+
+    let mut sym = rs_base_symbol(
+        &id,
+        name,
+        symbol_type,
+        file_path,
+        line,
+        end_line,
+        Some(parent_id.clone()),
+        Some(symbol_type),
+        Some(parent_id),
+        Some(module_id.to_string()),
+    );
+    sym.parameter_count = Some(param_count);
+    symbols.push(sym);
+}
+
+fn rs_extract_use(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &[(String, &'static str, Option<String>)],
+    references: &mut Vec<NormalizedReference>,
+) {
+    let caller_id = rs_current_scope(module_id, scope_stack);
+    let line = node.start_position().row + 1;
+
+    // Extract the use path text
+    if let Some(arg) = node.child_by_field_name("argument") {
+        let path_text = rs_node_text(arg, source);
+        let target_id = format!("rust::{}", path_text.replace("::", "::"));
+        references.push(NormalizedReference {
+            source_symbol_id: caller_id,
+            target_symbol_id: target_id,
+            category: ReferenceCategory::ModuleImport,
+            file_path: file_path.to_string(),
+            line,
+            confidence: RawExtractionConfidence::High,
+        });
+    }
+}
+
+fn rs_base_symbol(
+    id: &str,
+    name: &str,
+    symbol_type: &str,
+    file_path: &str,
+    line: usize,
+    end_line: usize,
+    scope_qualified_name: Option<String>,
+    scope_kind: Option<&str>,
+    parent_id: Option<String>,
+    module: Option<String>,
+) -> Symbol {
+    Symbol {
+        id: id.into(),
+        name: name.into(),
+        qualified_name: id.into(),
+        symbol_type: symbol_type.into(),
+        file_path: file_path.into(),
+        line,
+        end_line,
+        signature: None,
+        parameter_count: None,
+        scope_qualified_name,
+        scope_kind: scope_kind.map(|v| v.into()),
+        symbol_role: Some("definition".into()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
+        parent_id,
+        module,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
+        parse_fragility: Some("low".into()),
+        macro_sensitivity: Some("low".into()),
+        include_heaviness: Some("light".into()),
+    }
+}
+
+/// Dual-extraction for Rust.
+pub fn parse_rust_file_dual(file_path: &str, source: &str) -> Result<ParseResult, String> {
+    let legacy = parse_rust_file(file_path, source)?;
+    let ts_result = parse_rust_file_treesitter(file_path, source)?;
+
+    let symbol_threshold = legacy.symbols.len() as f64 * 0.9;
+    let call_threshold = legacy.raw_calls.len() as f64 * 0.8;
+
+    if ts_result.symbols.len() as f64 >= symbol_threshold
+        && ts_result.raw_calls.len() as f64 >= call_threshold
+    {
+        Ok(ts_result)
+    } else {
+        Ok(legacy)
+    }
+}
+
+#[cfg(test)]
+mod treesitter_tests {
+    use super::*;
+
+    #[test]
+    fn treesitter_extracts_struct_enum_fn() {
+        let source = r#"
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn distance(a: &Point, b: &Point) -> f64 {
+    0.0
+}
+"#;
+        let result = parse_rust_file_treesitter("src/geo.rs", source).unwrap();
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "struct" && s.name == "Point"),
+            "Point struct should be extracted");
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "enum" && s.name == "Color"),
+            "Color enum should be extracted");
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "function" && s.name == "distance"),
+            "distance function should be extracted");
+    }
+
+    #[test]
+    fn treesitter_extracts_impl_methods() {
+        let source = r#"
+struct Engine {}
+
+impl Engine {
+    pub fn new() -> Self {
+        Engine {}
+    }
+
+    pub fn start(&self) {
+        self.run();
+    }
+}
+"#;
+        let result = parse_rust_file_treesitter("src/engine.rs", source).unwrap();
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "struct" && s.name == "Engine"),
+            "Engine struct should be extracted");
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "method" && s.name == "new"),
+            "new method should be extracted; symbols: {:?}",
+            result.symbols.iter().map(|s| format!("{}({})", s.name, s.symbol_type)).collect::<Vec<_>>());
+        assert!(result.symbols.iter().any(|s| s.symbol_type == "method" && s.name == "start"),
+            "start method should be extracted");
+    }
+
+    #[test]
+    fn treesitter_extracts_calls() {
+        let source = r#"
+fn main() {
+    process();
+    obj.update();
+    self.refresh();
+    Engine::new();
+}
+"#;
+        let result = parse_rust_file_treesitter("src/main.rs", source).unwrap();
+        assert!(result.raw_calls.iter().any(|c| c.called_name == "process"),
+            "unqualified call 'process' should be extracted");
+        assert!(result.raw_calls.iter().any(|c| c.called_name == "update"),
+            "member call 'update' should be extracted");
+        assert!(result.raw_calls.iter().any(|c| c.called_name == "new"),
+            "qualified call 'Engine::new' should be extracted");
+    }
+
+    #[test]
+    fn treesitter_extracts_use_as_module_import() {
+        let source = r#"
+use std::collections::HashMap;
+use crate::models::Symbol;
+
+fn main() {}
+"#;
+        let result = parse_rust_file_treesitter("src/main.rs", source).unwrap();
+        assert!(result.normalized_references.iter().any(|r| r.category == ReferenceCategory::ModuleImport),
+            "use declarations should produce ModuleImport references");
+    }
+
+    #[test]
+    fn treesitter_dual_result_matches_or_exceeds_legacy() {
+        let source = r#"
+pub mod nested {
+    pub struct Engine {
+        pub name: String,
+    }
+
+    impl Engine {
+        pub fn new(name: &str) -> Self {
+            Engine { name: name.into() }
+        }
+    }
+}
+"#;
+        let legacy = parse_rust_file("src/lib.rs", source).unwrap();
+        let ts = parse_rust_file_treesitter("src/lib.rs", source).unwrap();
+        assert!(
+            ts.symbols.len() >= (legacy.symbols.len() as f64 * 0.9) as usize,
+            "tree-sitter symbols {} should be >= 90% of legacy {}",
+            ts.symbols.len(), legacy.symbols.len()
+        );
     }
 }

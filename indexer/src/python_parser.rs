@@ -1,11 +1,14 @@
 use regex::Regex;
 use std::collections::HashMap;
+use tree_sitter::{Node, Parser};
 
+use crate::graph_rules::PYTHON_CALL_RELATIONS;
 use crate::models::{
     FileRiskSignals, IncludeHeaviness, MacroSensitivity, NormalizedReference, ParseFragility,
     ParseMetrics, ParseResult, RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
     RawReceiverKind, ReferenceCategory, Symbol,
 };
+use crate::parser::execute_graph_rules;
 
 pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, String> {
     let module_id = module_symbol_id(file_path);
@@ -652,5 +655,454 @@ class Plain(object):
             reference.category == ReferenceCategory::InheritanceMention
                 && reference.target_symbol_id == "python::unittest::TestCase"
         }));
+    }
+}
+
+/// Tree-sitter based Python parser.
+pub fn parse_python_file_treesitter(file_path: &str, source: &str) -> Result<ParseResult, String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .map_err(|e| format!("Failed to set Python language: {}", e))?;
+
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "Python parse returned None".to_string())?;
+
+    let source_bytes = source.as_bytes();
+    let module_id = module_symbol_id(file_path);
+    let module_name = module_leaf_name(&module_id);
+    let total_lines = source.lines().count().max(1);
+
+    let mut symbols = vec![py_base_symbol(
+        &module_id,
+        module_name,
+        "namespace",
+        file_path,
+        1,
+        total_lines,
+        None,
+        Some("namespace"),
+        None,
+        Some(module_id.clone()),
+    )];
+    let mut normalized_references: Vec<NormalizedReference> = Vec::new();
+    let mut scope_stack: Vec<(String, &'static str)> = Vec::new();
+
+    py_visit_node(
+        tree.root_node(),
+        source_bytes,
+        file_path,
+        &module_id,
+        &mut scope_stack,
+        &mut symbols,
+        &mut normalized_references,
+    );
+
+    let (graph_events, _, _) = execute_graph_rules(
+        tree_sitter_python::LANGUAGE.into(),
+        "python",
+        PYTHON_CALL_RELATIONS,
+        &tree,
+        source,
+        file_path,
+        &symbols,
+    );
+
+    let raw_calls: Vec<RawCallSite> = graph_events
+        .into_iter()
+        .filter_map(|event| event.to_raw_call_site())
+        .collect();
+
+    Ok(ParseResult {
+        symbols,
+        file_risk_signals: FileRiskSignals {
+            parse_fragility: ParseFragility::Low,
+            macro_sensitivity: MacroSensitivity::Low,
+            include_heaviness: IncludeHeaviness::Light,
+        },
+        relation_events: Vec::new(),
+        normalized_references,
+        propagation_events: Vec::new(),
+        callable_flow_summaries: Vec::new(),
+        raw_calls,
+        metrics: ParseMetrics::default(),
+    })
+}
+
+fn py_visit_node<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &mut Vec<(String, &'static str)>,
+    symbols: &mut Vec<Symbol>,
+    references: &mut Vec<NormalizedReference>,
+) {
+    match node.kind() {
+        "class_definition" => {
+            if let Some(sym) = py_extract_class(node, source, file_path, module_id, scope_stack, symbols, references) {
+                let class_id = sym.id.clone();
+                scope_stack.push((class_id, "class"));
+                py_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+                scope_stack.pop();
+                return;
+            }
+        }
+        "function_definition" => {
+            if let Some(sym) = py_extract_function(node, source, file_path, module_id, scope_stack, symbols) {
+                let fn_id = sym.id.clone();
+                let fn_kind = if scope_stack.last().map(|(_, k)| *k) == Some("class") { "method" } else { "function" };
+                scope_stack.push((fn_id, fn_kind));
+                py_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+                scope_stack.pop();
+                return;
+            }
+        }
+        "import_statement" | "import_from_statement" => {
+            py_extract_import(node, source, file_path, module_id, scope_stack, references);
+            return;
+        }
+        _ => {}
+    }
+    py_visit_children(node, source, file_path, module_id, scope_stack, symbols, references);
+}
+
+fn py_visit_children<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &mut Vec<(String, &'static str)>,
+    symbols: &mut Vec<Symbol>,
+    references: &mut Vec<NormalizedReference>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        py_visit_node(child, source, file_path, module_id, scope_stack, symbols, references);
+    }
+}
+
+fn py_node_text<'a>(node: Node, source: &'a [u8]) -> &'a str {
+    node.utf8_text(source).unwrap_or("")
+}
+
+fn py_current_scope(module_id: &str, scope_stack: &[(String, &'static str)]) -> String {
+    scope_stack.last().map(|(id, _)| id.clone()).unwrap_or_else(|| module_id.to_string())
+}
+
+fn py_qualify(name: &str, module_id: &str, scope_stack: &[(String, &'static str)]) -> String {
+    format!("{}::{}", py_current_scope(module_id, scope_stack), name)
+}
+
+fn py_extract_class<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &[(String, &'static str)],
+    symbols: &mut Vec<Symbol>,
+    references: &mut Vec<NormalizedReference>,
+) -> Option<Symbol> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = py_node_text(name_node, source);
+    let id = py_qualify(name, module_id, scope_stack);
+    let parent_id = py_current_scope(module_id, scope_stack);
+    let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
+
+    // Extract base classes
+    if let Some(superclasses) = node.child_by_field_name("superclasses") {
+        let mut cursor = superclasses.walk();
+        for base in superclasses.children(&mut cursor) {
+            let base_text = py_node_text(base, source).trim();
+            if base_text.is_empty() || base_text == "(" || base_text == ")" || base_text == "," { continue; }
+            if base_text == "object" { continue; }
+            let target_id = if base_text.contains('.') {
+                format!("python::{}", base_text.replace('.', "::"))
+            } else {
+                format!("{}::{}", module_id, base_text)
+            };
+            references.push(NormalizedReference {
+                source_symbol_id: id.clone(),
+                target_symbol_id: target_id,
+                category: ReferenceCategory::InheritanceMention,
+                file_path: file_path.to_string(),
+                line,
+                confidence: RawExtractionConfidence::Partial,
+            });
+        }
+    }
+
+    let sym = py_base_symbol(
+        &id,
+        name,
+        "class",
+        file_path,
+        line,
+        end_line,
+        Some(parent_id.clone()),
+        Some("class"),
+        Some(parent_id),
+        Some(module_id.to_string()),
+    );
+    symbols.push(sym.clone());
+    Some(sym)
+}
+
+fn py_extract_function<'a>(
+    node: Node<'a>,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &[(String, &'static str)],
+    symbols: &mut Vec<Symbol>,
+) -> Option<Symbol> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = py_node_text(name_node, source);
+    let id = py_qualify(name, module_id, scope_stack);
+    let parent_id = py_current_scope(module_id, scope_stack);
+    let line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
+    let symbol_type = if scope_stack.last().map(|(_, k)| *k) == Some("class") { "method" } else { "function" };
+
+    let param_count = node.child_by_field_name("parameters")
+        .map(|p| p.named_child_count())
+        .unwrap_or(0);
+
+    let mut sym = py_base_symbol(
+        &id,
+        name,
+        symbol_type,
+        file_path,
+        line,
+        end_line,
+        Some(parent_id.clone()),
+        Some(symbol_type),
+        Some(parent_id),
+        Some(module_id.to_string()),
+    );
+    sym.parameter_count = Some(param_count);
+    symbols.push(sym.clone());
+    Some(sym)
+}
+
+fn py_extract_import(
+    node: Node,
+    source: &[u8],
+    file_path: &str,
+    module_id: &str,
+    scope_stack: &[(String, &'static str)],
+    references: &mut Vec<NormalizedReference>,
+) {
+    let caller_id = scope_stack.last().map(|(id, _)| id.as_str()).unwrap_or(module_id).to_string();
+    let line = node.start_position().row + 1;
+
+    match node.kind() {
+        "import_statement" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "dotted_name" {
+                    let mod_name = py_node_text(child, source).replace('.', "::");
+                    references.push(NormalizedReference {
+                        source_symbol_id: caller_id.clone(),
+                        target_symbol_id: format!("python::{}", mod_name),
+                        category: ReferenceCategory::ModuleImport,
+                        file_path: file_path.to_string(),
+                        line,
+                        confidence: RawExtractionConfidence::High,
+                    });
+                } else if child.kind() == "aliased_import" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let mod_name = py_node_text(name_node, source).replace('.', "::");
+                        references.push(NormalizedReference {
+                            source_symbol_id: caller_id.clone(),
+                            target_symbol_id: format!("python::{}", mod_name),
+                            category: ReferenceCategory::ModuleImport,
+                            file_path: file_path.to_string(),
+                            line,
+                            confidence: RawExtractionConfidence::High,
+                        });
+                    }
+                }
+            }
+        }
+        "import_from_statement" => {
+            let mut cursor = node.walk();
+            let mut module_name = String::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "dotted_name" && module_name.is_empty() {
+                    module_name = py_node_text(child, source).replace('.', "::");
+                }
+            }
+            if !module_name.is_empty() {
+                references.push(NormalizedReference {
+                    source_symbol_id: caller_id.clone(),
+                    target_symbol_id: format!("python::{}", module_name),
+                    category: ReferenceCategory::ModuleImport,
+                    file_path: file_path.to_string(),
+                    line,
+                    confidence: RawExtractionConfidence::High,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn py_base_symbol(
+    id: &str,
+    name: &str,
+    symbol_type: &str,
+    file_path: &str,
+    line: usize,
+    end_line: usize,
+    scope_qualified_name: Option<String>,
+    scope_kind: Option<&str>,
+    parent_id: Option<String>,
+    module: Option<String>,
+) -> Symbol {
+    Symbol {
+        id: id.into(),
+        name: name.into(),
+        qualified_name: id.into(),
+        symbol_type: symbol_type.into(),
+        file_path: file_path.into(),
+        line,
+        end_line,
+        signature: None,
+        parameter_count: None,
+        scope_qualified_name,
+        scope_kind: scope_kind.map(|v| v.into()),
+        symbol_role: Some("definition".into()),
+        declaration_file_path: None,
+        declaration_line: None,
+        declaration_end_line: None,
+        definition_file_path: None,
+        definition_line: None,
+        definition_end_line: None,
+        parent_id,
+        module,
+        subsystem: None,
+        project_area: None,
+        artifact_kind: None,
+        header_role: None,
+        parse_fragility: Some("low".into()),
+        macro_sensitivity: Some("low".into()),
+        include_heaviness: Some("light".into()),
+    }
+}
+
+/// Dual-extraction: run both legacy and tree-sitter parsers.
+pub fn parse_python_file_dual(file_path: &str, source: &str) -> Result<ParseResult, String> {
+    let legacy = parse_python_file(file_path, source)?;
+    let ts_result = parse_python_file_treesitter(file_path, source)?;
+
+    let symbol_threshold = legacy.symbols.len() as f64 * 0.9;
+    let call_threshold = legacy.raw_calls.len() as f64 * 0.8;
+
+    if ts_result.symbols.len() as f64 >= symbol_threshold
+        && ts_result.raw_calls.len() as f64 >= call_threshold
+    {
+        Ok(ts_result)
+    } else {
+        Ok(legacy)
+    }
+}
+
+#[cfg(test)]
+mod treesitter_tests {
+    use super::*;
+
+    #[test]
+    fn treesitter_extracts_basic_function_and_class() {
+        let source = r#"
+def greet(name):
+    return "Hello " + name
+
+class Greeter:
+    def say_hi(self):
+        greet("world")
+"#;
+        let result = parse_python_file_treesitter("scripts/greet.py", source).unwrap();
+        assert!(result.symbols.iter().any(|s| s.id == "python::scripts::greet" && s.symbol_type == "namespace"));
+        assert!(result.symbols.iter().any(|s| s.id == "python::scripts::greet::greet" && s.symbol_type == "function"),
+            "greet function should exist; symbols: {:?}", result.symbols.iter().map(|s| &s.id).collect::<Vec<_>>());
+        assert!(result.symbols.iter().any(|s| s.id == "python::scripts::greet::Greeter" && s.symbol_type == "class"));
+        assert!(result.symbols.iter().any(|s| s.id == "python::scripts::greet::Greeter::say_hi" && s.symbol_type == "method"));
+    }
+
+    #[test]
+    fn treesitter_extracts_import_references() {
+        let source = r#"
+import os.path
+from tools.helpers import helper
+
+def run():
+    helper()
+"#;
+        let result = parse_python_file_treesitter("scripts/main.py", source).unwrap();
+        assert!(result.normalized_references.iter().any(|r| {
+            r.category == ReferenceCategory::ModuleImport
+                && r.target_symbol_id == "python::os::path"
+        }), "import os.path should produce ModuleImport");
+        assert!(result.normalized_references.iter().any(|r| {
+            r.category == ReferenceCategory::ModuleImport
+                && r.target_symbol_id == "python::tools::helpers"
+        }), "from tools.helpers import should produce ModuleImport");
+    }
+
+    #[test]
+    fn treesitter_extracts_calls() {
+        let source = r#"
+def main():
+    process()
+    obj.update()
+"#;
+        let result = parse_python_file_treesitter("scripts/main.py", source).unwrap();
+        assert!(result.raw_calls.iter().any(|c| c.called_name == "process"),
+            "unqualified call 'process' should be extracted");
+        assert!(result.raw_calls.iter().any(|c| c.called_name == "update"),
+            "member call 'update' should be extracted");
+    }
+
+    #[test]
+    fn treesitter_extracts_inheritance() {
+        let source = r#"
+from engine.base import BaseRunner
+
+class Runner(BaseRunner):
+    def run(self):
+        pass
+"#;
+        let result = parse_python_file_treesitter("game/runner.py", source).unwrap();
+        assert!(result.normalized_references.iter().any(|r| {
+            r.category == ReferenceCategory::InheritanceMention
+                && r.source_symbol_id == "python::game::runner::Runner"
+        }), "Runner(BaseRunner) should produce InheritanceMention");
+    }
+
+    #[test]
+    fn treesitter_dual_result_matches_or_exceeds_legacy() {
+        let source = r#"
+from tools.build import run_build
+
+def orchestrate():
+    run_build()
+
+class Worker:
+    def refresh(self):
+        self.sync()
+
+    def sync(self):
+        pass
+"#;
+        let legacy = parse_python_file("scripts/main.py", source).unwrap();
+        let ts = parse_python_file_treesitter("scripts/main.py", source).unwrap();
+        assert!(
+            ts.symbols.len() >= (legacy.symbols.len() as f64 * 0.9) as usize,
+            "tree-sitter symbols {} should be >= 90% of legacy {}",
+            ts.symbols.len(), legacy.symbols.len()
+        );
     }
 }

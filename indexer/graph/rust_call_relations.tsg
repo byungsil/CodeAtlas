@@ -1,0 +1,84 @@
+; Rust call-relation extraction rules for Milestone 18.
+; Patterns:
+;   func()              - unqualified
+;   self.method()       - this_pointer_access (self)
+;   obj.method()        - member_access
+;   Type::method()      - qualified
+;   Module::func()      - qualified
+
+; unqualified call: func()
+(call_expression
+  function: (identifier) @callee
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "unqualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; self.method() call
+(call_expression
+  function: (field_expression
+    value: (self) @receiver
+    field: (field_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "this_pointer_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; obj.method() with identifier receiver
+(call_expression
+  function: (field_expression
+    value: (identifier) @receiver
+    field: (field_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; chained call: make_x().method()
+(call_expression
+  function: (field_expression
+    value: (call_expression) @receiver
+    field: (field_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; Type::method() or Module::func() qualified call
+(call_expression
+  function: (scoped_identifier
+    path: (_) @qualifier
+    name: (identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "qualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) qualifier = (source-text @qualifier)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}

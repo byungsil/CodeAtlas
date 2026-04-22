@@ -1,0 +1,82 @@
+; TypeScript call-relation extraction rules for Milestone 18.
+; Patterns:
+;   func()                      - unqualified
+;   obj.method()                - member_access
+;   this.method()               - this_pointer_access
+;   Module.func()               - qualified
+;   new ClassName()             - class_instantiation (unqualified)
+;   makeX().method()            - member_access (chained)
+
+; unqualified call: func()
+(call_expression
+  function: (identifier) @callee
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "unqualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; this.method() call
+(call_expression
+  function: (member_expression
+    object: (this) @receiver
+    property: (property_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "this_pointer_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; obj.method() with identifier receiver
+(call_expression
+  function: (member_expression
+    object: (identifier) @receiver
+    property: (property_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; chained call: makeX().method()
+(call_expression
+  function: (member_expression
+    object: (call_expression) @receiver
+    property: (property_identifier) @callee)
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; new ClassName() instantiation
+(new_expression
+  constructor: (identifier) @callee
+  arguments: (arguments) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "unqualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}

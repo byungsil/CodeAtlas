@@ -52,6 +52,126 @@ thread_local! {
     static CPP_GRAPH_FILE: RefCell<Option<Result<GraphDslFile, String>>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    static LANG_GRAPH_FILES: RefCell<HashMap<&'static str, Option<Result<GraphDslFile, String>>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Generic graph rule execution used by all language parsers.
+/// Returns (events, compile_ms, execute_ms).
+pub fn execute_graph_rules(
+    language: tree_sitter::Language,
+    language_name: &'static str,
+    tsg_source: &str,
+    tree: &Tree,
+    source: &str,
+    file_path: &str,
+    symbols: &[Symbol],
+) -> (Vec<RawRelationEvent>, u128, u128) {
+    LANG_GRAPH_FILES.with(|slot| {
+        let mut compile_ms = 0u128;
+        {
+            let mut map = slot.borrow_mut();
+            if !map.contains_key(language_name) {
+                let compile_start = Instant::now();
+                let parsed = GraphDslFile::from_str(language.clone(), tsg_source)
+                    .map_err(|err| err.to_string());
+                compile_ms = compile_start.elapsed().as_millis();
+                map.insert(language_name, Some(parsed));
+            }
+        }
+
+        let functions = GraphFunctions::stdlib();
+        let globals = GraphVariables::new();
+        let config = GraphExecutionConfig::new(&functions, &globals).lazy(true);
+        let borrowed = slot.borrow();
+        let Some(Some(Ok(graph_file))) = borrowed.get(language_name) else {
+            return (Vec::new(), compile_ms, 0);
+        };
+
+        let execute_start = Instant::now();
+        let graph = match graph_file.execute(tree, source, &config, &NoCancellation) {
+            Ok(graph) => graph,
+            Err(_) => return (Vec::new(), compile_ms, execute_start.elapsed().as_millis()),
+        };
+        let execute_ms = execute_start.elapsed().as_millis();
+
+        let mut events = Vec::new();
+        for node_ref in graph.iter_nodes() {
+            let attrs = &graph[node_ref].attributes;
+            if !matches!(read_attr_str(attrs, "relation_kind"), Some("call" | "type_usage" | "inheritance")) {
+                continue;
+            }
+
+            let relation_kind = match read_attr_str(attrs, "relation_kind") {
+                Some("call") => RawRelationKind::Call,
+                Some("type_usage") => RawRelationKind::TypeUsage,
+                Some("inheritance") => RawRelationKind::Inheritance,
+                _ => continue,
+            };
+
+            let target_name = read_attr_string(attrs, "target_name");
+            let line = read_attr_u32(attrs, "line").map(|v| v as usize).unwrap_or(0);
+            if relation_kind == RawRelationKind::Call && (target_name.is_none() || line == 0) {
+                continue;
+            }
+
+            let qualifier = read_attr_string(attrs, "qualifier");
+            let confidence = match relation_kind {
+                RawRelationKind::Inheritance => RawExtractionConfidence::Partial,
+                RawRelationKind::TypeUsage => RawExtractionConfidence::Partial,
+                RawRelationKind::EnumValueUsage => RawExtractionConfidence::Partial,
+                RawRelationKind::Call => match read_attr_str(attrs, "call_kind") {
+                    Some("qualified") => RawExtractionConfidence::Partial,
+                    _ => {
+                        if read_attr_string(attrs, "receiver")
+                            .as_deref()
+                            .map(|r| r.contains('('))
+                            .unwrap_or(false)
+                        {
+                            RawExtractionConfidence::Partial
+                        } else {
+                            RawExtractionConfidence::High
+                        }
+                    }
+                },
+            };
+            let caller_id = read_enclosing_symbol_id_from_symbols(line, symbols);
+            let receiver = read_attr_string(attrs, "receiver");
+            let receiver_kind = receiver.as_deref().map(infer_receiver_kind_from_text);
+            let event = RawRelationEvent {
+                relation_kind: relation_kind.clone(),
+                source: RawEventSource::TreeSitterGraph,
+                confidence,
+                caller_id,
+                target_name,
+                call_kind: read_attr_str(attrs, "call_kind").and_then(parse_call_kind),
+                argument_count: read_attr_u32(attrs, "argument_count").map(|v| v as usize),
+                receiver,
+                receiver_kind,
+                qualifier,
+                qualifier_kind: None,
+                file_path: file_path.to_string(),
+                line,
+            };
+            events.push(event);
+        }
+
+        (events, compile_ms, execute_ms)
+    })
+}
+
+fn read_enclosing_symbol_id_from_symbols(line: usize, symbols: &[Symbol]) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+    symbols
+        .iter()
+        .filter(|s| s.line <= line && line <= s.end_line)
+        .min_by_key(|s| s.end_line.saturating_sub(s.line))
+        .map(|s| s.id.clone())
+}
+
 const DEFAULT_CPP_PARSE_TIMEOUT_MICROS: u64 = 60_000_000;
 const CPP_PARSE_TIMEOUT_MICROS_ENV: &str = "CODEATLAS_CPP_PARSE_TIMEOUT_MICROS";
 

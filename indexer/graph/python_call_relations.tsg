@@ -1,0 +1,51 @@
+; Python call-relation extraction rules for Milestone 18.
+; Patterns:
+;   func()              - unqualified
+;   self.method()       - this_pointer_access (self)
+;   obj.method()        - member_access
+;   Module.func()       - member_access (qualified by convention)
+
+; unqualified call: func()
+(call
+  function: (identifier) @callee
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "unqualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; self.method() call
+(call
+  function: (attribute
+    object: (identifier) @receiver
+    attribute: (identifier) @callee)
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; chained call: make_x().method()
+(call
+  function: (attribute
+    object: (call) @receiver
+    attribute: (identifier) @callee)
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "member_access"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) receiver = (source-text @receiver)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}

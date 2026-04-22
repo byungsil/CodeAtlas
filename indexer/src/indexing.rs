@@ -70,7 +70,7 @@ impl LanguageAdapter for LuaLanguageAdapter {
     }
 
     fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        lua_parser::parse_lua_file(file_path, source)
+        lua_parser::parse_lua_file_dual(file_path, source)
     }
 }
 
@@ -80,7 +80,7 @@ impl LanguageAdapter for PythonLanguageAdapter {
     }
 
     fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        python_parser::parse_python_file(file_path, source)
+        python_parser::parse_python_file_dual(file_path, source)
     }
 }
 
@@ -90,7 +90,7 @@ impl LanguageAdapter for TypeScriptLanguageAdapter {
     }
 
     fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        typescript_parser::parse_typescript_file(file_path, source)
+        typescript_parser::parse_typescript_file_dual(file_path, source)
     }
 }
 
@@ -100,7 +100,7 @@ impl LanguageAdapter for RustLanguageAdapter {
     }
 
     fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        rust_parser::parse_rust_file(file_path, source)
+        rust_parser::parse_rust_file_dual(file_path, source)
     }
 }
 
