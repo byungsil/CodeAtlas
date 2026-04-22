@@ -102,6 +102,7 @@ import {
   matchesMetadataFilters,
   isFragileCoverageSymbol,
   applyLimit,
+  shouldCompact,
 } from "./query-helpers";
 
 export const DEFAULT_DATA_DIR = process.argv[2] || process.env.CODEATLAS_DATA || DATA_DIR_NAME;
@@ -474,7 +475,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     targetField: "callerId" | "calleeId",
     limit: number,
     metadataFilters?: MetadataFilters,
-  ): { results: CallReference[]; totalCount: number; truncated: boolean } {
+    offset = 0,
+  ): { results: CallReference[]; totalCount: number; truncated: boolean; offset: number } {
     const refs = buildCallReferences(calls, targetField);
     const symbolMap = buildSymbolMap(refs.map((ref) => ref.symbolId));
     const filteredRefs = refs
@@ -495,9 +497,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     }
 
     return {
-      results: deduped.slice(0, limit),
+      results: deduped.slice(offset, offset + limit),
       totalCount: deduped.length,
-      truncated: deduped.length > limit,
+      truncated: offset + limit < deduped.length,
+      offset,
     };
   }
 
@@ -558,7 +561,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
-  ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
+    offset = 0,
+  ): { results: ResolvedReference[]; totalCount: number; truncated: boolean; offset: number } {
     const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
     const symbolMap = buildSymbolMap(
       rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
@@ -588,9 +592,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         || a.sourceQualifiedName.localeCompare(b.sourceQualifiedName));
 
     return {
-      results: references.slice(0, limit),
+      results: references.slice(offset, offset + limit),
       totalCount: references.length,
-      truncated: references.length > limit,
+      truncated: offset + limit < references.length,
+      offset,
     };
   }
 
@@ -1305,8 +1310,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "Find direct inbound callers for a function or method. Results are deduplicated by caller symbol and returned in deterministic order. Use compact=true for file-grouped navigation payloads.",
     {
       name: z.string().describe("Function or method name to inspect"),
-      compact: z.boolean().optional().describe("When true, return file-grouped compact format"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       limit: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Maximum deduplicated callers to return"),
+      offset: z.number().int().min(0).default(0).describe("Skip this many results for pagination. Use with window.hasMore to fetch subsequent pages"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to caller symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to caller symbols"),
       module: z.string().optional().describe("Optional module filter applied to caller symbols"),
@@ -1315,7 +1321,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
       recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
     },
-    async ({ name, compact, limit, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
+    async ({ name, compact, limit, offset, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1326,7 +1332,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const resolvedCallers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+      const resolvedCallers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters, offset);
       const recoveredCallers = resolvedCallers.totalCount === 0
         ? buildRecoveredCallerReferences(sym, limit, metadataFilters, context)
         : { results: [], totalCount: 0, truncated: false };
@@ -1340,6 +1346,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         truncated: callers.truncated,
         limitApplied: limit,
       });
+      payload.window = buildResultWindow(callers.results.length, callers.totalCount, callers.truncated, limit, offset);
       Object.assign(payload, buildResponseReliability({
         symbol: sym,
         relatedResultCount: resolvedCallers.totalCount,
@@ -1352,7 +1359,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         groupedByLanguage: buildMetadataGroupSummary(callers.results.map((caller) => caller.symbolId), (caller) => caller.language),
       });
 
-      const response: CallerQueryResponse | CompactCallerQueryResponse = compact
+      const response: CallerQueryResponse | CompactCallerQueryResponse = shouldCompact(compact, callers.totalCount)
         ? toCompactCallerQueryResponse(payload)
         : payload;
 
@@ -1433,15 +1440,16 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention", "enumValueUsage"]).optional().describe("Optional reference category filter"),
       filePath: z.string().optional().describe("Optional exact file path filter"),
       includeEnumValueUsage: z.boolean().optional().describe("When the exact target is an enum, also include aggregated enum-member value usage references"),
-      compact: z.boolean().optional().describe("When true, return only source/target identity fields needed for navigation"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum references to return"),
+      offset: z.number().int().min(0).default(0).describe("Skip this many results for pagination. Use with window.hasMore to fetch subsequent pages"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to source symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to source symbols"),
       module: z.string().optional().describe("Optional module filter applied to source symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to source symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to source symbols"),
     },
-    async ({ id, qualifiedName, category, filePath, includeEnumValueUsage, compact, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ id, qualifiedName, category, filePath, includeEnumValueUsage, compact, limit, offset, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1472,6 +1480,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         filePath,
         limit,
         metadataFilters,
+        offset,
       );
       const payload: ReferenceQueryResponse = {
         ...buildExactLookupResponse({
@@ -1483,7 +1492,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           relatedResultCount: references.totalCount,
           zeroResultLabel: "references",
         }),
-        window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit),
+        window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit, offset),
         references: references.results,
         totalCount: references.totalCount,
         truncated: references.truncated,
@@ -1494,7 +1503,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
         groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
       };
-      const response: ReferenceQueryResponse | CompactFileGroupedReferenceResponse = compact
+      const response: ReferenceQueryResponse | CompactFileGroupedReferenceResponse = shouldCompact(compact, references.totalCount)
         ? toFileGroupedReferenceQueryResponse(payload, references.results)
         : payload;
 
@@ -1612,7 +1621,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       id: z.string().optional().describe("Canonical exact target symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
-      compact: z.boolean().optional().describe("When true, return file-grouped compact format"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(2).describe("Maximum caller/callee traversal depth"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum result items per summarized section"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to impacted symbols"),
@@ -1646,7 +1655,8 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       }
 
       const payload: ImpactAnalysisResponse = buildImpactAnalysis(symbol, depth, limit, metadataFilters);
-      const response: ImpactAnalysisResponse | CompactImpactAnalysisResponse = compact
+      const impactResultCount = payload.directCallers.length + payload.directCallees.length + payload.directReferences.length;
+      const response: ImpactAnalysisResponse | CompactImpactAnalysisResponse = shouldCompact(compact, impactResultCount)
         ? toCompactImpactAnalysisResponse(payload)
         : payload;
 
@@ -1662,7 +1672,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       filePath: z.string().describe("Exact workspace-relative file path"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum symbols to return"),
-      compact: z.boolean().optional().describe("When true, return only compact symbol navigation fields"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
     },
     async ({ filePath, limit, compact }) => {
       const allSymbols = store.getFileSymbols(filePath);
@@ -1673,7 +1683,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
         symbols: symbols.results,
       };
-      const response: FileSymbolsResponse | CompactFileSymbolsResponse = compact
+      const response: FileSymbolsResponse | CompactFileSymbolsResponse = shouldCompact(compact, symbols.totalCount)
         ? toCompactFileSymbolsResponse(payload)
         : payload;
 
@@ -1688,7 +1698,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "List direct symbols whose enclosing namespace matches one exact namespace qualified name. Use compact=true for lighter navigation payloads.",
     {
       qualifiedName: z.string().describe("Exact namespace qualified name"),
-      compact: z.boolean().optional().describe("When true, return compact symbol records"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum symbols to return"),
     },
     async ({ qualifiedName, compact, limit }) => {
@@ -1705,7 +1715,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
         symbols: symbols.results,
       };
-      const response: NamespaceSymbolsResponse | CompactNamespaceSymbolsResponse = compact
+      const response: NamespaceSymbolsResponse | CompactNamespaceSymbolsResponse = shouldCompact(compact, symbols.totalCount)
         ? toCompactNamespaceSymbolsResponse(payload)
         : payload;
 
@@ -1720,7 +1730,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "List direct members for one exact class or struct qualified name in stable declaration order. Use compact=true for lighter navigation payloads.",
     {
       qualifiedName: z.string().describe("Exact class or struct qualified name"),
-      compact: z.boolean().optional().describe("When true, return compact member records"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum members to return"),
     },
     async ({ qualifiedName, compact, limit }) => {
@@ -1739,7 +1749,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         window: buildResultWindow(members.results.length, members.totalCount, members.truncated, limit),
         members: members.results,
       };
-      const response: ClassMembersOverviewResponse | CompactClassMembersResponse = compact
+      const response: ClassMembersOverviewResponse | CompactClassMembersResponse = shouldCompact(compact, members.totalCount)
         ? toCompactClassMembersResponse(payload)
         : payload;
 
@@ -1874,25 +1884,27 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     "Search symbols by name substring. Returns matching symbols with truncation indicator. Minimum query length is 3 characters. Use compact=true for lighter navigation payloads.",
     {
       query: z.string().describe(`Search query (minimum ${SEARCH_MIN_QUERY_LENGTH} characters; shorter queries return an empty result set)`),
-      compact: z.boolean().optional().describe("When true, return compact symbol records"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       type: z.enum(["function", "method", "class", "struct", "enum", "enumMember", "namespace", "variable", "typedef"]).optional().describe("Filter by symbol type"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum results to return"),
+      offset: z.number().int().min(0).default(0).describe("Skip this many results for pagination. Use with window.hasMore to fetch subsequent pages"),
       language: z.enum(["cpp", "lua", "python", "typescript", "rust"]).optional().describe("Optional language filter applied to result symbols"),
       subsystem: z.string().optional().describe("Optional subsystem filter applied to result symbols"),
       module: z.string().optional().describe("Optional module filter applied to result symbols"),
       projectArea: z.string().optional().describe("Optional project-area filter applied to result symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to result symbols"),
     },
-    async ({ query, compact, type, limit, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ query, compact, type, limit, offset, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
-      const { results, totalCount } = store.searchSymbols(query, type, limit, metadataFilters);
-      const truncated = totalCount > limit;
+      const { results: allResults, totalCount } = store.searchSymbols(query, type, offset + limit, metadataFilters);
+      const results = allResults.slice(offset, offset + limit);
+      const truncated = offset + limit < totalCount;
 
       const payload: SearchResponse = {
         query,
-        window: buildResultWindow(results.length, totalCount, truncated, limit),
+        window: buildResultWindow(results.length, totalCount, truncated, limit, offset),
         results,
         totalCount,
         truncated,
@@ -1900,7 +1912,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         ...metadataFilterEcho(metadataFilters),
         groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
       };
-      const response: SearchResponse | CompactSearchResponse = compact
+      const response: SearchResponse | CompactSearchResponse = shouldCompact(compact, totalCount)
         ? toCompactSearchResponse(payload)
         : payload;
 
@@ -2108,7 +2120,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       depth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum traversal depth"),
       direction: z.enum(["callees", "callers", "both"]).default("callees").describe("Traversal direction"),
       nodeCap: z.number().int().min(1).max(CALLGRAPH_MAX_NODE_CAP).default(CALLGRAPH_DEFAULT_NODE_CAP).describe("Maximum total nodes to expand before truncation"),
-      compact: z.boolean().optional().describe("When true, reduce root node metadata to compact navigation fields"),
+      compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
     },
     async ({ name, depth: maxDepth, direction, nodeCap, compact }) => {
       const symbols = store.getSymbolsByName(name);
@@ -2119,7 +2131,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       }
 
       const payload = buildCallGraphPayload(sym, maxDepth, direction, nodeCap);
-      const response: ReturnType<typeof buildCallGraphPayload> | CompactCallGraphResponse = compact
+      const response: ReturnType<typeof buildCallGraphPayload> | CompactCallGraphResponse = shouldCompact(compact, payload.nodeCount)
         ? toCompactCallGraphResponse(payload)
         : payload;
 

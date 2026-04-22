@@ -1,6 +1,13 @@
 import { Symbol } from "./models/symbol";
 import { MetadataFilters } from "./storage/store";
 import { MatchReason, MetadataGroupSummary } from "./models/responses";
+import { AUTO_COMPACT_THRESHOLD } from "./constants";
+
+export function shouldCompact(compact: boolean | undefined, resultCount: number): boolean {
+  if (compact === true) return true;
+  if (compact === false) return false;
+  return resultCount >= AUTO_COMPACT_THRESHOLD;
+}
 
 export function metadataFilterEcho(filters?: MetadataFilters): Partial<MetadataFilters> {
   return filters ?? {};

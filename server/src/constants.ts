@@ -7,6 +7,7 @@ export const CALLGRAPH_DEFAULT_DEPTH = 3;
 export const CALLGRAPH_MAX_DEPTH = 10;
 export const CALLGRAPH_DEFAULT_NODE_CAP = 200;
 export const CALLGRAPH_MAX_NODE_CAP = 1000;
+export const AUTO_COMPACT_THRESHOLD = 20;
 export const DATA_DIR_NAME = ".codeatlas";
 export const DB_FILENAME = "index.db";
 export const ACTIVE_DB_POINTER_FILENAME = "current-db.json";

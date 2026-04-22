@@ -2146,7 +2146,7 @@ describe("Compact mode for overview endpoints", () => {
 
 describe("Response structure consistency", () => {
   it("all symbol filePaths are workspace-relative", async () => {
-    const res = await request(app).get("/search?q=Game").expect(200);
+    const res = await request(app).get("/search?q=Game&compact=false").expect(200);
     for (const sym of res.body.results) {
       expect(sym.filePath).not.toMatch(/^[A-Z]:/i);
       expect(sym.filePath).not.toMatch(/^\//);

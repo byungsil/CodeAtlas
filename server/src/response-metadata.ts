@@ -350,6 +350,7 @@ export function buildCallerQueryResponse(params: {
   totalCount: number;
   truncated: boolean;
   limitApplied?: number;
+  offset?: number;
 }): CallerQueryResponse {
   const metadata = deriveLegacyLookupMetadata(params.candidateCount, params.rankedCandidates);
   return {
@@ -359,7 +360,7 @@ export function buildCallerQueryResponse(params: {
       factors: [],
     },
     symbol: params.symbol,
-    window: buildResultWindow(params.callers.length, params.totalCount, params.truncated, params.limitApplied),
+    window: buildResultWindow(params.callers.length, params.totalCount, params.truncated, params.limitApplied, params.offset),
     callers: params.callers,
     totalCount: params.totalCount,
     truncated: params.truncated,
@@ -430,12 +431,17 @@ export function buildResultWindow(
   totalCount: number,
   truncated: boolean,
   limitApplied?: number,
+  offset?: number,
 ): ResultWindow {
+  const effectiveOffset = offset ?? 0;
+  const hasMore = effectiveOffset + returnedCount < totalCount;
   return {
     returnedCount,
     totalCount,
     truncated,
     ...(limitApplied !== undefined ? { limitApplied } : {}),
+    ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
+    ...(hasMore ? { hasMore } : {}),
   };
 }
 

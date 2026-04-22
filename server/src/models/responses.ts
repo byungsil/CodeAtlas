@@ -443,6 +443,8 @@ export interface ResultWindow {
   totalCount: number;
   truncated: boolean;
   limitApplied?: number;
+  offset?: number;
+  hasMore?: boolean;
 }
 
 export interface FileSymbolsResponse {

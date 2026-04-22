@@ -94,6 +94,7 @@ import {
   matchesMetadataFilters,
   isFragileCoverageSymbol,
   applyLimit,
+  shouldCompact,
 } from "./query-helpers";
 
 interface DashboardWorkspaceSource {
@@ -182,8 +183,10 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     return { language, subsystem, module, projectArea, artifactKind };
   }
 
-  function parseCompactMode(value: unknown): boolean {
-    return value === "1" || value === "true" || value === true;
+  function parseCompactMode(value: unknown): boolean | undefined {
+    if (value === "1" || value === "true" || value === true) return true;
+    if (value === "0" || value === "false" || value === false) return false;
+    return undefined;
   }
 
   function parseHeuristicLookupContext(source: Record<string, unknown>): HeuristicLookupContext | undefined {
@@ -606,6 +609,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     targetField: "callerId" | "calleeId",
     limit: number,
     metadataFilters?: MetadataFilters,
+    offset = 0,
   ): { results: CallReference[]; totalCount: number; truncated: boolean } {
     const refs = buildCallRefs(calls, targetField);
     const symbolMap = buildSymbolMap(refs.map((ref) => ref.symbolId));
@@ -627,9 +631,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     }
 
     return {
-      results: deduped.slice(0, limit),
+      results: deduped.slice(offset, offset + limit),
       totalCount: deduped.length,
-      truncated: deduped.length > limit,
+      truncated: offset + limit < deduped.length,
     };
   }
 
@@ -641,6 +645,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     filePath?: string,
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
+    offset = 0,
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
     const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
     const symbolMap = buildSymbolMap(
@@ -671,9 +676,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
         || a.sourceQualifiedName.localeCompare(b.sourceQualifiedName));
 
     return {
-      results: references.slice(0, limit),
+      results: references.slice(offset, offset + limit),
       totalCount: references.length,
-      truncated: references.length > limit,
+      truncated: offset + limit < references.length,
     };
   }
 
@@ -1403,6 +1408,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const { name } = req.params;
     const compact = parseCompactMode(req.query.compact);
     const limit = Math.min(parseInt((req.query.limit as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
+    const offset = Math.max(parseInt((req.query.offset as string) || "0", 10), 0);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
     const context = parseCallerLookupContext(req.query as Record<string, unknown>);
     const { symbol: sym, candidateCount, rankedCandidates } = resolveFunctionSymbol(name, context);
@@ -1411,7 +1417,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
-    const resolvedCallers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit, metadataFilters);
+    const resolvedCallers = buildUniqueCallRefs(store.getCallers(sym.id), "callerId", limit, metadataFilters, offset);
     const recoveredCallers = resolvedCallers.totalCount === 0
       ? buildRecoveredCallerRefs(sym, limit, metadataFilters, context)
       : { results: [], totalCount: 0, truncated: false };
@@ -1437,7 +1443,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       groupedByModule: buildMetadataGroupSummary(callerIds, (caller) => caller.module),
       groupedByLanguage: buildMetadataGroupSummary(callerIds, (caller) => caller.language),
     });
-    if (compact) {
+    if (shouldCompact(compact, callers.totalCount)) {
       return res.json(toCompactCallerQueryResponse(response));
     }
     return res.json(response);
@@ -1482,6 +1488,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       req.query.includeEnumValueUsage === "1"
       || req.query.includeEnumValueUsage === "true";
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const offset = Math.max(parseInt((req.query.offset as string) || "0", 10), 0);
     const compact = parseCompactMode(req.query.compact);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
@@ -1511,6 +1518,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       filePath,
       limit,
       metadataFilters,
+      offset,
     );
     const response: ReferenceQueryResponse = {
       ...buildExactLookupResponse({
@@ -1522,7 +1530,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
         relatedResultCount: references.totalCount,
         zeroResultLabel: "references",
       }),
-      window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit),
+      window: buildResultWindow(references.results.length, references.totalCount, references.truncated, limit, offset),
       references: references.results,
       totalCount: references.totalCount,
       truncated: references.truncated,
@@ -1533,7 +1541,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       groupedByModule: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.module),
       groupedByLanguage: buildMetadataGroupSummary(references.results.map((reference) => reference.sourceSymbolId), (source) => source.language),
     };
-    if (compact) {
+    if (shouldCompact(compact, references.totalCount)) {
       return res.json(toFileGroupedReferenceQueryResponse(response, references.results));
     }
     return res.json(response);
@@ -1661,7 +1669,8 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     }
 
     const payload = buildImpactAnalysis(symbol, maxDepth, limit, metadataFilters);
-    if (compact) {
+    const impactResultCount = payload.directCallers.length + payload.directCallees.length + payload.directReferences.length;
+    if (shouldCompact(compact, impactResultCount)) {
       return res.json(toCompactImpactAnalysisResponse(payload));
     }
     return res.json(payload);
@@ -1733,7 +1742,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
       symbols: symbols.results,
     };
-    if (compact) {
+    if (shouldCompact(compact, symbols.totalCount)) {
       const compactResponse: CompactFileSymbolsResponse = toCompactFileSymbolsResponse(response);
       return res.json(compactResponse);
     }
@@ -1761,7 +1770,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       window: buildResultWindow(symbols.results.length, symbols.totalCount, symbols.truncated, limit),
       symbols: symbols.results,
     };
-    if (compact) {
+    if (shouldCompact(compact, symbols.totalCount)) {
       return res.json(toCompactNamespaceSymbolsResponse(payload));
     }
     return res.json(payload);
@@ -1790,7 +1799,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       window: buildResultWindow(members.results.length, members.totalCount, members.truncated, limit),
       members: members.results,
     };
-    if (compact) {
+    if (shouldCompact(compact, members.totalCount)) {
       return res.json(toCompactClassMembersResponse(payload));
     }
     return res.json(payload);
@@ -1860,24 +1869,27 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const compact = parseCompactMode(req.query.compact);
     const type = req.query.type as string | undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
+    const offset = Math.max(parseInt((req.query.offset as string) || "0", 10), 0);
     const metadataFilters = parseMetadataFilters(req.query as Record<string, unknown>);
 
     if (!q) {
       return res.status(400).json({ error: "Missing query parameter 'q'", code: "BAD_REQUEST" } as ErrorResponse);
     }
 
-    const { results, totalCount } = store.searchSymbols(q, type, limit, metadataFilters);
+    const { results: allResults, totalCount } = store.searchSymbols(q, type, offset + limit, metadataFilters);
+    const results = allResults.slice(offset, offset + limit);
+    const truncated = offset + limit < totalCount;
     const response: SearchResponse = {
       query: q,
-      window: buildResultWindow(results.length, totalCount, totalCount > limit, limit),
+      window: buildResultWindow(results.length, totalCount, truncated, limit, offset),
       results,
       totalCount,
-      truncated: totalCount > limit,
+      truncated,
       language: metadataFilters?.language,
       ...metadataFilterEcho(metadataFilters),
       groupedByLanguage: buildMetadataGroupSummary(results.map((result) => result.id), (symbol) => symbol.language),
     };
-    if (compact) {
+    if (shouldCompact(compact, totalCount)) {
       return res.json(toCompactSearchResponse(response));
     }
     return res.json(response);
@@ -2068,7 +2080,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     }
 
     const response = buildCallGraphResponse(sym, maxDepth, direction, nodeCap);
-    if (compact) {
+    if (shouldCompact(compact, response.nodeCount)) {
       const compactResponse: CompactCallGraphResponse = toCompactCallGraphResponse(response);
       return res.json(compactResponse);
     }
