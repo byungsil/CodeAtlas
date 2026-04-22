@@ -233,6 +233,10 @@ export class JsonStore {
       && (!filePath || reference.filePath === filePath));
   }
 
+  getMemberAccessReferences(_symbolName: string, _ownerNames?: string[], _filePath?: string): ReferenceRecord[] {
+    return [];
+  }
+
   getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
     return this.load().propagationEvents
       .filter((event) => matchesPropagationDirection(event, symbolId, "incoming"))

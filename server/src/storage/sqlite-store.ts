@@ -343,6 +343,49 @@ export class SqliteStore {
     return rows.map(toReference);
   }
 
+  getMemberAccessReferences(symbolName: string, ownerNames?: string[], filePath?: string): ReferenceRecord[] {
+    if (!this.hasTable("raw_calls")) {
+      return [];
+    }
+
+    const filters = [
+      "called_name = ?",
+      "call_kind IN ('memberAccess', 'pointerMemberAccess')",
+    ];
+    const values: Array<string> = [symbolName];
+    if (ownerNames && ownerNames.length > 0) {
+      const likeClauses = ownerNames.map(() => "receiver LIKE ? COLLATE NOCASE");
+      filters.push(`(${likeClauses.join(" OR ")})`);
+      values.push(...ownerNames.map((name) => `%${name}%`));
+    }
+    if (filePath) {
+      filters.push("file_path = ?");
+      values.push(filePath);
+    }
+
+    const sql = `
+      SELECT caller_id, called_name, call_kind, file_path, line
+      FROM raw_calls
+      WHERE ${filters.join(" AND ")}
+      ORDER BY file_path, line, caller_id
+    `;
+    const rows = this.db.prepare(sql).all(...values) as Array<{
+      caller_id: string;
+      called_name: string;
+      call_kind: string;
+      file_path: string;
+      line: number;
+    }>;
+    return rows.map((row) => ({
+      sourceSymbolId: row.caller_id,
+      targetSymbolId: row.called_name,
+      category: "memberAccess" as const,
+      filePath: row.file_path,
+      line: row.line,
+      confidence: "partial" as const,
+    }));
+  }
+
   getIncomingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[] {
     return this.getPropagation(symbolId, "incoming", propagationKinds, filePath);
   }

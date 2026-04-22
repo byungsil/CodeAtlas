@@ -39,6 +39,7 @@ import {
   InvestigateWorkflowResponse,
   ReferenceCategory,
   ReferenceQueryResponse,
+  ReferenceRecord,
   ResolvedReference,
   StructureOverviewSummary,
   SymbolLookupResponse,
@@ -646,8 +647,13 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
     offset = 0,
+    memberAccessContext?: { symbolName: string; ownerNames: string[] },
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean } {
-    const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    const rawReferences: ReferenceRecord[] = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    if (memberAccessContext && (!category || category === "memberAccess") && typeof store.getMemberAccessReferences === "function") {
+      const ownerFilter = memberAccessContext.ownerNames.length > 0 ? memberAccessContext.ownerNames : undefined;
+      rawReferences.push(...store.getMemberAccessReferences(memberAccessContext.symbolName, ownerFilter, filePath));
+    }
     const symbolMap = buildSymbolMap(
       rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
     );
@@ -1487,6 +1493,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const includeEnumValueUsage =
       req.query.includeEnumValueUsage === "1"
       || req.query.includeEnumValueUsage === "true";
+    const includeMemberAccess =
+      req.query.includeMemberAccess === "1"
+      || req.query.includeMemberAccess === "true";
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     const offset = Math.max(parseInt((req.query.offset as string) || "0", 10), 0);
     const compact = parseCompactMode(req.query.compact);
@@ -1512,6 +1521,17 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
+    let memberAccessContext: { symbolName: string; ownerNames: string[] } | undefined;
+    if (includeMemberAccess && symbol.parentId) {
+      const parentSymbol = store.getSymbolById(symbol.parentId);
+      if (parentSymbol) {
+        memberAccessContext = {
+          symbolName: symbol.name,
+          ownerNames: Array.from(new Set([parentSymbol.name, parentSymbol.qualifiedName])),
+        };
+      }
+    }
+
     const references = buildResolvedReferences(
       buildReferenceTargetIds(symbol, category, includeEnumValueUsage),
       category,
@@ -1519,6 +1539,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       limit,
       metadataFilters,
       offset,
+      memberAccessContext,
     );
     const response: ReferenceQueryResponse = {
       ...buildExactLookupResponse({

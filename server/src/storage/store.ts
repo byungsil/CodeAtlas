@@ -76,6 +76,7 @@ export interface Store {
   getRawCallersByCalledName?(calledName: string): RawCallCandidateRecord[];
   getRawCallsByCallerId?(callerId: string): RawCallCandidateRecord[];
   getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[];
+  getMemberAccessReferences?(symbolName: string, ownerNames?: string[], filePath?: string): ReferenceRecord[];
   getMembers(parentId: string): Symbol[];
   getDirectBases(symbolId: string): Symbol[];
   getDirectDerived(symbolId: string): Symbol[];

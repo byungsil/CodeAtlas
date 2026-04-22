@@ -46,6 +46,7 @@ import {
   PropagationPathStep,
   ReferenceCategory,
   ReferenceQueryResponse,
+  ReferenceRecord,
   ResolvedReference,
   SearchResponse,
   StructureOverviewSummary,
@@ -562,8 +563,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     limit = SEARCH_DEFAULT_LIMIT,
     metadataFilters?: MetadataFilters,
     offset = 0,
+    memberAccessContext?: { symbolName: string; ownerNames: string[] },
   ): { results: ResolvedReference[]; totalCount: number; truncated: boolean; offset: number } {
-    const rawReferences = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    const rawReferences: ReferenceRecord[] = targetSymbolIds.flatMap((targetSymbolId) => store.getReferences(targetSymbolId, category, filePath));
+    if (memberAccessContext && (!category || category === "memberAccess") && typeof store.getMemberAccessReferences === "function") {
+      const ownerFilter = memberAccessContext.ownerNames.length > 0 ? memberAccessContext.ownerNames : undefined;
+      rawReferences.push(...store.getMemberAccessReferences(memberAccessContext.symbolName, ownerFilter, filePath));
+    }
     const symbolMap = buildSymbolMap(
       rawReferences.flatMap((reference) => [reference.sourceSymbolId, reference.targetSymbolId]),
     );
@@ -1437,9 +1443,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       id: z.string().optional().describe("Canonical exact target symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact target symbol qualified name"),
-      category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention", "enumValueUsage"]).optional().describe("Optional reference category filter"),
+      category: z.enum(["functionCall", "methodCall", "classInstantiation", "moduleImport", "typeUsage", "inheritanceMention", "enumValueUsage", "memberAccess"]).optional().describe("Optional reference category filter"),
       filePath: z.string().optional().describe("Optional exact file path filter"),
       includeEnumValueUsage: z.boolean().optional().describe("When the exact target is an enum, also include aggregated enum-member value usage references"),
+      includeMemberAccess: z.boolean().default(true).describe("Include member-access and pointer-member-access call sites as memberAccess references. Defaults to true; set false to exclude"),
       compact: z.boolean().optional().describe("Force compact (true) or full (false) format. Omit to auto-compact when results >= 20"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum references to return"),
       offset: z.number().int().min(0).default(0).describe("Skip this many results for pagination. Use with window.hasMore to fetch subsequent pages"),
@@ -1449,7 +1456,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       projectArea: z.string().optional().describe("Optional project-area filter applied to source symbols"),
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to source symbols"),
     },
-    async ({ id, qualifiedName, category, filePath, includeEnumValueUsage, compact, limit, offset, language, subsystem, module, projectArea, artifactKind }) => {
+    async ({ id, qualifiedName, category, filePath, includeEnumValueUsage, includeMemberAccess, compact, limit, offset, language, subsystem, module, projectArea, artifactKind }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1474,6 +1481,17 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
+      let memberAccessContext: { symbolName: string; ownerNames: string[] } | undefined;
+      if (includeMemberAccess !== false && symbol.parentId) {
+        const parentSymbol = store.getSymbolById(symbol.parentId);
+        if (parentSymbol) {
+          memberAccessContext = {
+            symbolName: symbol.name,
+            ownerNames: Array.from(new Set([parentSymbol.name, parentSymbol.qualifiedName])),
+          };
+        }
+      }
+
       const references = buildResolvedReferences(
         buildReferenceTargetIds(symbol, category, includeEnumValueUsage),
         category,
@@ -1481,6 +1499,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         limit,
         metadataFilters,
         offset,
+        memberAccessContext,
       );
       const payload: ReferenceQueryResponse = {
         ...buildExactLookupResponse({

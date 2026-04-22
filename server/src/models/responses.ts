@@ -272,7 +272,8 @@ export type ReferenceCategory =
   | "moduleImport"
   | "typeUsage"
   | "inheritanceMention"
-  | "enumValueUsage";
+  | "enumValueUsage"
+  | "memberAccess";
 
 export interface ReferenceRecord {
   sourceSymbolId: string;
