@@ -11,7 +11,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use crate::build_metadata;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
 use crate::discovery;
-use crate::indexing::{default_language_registry, make_relative, parse_file_strict, parse_files, parse_files_strict};
+use crate::indexing::{default_language_registry, make_relative, parse_discovered_files_with_progress, parse_file_strict, parse_files_strict};
 use crate::ignore::IgnoreRules;
 use crate::incremental;
 use crate::parser;
@@ -406,7 +406,9 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("file watcher channel disconnected unexpectedly".to_string());
+            }
         }
 
         if let Some(changed) = state.take_ready_batch(debounce) {
@@ -459,8 +461,6 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
             }
         }
     }
-
-    Ok(())
 }
 
 fn drain_queued_events(
@@ -491,6 +491,8 @@ fn drain_queued_events(
     }
 }
 
+const WATCH_FULL_REBUILD_BATCH_SIZE: usize = 2048;
+
 fn run_full_index(
     workspace_root: &Path,
     workspace_name: &str,
@@ -515,57 +517,140 @@ fn run_full_index(
     let registry = default_language_registry();
     let supported_languages = registry.supported_languages();
     let files = discovery::find_source_files_with_feedback(workspace_root, verbose, &supported_languages);
-    let all_relative: Vec<String> = files
-        .iter()
-        .map(|entry| make_relative(workspace_root, &entry.path))
-        .collect();
+    let total_files = files.len();
 
-    println!("Initial index: {} files", all_relative.len());
+    println!("Initial index: {} files", total_files);
     let start = Instant::now();
 
-    let (
-        raw_symbols,
-        raw_calls,
-        relation_events,
-        local_propagation_events,
-        callable_flow_summaries,
-        file_records,
-        _parse_metrics,
-    ) = parse_files(workspace_root, &all_relative, verbose, build_metadata.as_ref());
+    // --- Stage 1: parse in batches and stream raw data straight to DB ---
+    let mut all_relation_events = Vec::new();
+    db.begin().map_err(|e| format!("DB begin: {}", e))?;
+    db.clear().map_err(|e| format!("DB clear: {}", e))?;
+    for (batch_index, batch) in files.chunks(WATCH_FULL_REBUILD_BATCH_SIZE).enumerate() {
+        let batch_start = batch_index * WATCH_FULL_REBUILD_BATCH_SIZE;
+        let (
+            raw_symbols,
+            raw_calls,
+            relation_events,
+            local_propagation_events,
+            callable_flow_summaries,
+            file_records,
+            _metrics,
+        ) = parse_discovered_files_with_progress(
+            workspace_root,
+            batch,
+            verbose,
+            build_metadata.as_ref(),
+            &registry,
+            batch_start,
+            total_files,
+        );
+        db.write_raw_symbols(&raw_symbols)
+            .map_err(|e| format!("DB write raw symbols: {}", e))?;
+        db.write_raw_calls(&raw_calls)
+            .map_err(|e| format!("DB write raw calls: {}", e))?;
+        db.write_propagation_events(&local_propagation_events)
+            .map_err(|e| format!("DB write propagation: {}", e))?;
+        db.write_callable_flow_summaries(&callable_flow_summaries, &raw_symbols)
+            .map_err(|e| format!("DB write callable summaries: {}", e))?;
+        db.write_files(&file_records)
+            .map_err(|e| format!("DB write files: {}", e))?;
+        all_relation_events.extend(relation_events);
+    }
+
+    // --- Stage 2: merge symbols, write representative symbols, build FTS ---
+    let raw_symbols = db.read_all_raw_symbols()
+        .map_err(|e| format!("DB read raw symbols: {}", e))?;
     let symbols = resolver::merge_symbols(&raw_symbols);
-    let calls = resolver::resolve_calls(&raw_calls, &symbols);
-    let normalized_references = parser::normalize_relation_events(&relation_events, &symbols);
-    let boundary_propagation_events = resolver::derive_function_boundary_propagation_events(
-        &raw_calls,
-        &calls,
-        &callable_flow_summaries,
-        &symbols,
-    );
-    let propagation_events = resolver::merge_propagation_events(
-        &local_propagation_events,
-        &boundary_propagation_events,
-    );
-    db.write_all(
-        &raw_symbols,
-        &symbols,
-        &calls,
-        &normalized_references,
-        &propagation_events,
-        &callable_flow_summaries,
-        &file_records,
-    )
-        .map_err(|e| format!("DB write: {}", e))?;
+    drop(raw_symbols);
+    let symbol_count = symbols.len();
+    db.write_symbols(&symbols)
+        .map_err(|e| format!("DB write symbols: {}", e))?;
+    db.rebuild_fts()
+        .map_err(|e| format!("DB rebuild FTS: {}", e))?;
+
+    // --- Stage 3: write references ---
+    let mut staged_references = parser::normalize_relation_events(&all_relation_events, &symbols);
+    drop(all_relation_events);
+    let valid_symbol_ids: HashSet<String> = symbols.iter().map(|s| s.id.clone()).collect();
+    let symbol_types = symbols.iter().map(|s| (s.id.clone(), s.symbol_type.clone())).collect();
+    storage::filter_persistable_references(&mut staged_references, &valid_symbol_ids, &symbol_types);
+    drop(valid_symbol_ids);
+    drop(symbol_types);
+    db.write_references(&staged_references)
+        .map_err(|e| format!("DB write references: {}", e))?;
+    drop(staged_references);
+    db.cleanup_dangling_references()
+        .map_err(|e| format!("DB cleanup references: {}", e))?;
+
+    // --- Stage 4: resolve calls in batches ---
+    let caller_parent_by_id: std::collections::HashMap<String, String> = symbols
+        .iter()
+        .filter_map(|s| s.parent_id.as_ref().map(|p| (s.id.clone(), p.clone())))
+        .collect();
+    let callee_name_by_id: std::collections::HashMap<String, String> = symbols
+        .iter()
+        .map(|s| (s.id.clone(), s.name.clone()))
+        .collect();
+    drop(symbols);
+
+    let file_paths: Vec<String> = db.read_file_records()
+        .map_err(|e| format!("DB read file records: {}", e))?
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    for file_batch in file_paths.chunks(WATCH_FULL_REBUILD_BATCH_SIZE) {
+        let raw_calls = db.read_raw_calls_for_paths(file_batch)
+            .map_err(|e| format!("DB read raw calls: {}", e))?;
+        let calls = resolver::resolve_calls_with_db(&raw_calls, &[], &db);
+        if !calls.is_empty() {
+            db.write_calls(&calls)
+                .map_err(|e| format!("DB write calls: {}", e))?;
+        }
+    }
+
+    // --- Stage 5: boundary propagation in batches ---
+    let mut propagation_keys = db.read_all_propagation_event_keys()
+        .map_err(|e| format!("DB read propagation keys: {}", e))?;
+    for file_batch in file_paths.chunks(WATCH_FULL_REBUILD_BATCH_SIZE) {
+        let raw_calls = db.read_raw_calls_for_paths(file_batch)
+            .map_err(|e| format!("DB read raw calls (boundary): {}", e))?;
+        let calls = db.read_calls_for_paths(file_batch)
+            .map_err(|e| format!("DB read calls (boundary): {}", e))?;
+        let callee_ids: Vec<String> = calls.iter().map(|c| c.callee_id.clone()).collect();
+        let callable_summaries = db.read_callable_flow_summaries_for_ids(&callee_ids)
+            .map_err(|e| format!("DB read summaries (boundary): {}", e))?;
+        let boundary_events = resolver::derive_function_boundary_propagation_events_with_indexes(
+            &raw_calls,
+            &calls,
+            &callable_summaries,
+            &caller_parent_by_id,
+            &callee_name_by_id,
+        );
+        let unique: Vec<_> = boundary_events
+            .into_iter()
+            .filter(|e| propagation_keys.insert(storage::propagation_event_storage_key(e)))
+            .collect();
+        if !unique.is_empty() {
+            db.write_propagation_events(&unique)
+                .map_err(|e| format!("DB write boundary propagation: {}", e))?;
+        }
+    }
+
+    db.commit().map_err(|e| format!("DB commit: {}", e))?;
     db.write_index_metadata(&expected_index_metadata)
         .map_err(|e| format!("DB write metadata: {}", e))?;
     db.checkpoint().map_err(|e| format!("DB checkpoint: {}", e))?;
+    let call_count = db.count_calls().unwrap_or(0);
+    drop(db);
 
     publish_watch_db(&staging_db_path, data_dir)?;
 
     println!(
         "  Done in {}ms: {} symbols, {} calls",
         start.elapsed().as_millis(),
-        symbols.len(),
-        calls.len()
+        symbol_count,
+        call_count
     );
     Ok(())
 }

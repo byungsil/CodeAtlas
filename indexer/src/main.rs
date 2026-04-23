@@ -166,9 +166,22 @@ fn main() {
     println!("Workspace name: {}", resolved_workspace_name);
 
     if watch_mode {
-        if let Err(e) = watcher::watch(&workspace_root, &resolved_workspace_name, verbose_mode) {
-            eprintln!("Watch error: {}", e);
-            std::process::exit(1);
+        const MAX_WATCH_RESTARTS: u32 = 10;
+        let mut restart_count = 0u32;
+        loop {
+            match watcher::watch(&workspace_root, &resolved_workspace_name, verbose_mode) {
+                Ok(()) => break,
+                Err(e) => {
+                    restart_count += 1;
+                    if restart_count > MAX_WATCH_RESTARTS {
+                        eprintln!("Watch error (giving up after {} restarts): {}", MAX_WATCH_RESTARTS, e);
+                        std::process::exit(1);
+                    }
+                    let delay_secs = restart_count.min(30);
+                    eprintln!("Watch error (restart {}/{}): {}. Retrying in {}s...", restart_count, MAX_WATCH_RESTARTS, e, delay_secs);
+                    std::thread::sleep(std::time::Duration::from_secs(delay_secs as u64));
+                }
+            }
         }
         return;
     }

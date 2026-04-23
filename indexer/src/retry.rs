@@ -42,7 +42,15 @@ where
 }
 
 pub fn should_retry_io_error(err: &io::Error) -> bool {
-    matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock)
+    if matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock) {
+        return true;
+    }
+    // Windows ERROR_SHARING_VIOLATION (os error 32): file locked by another handle
+    #[cfg(windows)]
+    if err.raw_os_error() == Some(32) {
+        return true;
+    }
+    false
 }
 
 pub fn open_database_with_retry(path: &Path, operation: &str) -> Result<storage::Database, String> {
