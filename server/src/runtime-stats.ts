@@ -109,15 +109,21 @@ export function getMcpRuntimeStatsSnapshot(): McpRuntimeStatsSnapshot {
   return snapshotFromState(state);
 }
 
+const MERGE_CACHE_TTL_MS = 3000;
+let mergeCache: { dir: string; snapshot: McpRuntimeStatsSnapshot; expireAt: number } | null = null;
+
 export function readPersistedMcpRuntimeStatsSnapshot(statsFilePath?: string): McpRuntimeStatsSnapshot {
   if (!statsFilePath) {
     return getMcpRuntimeStatsSnapshot();
   }
-  const persisted = readStatsFile(statsFilePath);
-  if (!persisted) {
-    return emptySnapshot();
+  const statsDir = path.dirname(statsFilePath);
+  const now = Date.now();
+  if (mergeCache && mergeCache.dir === statsDir && now < mergeCache.expireAt) {
+    return mergeCache.snapshot;
   }
-  return persisted;
+  const snapshot = mergeAllStatsInDirectory(statsDir);
+  mergeCache = { dir: statsDir, snapshot, expireAt: now + MERGE_CACHE_TTL_MS };
+  return snapshot;
 }
 
 export function resetMcpRuntimeStatsForTests(): void {
@@ -224,6 +230,83 @@ function persistStatsIfConfigured(): void {
   } catch {
     // Best-effort persistence only.
   }
+}
+
+function mergeAllStatsInDirectory(statsDir: string): McpRuntimeStatsSnapshot {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(statsDir).filter((e) => e.endsWith(".json"));
+  } catch {
+    return emptySnapshot();
+  }
+  if (entries.length === 0) {
+    return emptySnapshot();
+  }
+
+  const toolMap = new Map<string, ToolAccumulator>();
+  let allRecentCalls: ToolCallEvent[] = [];
+  let earliestStart = Infinity;
+  let totalToolCalls = 0;
+  let totalErrors = 0;
+  let totalLatencyMs = 0;
+
+  for (const entry of entries) {
+    const snap = readStatsFile(path.join(statsDir, entry));
+    if (!snap) continue;
+    const startMs = Date.parse(snap.startedAt);
+    if (startMs && startMs < earliestStart) earliestStart = startMs;
+    for (const tool of snap.tools) {
+      const existing = toolMap.get(tool.toolName);
+      if (existing) {
+        existing.count += tool.count;
+        existing.errorCount += tool.errorCount;
+        existing.totalLatencyMs += tool.totalLatencyMs;
+        if (tool.lastCalledAt && (!existing.lastCalledAt || tool.lastCalledAt > existing.lastCalledAt)) {
+          existing.lastCalledAt = tool.lastCalledAt;
+        }
+        if (tool.lastErrorAt && (!existing.lastErrorAt || tool.lastErrorAt > existing.lastErrorAt)) {
+          existing.lastErrorAt = tool.lastErrorAt;
+        }
+      } else {
+        toolMap.set(tool.toolName, {
+          count: tool.count,
+          errorCount: tool.errorCount,
+          totalLatencyMs: tool.totalLatencyMs,
+          lastCalledAt: tool.lastCalledAt,
+          lastErrorAt: tool.lastErrorAt,
+        });
+      }
+    }
+    allRecentCalls = allRecentCalls.concat(snap.recentCalls);
+  }
+
+  allRecentCalls.sort((a, b) => (b.timestamp > a.timestamp ? 1 : b.timestamp < a.timestamp ? -1 : 0));
+  allRecentCalls = allRecentCalls.slice(0, MAX_RECENT_CALLS);
+
+  const tools = Array.from(toolMap.entries())
+    .map(([toolName, v]) => ({
+      toolName,
+      count: v.count,
+      errorCount: v.errorCount,
+      totalLatencyMs: v.totalLatencyMs,
+      avgLatencyMs: v.count > 0 ? round2(v.totalLatencyMs / v.count) : 0,
+      ...(v.lastCalledAt ? { lastCalledAt: v.lastCalledAt } : {}),
+      ...(v.lastErrorAt ? { lastErrorAt: v.lastErrorAt } : {}),
+    }))
+    .sort((a, b) => b.count - a.count || b.totalLatencyMs - a.totalLatencyMs || a.toolName.localeCompare(b.toolName));
+
+  for (const t of tools) { totalToolCalls += t.count; totalErrors += t.errorCount; totalLatencyMs += t.totalLatencyMs; }
+  const startedAtMs = earliestStart === Infinity ? Date.now() : earliestStart;
+
+  return {
+    startedAt: new Date(startedAtMs).toISOString(),
+    uptimeSeconds: round2((Date.now() - startedAtMs) / 1000),
+    totalToolCalls,
+    totalErrors,
+    avgLatencyMs: totalToolCalls > 0 ? round2(totalLatencyMs / totalToolCalls) : 0,
+    tools,
+    recentCalls: allRecentCalls,
+  };
 }
 
 function readStatsFile(statsFilePath: string): McpRuntimeStatsSnapshot | null {

@@ -134,10 +134,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       const startedAt = Date.now();
       try {
         const result = await handler(args);
+        const isError = result && typeof result === "object" && result.isError === true;
+        const errorMessage = isError
+          ? (result.content?.[0]?.text ?? "tool returned isError")
+          : undefined;
         recordMcpToolCall({
           toolName: name,
           elapsedMs: Date.now() - startedAt,
-          ok: true,
+          ok: !isError,
+          ...(errorMessage ? { errorMessage } : {}),
         });
         return result;
       } catch (error) {

@@ -557,9 +557,13 @@ function renderOverview(data) {
   ).join("");
   document.getElementById("toolTable").innerHTML = toolRows || '<tr><td colspan="4" class="hint">No MCP calls observed yet.</td></tr>';
 
-  const recentRows = (mcp.recentCalls || []).map((call) =>
-    "<li><span class='key'>" + escHtml(call.toolName) + " · " + escHtml(call.ok ? "ok" : "error") + "</span><span class='value'>" + escHtml(formatMs(call.elapsedMs)) + " · " + escHtml(formatDateTime(call.timestamp)) + "</span></li>"
-  ).join("");
+  const recentRows = (mcp.recentCalls || []).map((call) => {
+    var statusClass = call.ok ? '' : ' status-warn';
+    var statusText = call.ok ? 'ok' : 'error';
+    var rel = formatRelativeTime(call.timestamp);
+    var timeText = rel ? rel + ' · ' + formatDateTime(call.timestamp) : formatDateTime(call.timestamp);
+    return "<li><span class='key" + statusClass + "'>" + escHtml(call.toolName) + " · " + escHtml(statusText) + "</span><span class='value'>" + escHtml(formatMs(call.elapsedMs)) + " · " + escHtml(timeText) + "</span></li>";
+  }).join("");
   document.getElementById("recentCalls").innerHTML = recentRows || '<li><span class="key">No recent activity</span><span class="value"></span></li>';
 }
 
@@ -773,6 +777,18 @@ function formatDuration(seconds) {
 function formatDateTime(value) {
   if (!value) return '-';
   try { return new Date(value).toLocaleString(); } catch { return String(value); }
+}
+
+function formatRelativeTime(value) {
+  if (!value) return '';
+  try {
+    var diff = Math.floor((Date.now() - new Date(value).getTime()) / 1000);
+    if (diff < 0) return '';
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
+  } catch { return ''; }
 }
 
 function escHtml(s) {
