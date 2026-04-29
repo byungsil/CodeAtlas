@@ -133,6 +133,7 @@ export function resetMcpRuntimeStatsForTests(): void {
 export function prepareRuntimeStatsPath(dataDir: string): string {
   const statsFilePath = resolveRuntimeStatsPath(dataDir);
   migrateLegacyStatsFile(path.resolve(dataDir), statsFilePath);
+  cleanupOrphanedStatsFragments(path.dirname(statsFilePath));
   return statsFilePath;
 }
 
@@ -171,6 +172,23 @@ function resolveCacheRoot(): string {
     return path.join(path.resolve(xdgCacheHome), "CodeAtlas");
   }
   return path.join(os.homedir(), ".cache", "CodeAtlas");
+}
+
+function cleanupOrphanedStatsFragments(statsDir: string): void {
+  const ORPHAN_PATTERN = /^1-[0-9a-f]+\.json$/;
+  try {
+    const entries = fs.readdirSync(statsDir);
+    for (const entry of entries) {
+      if (!ORPHAN_PATTERN.test(entry)) continue;
+      try {
+        fs.unlinkSync(path.join(statsDir, entry));
+      } catch {
+        // Best-effort cleanup; ignore per-file failures.
+      }
+    }
+  } catch {
+    // Directory may not exist yet; nothing to clean.
+  }
 }
 
 function migrateLegacyStatsFile(dataDir: string, statsFilePath: string): void {

@@ -120,9 +120,11 @@ export function openStore(dataDir: string): Store {
 export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   server: McpServer;
   store: Store;
+  statsPath: string;
   close: () => void;
 } {
-  initRuntimeStats(prepareRuntimeStatsPath(dataDir));
+  const statsPath = prepareRuntimeStatsPath(dataDir);
+  initRuntimeStats(statsPath);
   const store = openStore(dataDir);
   const server = new McpServer({
     name: "codeatlas",
@@ -2189,7 +2191,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     closable.close?.();
   };
 
-  return { server, store, close };
+  return { server, store, statsPath, close };
 }
 
 export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<void> {
@@ -2199,7 +2201,7 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
   const fs = await import("fs");
   const path = await import("path");
   const config = loadConfig();
-  const { server, store, close } = createMcpServer(dataDir);
+  const { server, store, statsPath, close } = createMcpServer(dataDir);
 
   let watcherProcess: ReturnType<typeof childProcess.spawn> | null = null;
   let watcherStderr = "";
@@ -2264,7 +2266,17 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
   }
 
   if (config.dashboard.autoOpen) {
-    const httpApp = createApp(store);
+    const resolvedDataDir = path.resolve(dataDir);
+    const httpApp = createApp(store, {
+      dashboardWorkspaces: [{
+        id: "primary",
+        label: "primary",
+        dataDir: resolvedDataDir,
+        store,
+        statsPath,
+        isPrimary: true,
+      }],
+    });
     const port = config.dashboard.port;
     const httpServer = httpApp.listen(port, () => {
       const url = `http://localhost:${port}/dashboard/`;
