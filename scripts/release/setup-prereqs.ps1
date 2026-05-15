@@ -33,7 +33,7 @@ if (Test-CommandAvailable "node") {
 }
 
 if (-not (Test-Path (Join-Path $ServerRoot "package.json"))) {
-    throw "Missing bundled server package.json under $ServerRoot"
+    throw "Missing bundled server package.json under $ServerRoot. Run this script from a packaged Windows release folder (not from source repo scripts/release)."
 }
 
 if (-not (Test-CommandAvailable "npm")) {

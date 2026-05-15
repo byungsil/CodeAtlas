@@ -17,6 +17,10 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
 - Rust 1.75+
 - Node.js 18+
 - npm
+- C/C++ build toolchain (required by native dependencies)
+  - Windows: Visual Studio Build Tools (MSVC + Windows SDK)
+  - Linux: GCC/G++ (for example `build-essential`)
+  - macOS: Xcode Command Line Tools (`clang`)
 
 ## Quick Start
 
@@ -26,8 +30,12 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
 git clone https://github.com/byungsil/CodeAtlas.git
 cd CodeAtlas
 
+# one-touch Windows setup (prereqs + toolchain check + indexer/server build)
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-all.ps1
+
 # optional Windows bootstrap for Node.js, npm, Rust, and server npm deps
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-prereqs.ps1
+# note: C/C++ build tools are not installed by this script
 
 cd indexer
 cargo build --release
@@ -35,6 +43,11 @@ cargo build --release
 cd ../server
 npm install
 ```
+
+Windows note:
+- `setup-all.ps1` checks MSVC toolchain availability.
+- If Build Tools are installed but `cl.exe` is not visible in the current shell, the script warns and continues.
+- If indexer build fails in that case, rerun from `Developer PowerShell for VS`.
 
 ### 2. Index a Workspace
 

@@ -16,6 +16,8 @@ Folder layout
 - server\package-lock.json
 - setup-prereqs.cmd
 - setup-prereqs.ps1
+- setup-all.cmd
+- setup-all.ps1
 - mcp-config.example.json
 - index-workspace.cmd
 - watch-workspace.cmd
@@ -27,8 +29,8 @@ Quick start
 1. Index a workspace
    index-workspace.cmd E:\Dev\your-project --full --workspace-name your-project
 
-2. Install Node.js and server runtime dependencies
-   setup-prereqs.cmd
+2. One-touch runtime setup + artifact validation
+   setup-all.cmd
 
 3. Register MCP using mcp-config.example.json as a template
 
@@ -37,6 +39,7 @@ Quick start
 Command usage
 -------------
 index-workspace.cmd <workspace-root> [additional indexer args...]
+setup-all.cmd
 setup-prereqs.cmd
 
 Advanced / optional manual commands
