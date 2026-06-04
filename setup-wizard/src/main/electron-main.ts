@@ -378,11 +378,13 @@ ipcMain.handle('create-directory', async (_event, dirPath: string) => {
     const parentDir = path.dirname(dirPath);
     if (!fs.existsSync(parentDir)) {
       log(LogLevel.ERROR, 'FS', `Parent directory does not exist: ${parentDir}`);
+      emitLogToRenderer(_event as any, { level: 'ERROR', step: 'FS', message: `Parent directory does not exist: ${parentDir}` });
       throw new Error(`Parent directory does not exist: ${parentDir}`);
     }
     
     const beforeExists = fs.existsSync(dirPath);
     log(LogLevel.INFO, 'FS', `Before mkdir - exists: ${beforeExists}, path: ${dirPath}`);
+    emitLogToRenderer(_event as any, { level: 'INFO', step: 'FS', message: `Before mkdir - exists: ${beforeExists}, path: ${dirPath}` });
     
     if (!beforeExists) {
       fs.mkdirSync(dirPath, { recursive: true });
@@ -392,6 +394,18 @@ ipcMain.handle('create-directory', async (_event, dirPath: string) => {
     } else {
       emitLogToRenderer(_event as any, { level: 'DEBUG', step: 'FS', message: `Directory already exists: ${dirPath}` });
     }
+    
+    // Remove hidden attribute on Windows so folder is visible in Explorer
+    if (process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`attrib -h "${dirPath}"`, { shell: 'cmd.exe' });
+        log(LogLevel.DEBUG, 'FS', `Removed hidden attribute from ${dirPath}`);
+      } catch (err: any) {
+        log(LogLevel.WARN, 'FS', `Failed to remove hidden attribute: ${err.message}`);
+      }
+    }
+    
     return true;
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
