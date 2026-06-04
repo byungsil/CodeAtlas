@@ -47,5 +47,8 @@ contextBridge.exposeInMainWorld('codeatlas', {
 
   // Process spawning (for launching servers)
   spawnProcess: (command: string, args: string[], options?: { cwd?: string; shell?: boolean }) => 
-    ipcRenderer.invoke('spawn-process', command, args, options || {})
+    ipcRenderer.invoke('spawn-process', command, args, options || {}),
+
+  // App paths
+  getAppDataPath: () => ipcRenderer.invoke('get-appdata-path')
 });

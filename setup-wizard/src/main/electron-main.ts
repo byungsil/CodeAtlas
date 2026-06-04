@@ -7,6 +7,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import { initLogger, log, LogLevel, getRecentLogs, readLogFile, clearLogFile } from './logger';
 
 let mainWindow: BrowserWindow | null = null;
@@ -364,6 +365,12 @@ ipcMain.handle('spawn-process', async (event, command: string, args: string[], o
     emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Process started (PID: ${child.pid})` });
     resolve({ success: true, pid: child.pid });
   });
+});
+
+ipcMain.handle('get-appdata-path', async () => {
+  const appData = process.env.APPDATA || os.homedir();
+  emitLogToRenderer(null as any, { level: 'INFO', step: 'PATH', message: `AppData path: ${appData}` });
+  return appData;
 });
 
 // Log retrieval IPC handlers

@@ -557,7 +557,7 @@ async function launchCodeAtlas() {
     };
 
     // Write config file
-    const appData = process.env.APPDATA || process.env.HOME || '';
+    const appData = await window.codeatlas.getAppDataPath();
     const configDir = await window.codeatlas.joinPaths(appData, 'CodeAtlas');
     const configPath = await window.codeatlas.joinPaths(configDir, 'codeatlas-config.json');
     
