@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('codeatlas', {
   
   // Paths
   getRepoRoot: () => ipcRenderer.invoke('get-repo-root'),
+  joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', parts),
+  fileExists: (filePath: string) => ipcRenderer.invoke('file-exists', filePath),
 
   // Log operations
   getRecentLogs: (count?: number) => ipcRenderer.invoke('get-recent-logs', count || 100),
@@ -41,5 +43,9 @@ contextBridge.exposeInMainWorld('codeatlas', {
   
   offLogEntry: () => {
     ipcRenderer.removeAllListeners('log-entry');
-  }
+  },
+
+  // Process spawning (for launching servers)
+  spawnProcess: (command: string, args: string[], options?: { cwd?: string; shell?: boolean }) => 
+    ipcRenderer.invoke('spawn-process', command, args, options || {})
 });

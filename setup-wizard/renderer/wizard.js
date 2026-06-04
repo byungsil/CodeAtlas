@@ -522,16 +522,11 @@ async function launchCodeAtlas() {
     await window.codeatlas.writeConfig(configPath, config);
 
     // Try to start the server
-    const serverPath = require('path').join(repoRoot, 'server', 'dist', 'app.js');
-    if (require('fs').existsSync(serverPath)) {
+    const serverPath = await window.codeatlas.joinPaths(repoRoot, 'server', 'dist', 'app.js');
+    if (await window.codeatlas.fileExists(serverPath)) {
       addLogEntry('INFO', 'LAUNCH', `Starting server: ${serverPath}`);
       // Server is built - try to launch
-      const child = require('child_process').spawn('node', [serverPath], {
-        cwd: repoRoot,
-        detached: true,
-        stdio: 'ignore'
-      });
-      child.unref();
+      await window.codeatlas.spawnProcess('node', [serverPath], { cwd: repoRoot });
     }
 
     addLogEntry('INFO', 'LAUNCH', 'CodeAtlas launched successfully');
@@ -543,15 +538,19 @@ async function launchCodeAtlas() {
   }
 }
 
-function openReadme() {
+async function openReadme() {
   // Open README in default browser/editor
-  window.codeatlas.getRepoRoot().then(root => {
-    const readmePath = require('path').join(root, 'README.md');
-    if (require('fs').existsSync(readmePath)) {
+  try {
+    const root = await window.codeatlas.getRepoRoot();
+    const readmePath = await window.codeatlas.joinPaths(root, 'README.md');
+    if (await window.codeatlas.fileExists(readmePath)) {
       addLogEntry('INFO', 'README', `Opening ${readmePath}`);
-      const child = require('child_process').spawn('start', [readmePath], { shell: true });
+      // Use default system opener
+      await window.codeatlas.spawnProcess('start', [readmePath], { shell: true });
     }
-  });
+  } catch (err) {
+    addLogEntry('ERROR', 'README', `Failed to open README: ${err.message}`);
+  }
 }
 
 // ==================== Utility Functions ====================

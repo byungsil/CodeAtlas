@@ -344,6 +344,28 @@ ipcMain.handle('get-repo-root', async (event) => {
   return repoRoot;
 });
 
+ipcMain.handle('join-paths', async (_event, ...parts: string[]) => {
+  const joined = path.join(...parts);
+  emitLogToRenderer(_event, { level: 'INFO', step: 'PATH', message: `Joined paths: ${joined}` });
+  return joined;
+});
+
+ipcMain.handle('file-exists', async (event, filePath: string) => {
+  const exists = fs.existsSync(filePath);
+  emitLogToRenderer(event, { level: 'INFO', step: 'FS', message: `File ${exists ? 'found' : 'not found'}: ${filePath}` });
+  return exists;
+});
+
+ipcMain.handle('spawn-process', async (event, command: string, args: string[], options?: any) => {
+  emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Spawning: ${command} ${args.join(' ')}` });
+  return new Promise((resolve) => {
+    const child = cp.spawn(command, args, { ...options, detached: true, stdio: 'ignore' });
+    child.unref();
+    emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Process started (PID: ${child.pid})` });
+    resolve({ success: true, pid: child.pid });
+  });
+});
+
 // Log retrieval IPC handlers
 ipcMain.handle('get-recent-logs', async (_event, count: number = 100) => {
   const logs = getRecentLogs(count);
