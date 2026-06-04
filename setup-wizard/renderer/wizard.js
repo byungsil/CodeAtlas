@@ -14,6 +14,10 @@ const setupData = {
   config: {}
 };
 
+// Build/install state tracking
+let isBuildingIndexer = false;
+let isInstallingServer = false;
+
 // Log state
 let logEntries = [];
 const MAX_LOG_DISPLAY = 200;
@@ -42,6 +46,12 @@ function showStep(stepIndex) {
 }
 
 function nextStep() {
+  // Prevent navigation during build/install
+  if (isBuildingIndexer || isInstallingServer) {
+    addLogEntry('WARN', 'NAV', 'Cannot navigate while build/install is in progress');
+    return;
+  }
+  
   if (currentStep < totalSteps - 1) {
     showStep(currentStep + 1);
   }
@@ -71,6 +81,14 @@ function updateProgress(activeStep) {
 function updateFooter(stepIndex) {
   const btnBack = document.getElementById('btnBack');
   const btnNext = document.getElementById('btnNext');
+
+  // Disable next button during build/install
+  if (isBuildingIndexer || isInstallingServer) {
+    btnNext.disabled = true;
+    return; // Don't update other properties while disabled
+  } else {
+    btnNext.disabled = false;
+  }
 
   // Back button
   if (stepIndex === 0 || stepIndex === totalSteps - 1) {
@@ -299,23 +317,24 @@ async function buildIndexer() {
 
   addLogEntry('INFO', 'BUILD', 'Starting Rust indexer build...');
   
+  isBuildingIndexer = true; // Disable next button
   btn.disabled = true;
   btn.textContent = '빌드 중...';
   outputEl.textContent = '';
 
-  // Listen for command output
-  window.codeatlas.onCommandOutput((data) => {
-    if (data.type === 'stdout' || data.type === 'stderr') {
-      outputEl.textContent += data.text;
-      outputEl.scrollTop = outputEl.scrollHeight;
-      
-      // Also log to logs panel
-      const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
-      addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'BUILD', prefix + data.text.trim());
-    }
-  });
-
   try {
+    // Listen for command output
+    window.codeatlas.onCommandOutput((data) => {
+      if (data.type === 'stdout' || data.type === 'stderr') {
+        outputEl.textContent += data.text;
+        outputEl.scrollTop = outputEl.scrollHeight;
+        
+        // Also log to logs panel
+        const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
+        addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'BUILD', prefix + data.text.trim());
+      }
+    });
+
     const repoRoot = await window.codeatlas.getRepoRoot();
     const indexerPath = await window.codeatlas.joinPaths(repoRoot, 'indexer');
     
@@ -342,10 +361,11 @@ async function buildIndexer() {
     statusEl.className = 'status-message error';
     statusEl.textContent = `❌ 오류: ${err.message}`;
     addLogEntry('ERROR', 'BUILD', `Build error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '빌드 시작';
+    isBuildingIndexer = false; // Re-enable next button
   }
-
-  btn.disabled = false;
-  btn.textContent = '빌드 시작';
 }
 
 // ==================== Step 3: Server Setup ====================
@@ -357,22 +377,23 @@ async function installServer() {
 
   addLogEntry('INFO', 'SERVER', 'Starting server setup...');
   
+  isInstallingServer = true; // Disable next button
   btn.disabled = true;
   btn.textContent = '설치 중...';
   outputEl.textContent = '';
 
-  // Listen for command output
-  window.codeatlas.onCommandOutput((data) => {
-    if (data.type === 'stdout' || data.type === 'stderr') {
-      outputEl.textContent += data.text;
-      outputEl.scrollTop = outputEl.scrollHeight;
-      
-      const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
-      addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'SERVER', prefix + data.text.trim());
-    }
-  });
-
   try {
+    // Listen for command output
+    window.codeatlas.onCommandOutput((data) => {
+      if (data.type === 'stdout' || data.type === 'stderr') {
+        outputEl.textContent += data.text;
+        outputEl.scrollTop = outputEl.scrollHeight;
+        
+        const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
+        addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'SERVER', prefix + data.text.trim());
+      }
+    });
+
     const repoRoot = await window.codeatlas.getRepoRoot();
     const serverPath = await window.codeatlas.joinPaths(repoRoot, 'server');
 
@@ -418,10 +439,11 @@ async function installServer() {
     statusEl.className = 'status-message error';
     statusEl.textContent = `❌ 오류: ${err.message}`;
     addLogEntry('ERROR', 'SERVER', `Server setup error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '설치 시작';
+    isInstallingServer = false; // Re-enable next button
   }
-
-  btn.disabled = false;
-  btn.textContent = '설치 시작';
 }
 
 // ==================== Step 4: Workspace Configuration ====================
