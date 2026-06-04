@@ -375,8 +375,19 @@ ipcMain.handle('get-appdata-path', async () => {
 
 ipcMain.handle('create-directory', async (_event, dirPath: string) => {
   try {
-    if (!fs.existsSync(dirPath)) {
+    const parentDir = path.dirname(dirPath);
+    if (!fs.existsSync(parentDir)) {
+      log(LogLevel.ERROR, 'FS', `Parent directory does not exist: ${parentDir}`);
+      throw new Error(`Parent directory does not exist: ${parentDir}`);
+    }
+    
+    const beforeExists = fs.existsSync(dirPath);
+    log(LogLevel.INFO, 'FS', `Before mkdir - exists: ${beforeExists}, path: ${dirPath}`);
+    
+    if (!beforeExists) {
       fs.mkdirSync(dirPath, { recursive: true });
+      const afterExists = fs.existsSync(dirPath);
+      log(LogLevel.INFO, 'FS', `After mkdir - exists: ${afterExists}, path: ${dirPath}`);
       emitLogToRenderer(_event as any, { level: 'INFO', step: 'FS', message: `Created directory: ${dirPath}` });
     } else {
       emitLogToRenderer(_event as any, { level: 'DEBUG', step: 'FS', message: `Directory already exists: ${dirPath}` });
