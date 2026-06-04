@@ -476,6 +476,10 @@ async function selectWorkspace() {
       pathInput.value = selected;
       setupData.workspacePath = selected;
 
+      // Auto-set data directory to .codeatlas inside workspace
+      const dataDirsInput = document.getElementById('dataDirs');
+      dataDirsInput.value = `${selected}\.codeatlas`;
+
       // Show directory listing preview
       statusEl.className = 'status-message info';
       statusEl.textContent = `📁 선택된 경로: ${selected}`;
@@ -534,22 +538,28 @@ async function launchCodeAtlas() {
     const repoRoot = await window.codeatlas.getRepoRoot();
     
     // Save configuration
+    const dataDirsValue = document.getElementById('dataDirs').value.trim();
+    let dataDirsList = [];
+    
+    if (dataDirsValue) {
+      // Parse comma-separated paths, default to .codeatlas in workspace if only one path
+      dataDirsList = dataDirsValue.split(',').map(d => d.trim()).filter(d => d.length > 0);
+    } else if (setupData.workspacePath) {
+      // Fallback: use .codeatlas inside workspace
+      dataDirsList = [await window.codeatlas.joinPaths(setupData.workspacePath, '.codeatlas')];
+    }
+
     const config = {
       dashboard: {
         autoOpen: true,
         port: parseInt(document.getElementById('serverPort').value) || 3000,
-        dataDirs: document.getElementById('dataDirs').value ? 
-          document.getElementById('dataDirs').value.split(',').map(d => d.trim()) : []
+        dataDirs: dataDirsList
       },
       watcher: {
         enabled: true,
         indexerPath: 'codeatlas-indexer'
       }
     };
-
-    if (setupData.workspacePath) {
-      config.dashboard.dataDirs = [setupData.workspacePath];
-    }
 
     // Write config file
     const appData = process.env.APPDATA || process.env.HOME || '';
