@@ -20,6 +20,11 @@ contextBridge.exposeInMainWorld('codeatlas', {
   // Paths
   getRepoRoot: () => ipcRenderer.invoke('get-repo-root'),
 
+  // Log operations
+  getRecentLogs: (count?: number) => ipcRenderer.invoke('get-recent-logs', count || 100),
+  readLogFile: () => ipcRenderer.invoke('read-log-file'),
+  clearLogFile: () => ipcRenderer.invoke('clear-log-file'),
+  
   // Event listeners for command output streaming
   onCommandOutput: (callback: (data: { type: string; text: string }) => void) => {
     ipcRenderer.on('command-output', (_event, data) => callback(data));
@@ -27,5 +32,14 @@ contextBridge.exposeInMainWorld('codeatlas', {
   
   offCommandOutput: () => {
     ipcRenderer.removeAllListeners('command-output');
+  },
+
+  // Event listeners for log entries
+  onLogEntry: (callback: (log: { level: string; step?: string; message: string }) => void) => {
+    ipcRenderer.on('log-entry', (_event, data) => callback(data));
+  },
+  
+  offLogEntry: () => {
+    ipcRenderer.removeAllListeners('log-entry');
   }
 });

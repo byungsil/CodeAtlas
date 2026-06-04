@@ -14,6 +14,10 @@ const setupData = {
   config: {}
 };
 
+// Log state
+let logEntries = [];
+const MAX_LOG_DISPLAY = 200;
+
 // ==================== Step Navigation ====================
 
 function showStep(stepIndex) {
@@ -93,9 +97,76 @@ function updateFooter(stepIndex) {
   }
 }
 
+// ==================== Logging System ====================
+
+function addLogEntry(level, step, message) {
+  const entry = { level, step, message, timestamp: new Date().toISOString() };
+  logEntries.push(entry);
+  
+  // Keep only recent entries in memory
+  if (logEntries.length > MAX_LOG_DISPLAY) {
+    logEntries = logEntries.slice(-MAX_LOG_DISPLAY);
+  }
+
+  // Update UI if logs panel is visible
+  updateLogsPanel();
+}
+
+function updateLogsPanel() {
+  const logsContent = document.getElementById('logsContent');
+  if (!logsContent) return;
+
+  let html = '';
+  for (const entry of logEntries) {
+    const timeStr = new Date(entry.timestamp).toLocaleTimeString();
+    const levelClass = `log-${entry.level.toLowerCase()}`;
+    const stepTag = entry.step ? `<span class="log-step">[${entry.step}]</span>` : '';
+    
+    html += `<div class="log-entry ${levelClass}">`;
+    html += `<span class="log-time">${timeStr}</span> `;
+    html += `${stepTag}`;
+    html += `<span class="log-message">${escapeHtml(entry.message)}</span>`;
+    html += `</div>`;
+  }
+
+  logsContent.innerHTML = html || '<div class="log-entry log-info"><span class="log-time">--:--:--</span> <span class="log-message">로그가 아직 없습니다...</span></div>';
+  
+  // Auto-scroll to bottom
+  logsContent.scrollTop = logsContent.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function loadLogs() {
+  try {
+    const recentLogs = await window.codeatlas.getRecentLogs(100);
+    logEntries = recentLogs.map(log => ({
+      level: log.level,
+      step: log.step || '',
+      message: log.message,
+      timestamp: log.timestamp || new Date().toISOString()
+    }));
+    updateLogsPanel();
+  } catch (err) {
+    console.error('Failed to load logs:', err);
+  }
+}
+
+function clearLogs() {
+  logEntries = [];
+  updateLogsPanel();
+  window.codeatlas.clearLogFile().catch(err => console.error('Failed to clear logs:', err));
+}
+
 // ==================== Step 1: Prerequisites Check ====================
 
 async function runPrereqCheck() {
+  addLogEntry('INFO', 'PREREQS', 'Starting prerequisites check...');
+  
   const prereqs = [
     { name: 'node', wingetId: 'OpenJS.NodeJS.LTS', displayName: 'Node.js LTS' },
     { name: 'npm', wingetId: 'OpenJS.NodeJS.LTS', displayName: 'npm (included with Node.js)' },
@@ -103,10 +174,21 @@ async function runPrereqCheck() {
   ];
 
   for (const prereq of prereqs) {
-    const result = await window.codeatlas.checkCommand(prereq.name);
-    setupData.tools[prereq.name] = result;
+    try {
+      addLogEntry('INFO', 'CHECK', `Checking for ${prereq.name}...`);
+      const result = await window.codeatlas.checkCommand(prereq.name);
+      setupData.tools[prereq.name] = result;
 
-    updatePrereqUI(prereq.name, result);
+      if (result.exists) {
+        addLogEntry('INFO', 'CHECK', `${prereq.name} is available: ${result.version || 'installed'}`);
+      } else {
+        addLogEntry('WARN', 'CHECK', `${prereq.name} not found - installation may be needed`);
+      }
+
+      updatePrereqUI(prereq.name, result);
+    } catch (err) {
+      addLogEntry('ERROR', 'CHECK', `Failed to check ${prereq.name}: ${err.message}`);
+    }
   }
 
   // Check if any need installation
@@ -116,9 +198,11 @@ async function runPrereqCheck() {
   if (needsInstall) {
     statusEl.className = 'status-message info';
     statusEl.textContent = '일부 도구가 필요합니다. 각 도구 옆의 "설치하기" 버튼을 클릭하세요.';
+    addLogEntry('INFO', 'PREREQS', 'Some tools need installation');
   } else {
     statusEl.className = 'status-message success';
     statusEl.textContent = '✅ 모든 필수 도구가 설치되어 있습니다!';
+    addLogEntry('INFO', 'PREREQS', 'All prerequisites are installed');
   }
 }
 
@@ -154,6 +238,8 @@ async function installTool(toolName) {
   const config = toolMap[toolName];
   if (!config) return;
 
+  addLogEntry('INFO', 'INSTALL', `Starting installation of ${config.displayName}...`);
+
   const item = document.querySelector(`.prereq-item[data-tool="${toolName}"]`);
   const installBtn = document.getElementById(`install-${toolName}`);
   const versionEl = document.getElementById(`version-${toolName}`);
@@ -172,6 +258,8 @@ async function installTool(toolName) {
       item.classList.add('installed');
       versionEl.textContent = '✅ 설치 완료! (다시 검사하려면 페이지 새로고침)';
       
+      addLogEntry('INFO', 'INSTALL', `${config.displayName} installed successfully`);
+      
       // Update status
       const statusEl = document.getElementById('prereqStatus');
       statusEl.className = 'status-message success';
@@ -181,6 +269,8 @@ async function installTool(toolName) {
       item.classList.add('missing');
       versionEl.textContent = '❌ 설치 실패';
       
+      addLogEntry('ERROR', 'INSTALL', `${config.displayName} installation failed: ${result.output?.substring(0, 200) || 'unknown error'}`);
+      
       const statusEl = document.getElementById('prereqStatus');
       statusEl.className = 'status-message error';
       statusEl.textContent = `❌ ${config.displayName} 설치가 실패했습니다. 수동으로 설치해주세요.`;
@@ -189,6 +279,8 @@ async function installTool(toolName) {
     item.classList.remove('installing');
     item.classList.add('missing');
     versionEl.textContent = '❌ 오류';
+    
+    addLogEntry('ERROR', 'INSTALL', `Installation error for ${config.displayName}: ${err.message}`);
     
     const statusEl = document.getElementById('prereqStatus');
     statusEl.className = 'status-message error';
@@ -205,6 +297,8 @@ async function buildIndexer() {
   const statusEl = document.getElementById('indexerStatus');
   const btn = event.target;
 
+  addLogEntry('INFO', 'BUILD', 'Starting Rust indexer build...');
+  
   btn.disabled = true;
   btn.textContent = '빌드 중...';
   outputEl.textContent = '';
@@ -214,6 +308,10 @@ async function buildIndexer() {
     if (data.type === 'stdout' || data.type === 'stderr') {
       outputEl.textContent += data.text;
       outputEl.scrollTop = outputEl.scrollHeight;
+      
+      // Also log to logs panel
+      const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
+      addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'BUILD', prefix + data.text.trim());
     }
   });
 
@@ -224,6 +322,8 @@ async function buildIndexer() {
     statusEl.className = 'status-message info';
     statusEl.textContent = '🔨 Rust 인덱서를 빌드하고 있습니다... (최초 빌드는 5-10 분 소요)';
 
+    addLogEntry('INFO', 'BUILD', `Building in: ${indexerPath}`);
+
     const result = await window.codeatlas.runCommand('cargo', ['build', '--release'], indexerPath);
 
     if (result.success) {
@@ -231,14 +331,17 @@ async function buildIndexer() {
       statusEl.className = 'status-message success';
       statusEl.textContent = '✅ Rust 인덱서 빌드 완료!';
       outputEl.textContent += '\n\n✅ 빌드 성공!\n';
+      addLogEntry('INFO', 'BUILD', 'Rust indexer build completed successfully');
     } else {
       statusEl.className = 'status-message error';
       statusEl.textContent = `❌ 빌드 실패: ${result.stderr || result.stdout}`;
       outputEl.textContent += `\n\n❌ 빌드 실패\n`;
+      addLogEntry('ERROR', 'BUILD', `Build failed: ${result.stderr || result.stdout}`);
     }
   } catch (err) {
     statusEl.className = 'status-message error';
     statusEl.textContent = `❌ 오류: ${err.message}`;
+    addLogEntry('ERROR', 'BUILD', `Build error: ${err.message}`);
   }
 
   btn.disabled = false;
@@ -252,6 +355,8 @@ async function installServer() {
   const statusEl = document.getElementById('serverStatus');
   const btn = event.target;
 
+  addLogEntry('INFO', 'SERVER', 'Starting server setup...');
+  
   btn.disabled = true;
   btn.textContent = '설치 중...';
   outputEl.textContent = '';
@@ -261,6 +366,9 @@ async function installServer() {
     if (data.type === 'stdout' || data.type === 'stderr') {
       outputEl.textContent += data.text;
       outputEl.scrollTop = outputEl.scrollHeight;
+      
+      const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
+      addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'SERVER', prefix + data.text.trim());
     }
   });
 
@@ -271,6 +379,8 @@ async function installServer() {
     statusEl.className = 'status-message info';
     statusEl.textContent = '📦 npm 의존성을 설치하고 있습니다...';
 
+    addLogEntry('INFO', 'SERVER', `Installing in: ${serverPath}`);
+
     // Step 1: npm install
     const installResult = await window.codeatlas.runCommand('npm', ['install'], serverPath);
     
@@ -279,8 +389,11 @@ async function installServer() {
       statusEl.textContent = `❌ npm install 실패: ${installResult.stderr || installResult.stdout}`;
       btn.disabled = false;
       btn.textContent = '설치 시작';
+      addLogEntry('ERROR', 'SERVER', `npm install failed: ${installResult.stderr || installResult.stdout}`);
       return;
     }
+
+    addLogEntry('INFO', 'SERVER', 'npm install completed successfully');
 
     // Step 2: Build TypeScript
     statusEl.className = 'status-message info';
@@ -293,15 +406,18 @@ async function installServer() {
       statusEl.className = 'status-message success';
       statusEl.textContent = '✅ 서버 설치 및 컴파일 완료!';
       outputEl.textContent += '\n\n✅ 서버 준비 완료!\n';
+      addLogEntry('INFO', 'SERVER', 'Server build completed successfully');
     } else {
       // Build might fail due to TypeScript errors, but npm install succeeded
       setupData.serverInstalled = true;
       statusEl.className = 'status-message info';
       statusEl.textContent = '⚠️ npm 설치는 완료되었으나 컴파일에 문제가 있습니다. (계속 진행 가능)';
+      addLogEntry('WARN', 'SERVER', `TypeScript compilation had issues: ${buildResult.stderr || buildResult.stdout}`);
     }
   } catch (err) {
     statusEl.className = 'status-message error';
     statusEl.textContent = `❌ 오류: ${err.message}`;
+    addLogEntry('ERROR', 'SERVER', `Server setup error: ${err.message}`);
   }
 
   btn.disabled = false;
@@ -314,6 +430,8 @@ async function selectWorkspace() {
   const pathInput = document.getElementById('workspacePath');
   const statusEl = document.getElementById('workspaceStatus');
 
+  addLogEntry('INFO', 'WORKSPACE', 'Opening directory selector...');
+
   try {
     const selected = await window.codeatlas.selectDirectory();
     
@@ -325,17 +443,24 @@ async function selectWorkspace() {
       statusEl.className = 'status-message info';
       statusEl.textContent = `📁 선택된 경로: ${selected}`;
 
+      addLogEntry('INFO', 'WORKSPACE', `Selected workspace: ${selected}`);
+
       const entries = await window.codeatlas.listDirectory(selected);
       if (entries.length > 0) {
         statusEl.textContent += `\n\n📂 미리보기 (${entries.length}개 항목):\n${entries.slice(0, 10).join(', ')}`;
+        addLogEntry('INFO', 'WORKSPACE', `Workspace contains ${entries.length} items`);
       } else {
         statusEl.textContent += '\n\n⚠️ 디렉토리가 비어 있거나 접근할 수 없습니다.';
+        addLogEntry('WARN', 'WORKSPACE', 'Selected directory is empty or inaccessible');
       }
+    } else {
+      addLogEntry('INFO', 'WORKSPACE', 'Directory selection cancelled');
     }
   } catch (err) {
     const statusEl = document.getElementById('workspaceStatus');
     statusEl.className = 'status-message error';
     statusEl.textContent = `❌ 경로 선택 실패: ${err.message}`;
+    addLogEntry('ERROR', 'WORKSPACE', `Failed to select directory: ${err.message}`);
   }
 }
 
@@ -367,6 +492,8 @@ function populateSummary() {
 
 async function launchCodeAtlas() {
   try {
+    addLogEntry('INFO', 'LAUNCH', 'Starting CodeAtlas...');
+    
     const repoRoot = await window.codeatlas.getRepoRoot();
     
     // Save configuration
@@ -391,11 +518,13 @@ async function launchCodeAtlas() {
     const configDir = require('path').join(process.env.APPDATA || process.env.HOME || '', 'CodeAtlas');
     const configPath = require('path').join(configDir, 'codeatlas-config.json');
     
+    addLogEntry('INFO', 'CONFIG', `Writing config to ${configPath}`);
     await window.codeatlas.writeConfig(configPath, config);
 
     // Try to start the server
     const serverPath = require('path').join(repoRoot, 'server', 'dist', 'app.js');
     if (require('fs').existsSync(serverPath)) {
+      addLogEntry('INFO', 'LAUNCH', `Starting server: ${serverPath}`);
       // Server is built - try to launch
       const child = require('child_process').spawn('node', [serverPath], {
         cwd: repoRoot,
@@ -405,9 +534,11 @@ async function launchCodeAtlas() {
       child.unref();
     }
 
+    addLogEntry('INFO', 'LAUNCH', 'CodeAtlas launched successfully');
     alert('🚀 CodeAtlas가 시작되었습니다!\n\n서버가 백그라운드에서 실행됩니다.\n대시보드는 http://localhost:' + (config.dashboard.port || 3000) + ' 에서 접속하세요.');
     
   } catch (err) {
+    addLogEntry('ERROR', 'LAUNCH', `Failed to launch CodeAtlas: ${err.message}`);
     alert(`❌ CodeAtlas 시작 중 오류: ${err.message}`);
   }
 }
@@ -417,6 +548,7 @@ function openReadme() {
   window.codeatlas.getRepoRoot().then(root => {
     const readmePath = require('path').join(root, 'README.md');
     if (require('fs').existsSync(readmePath)) {
+      addLogEntry('INFO', 'README', `Opening ${readmePath}`);
       const child = require('child_process').spawn('start', [readmePath], { shell: true });
     }
   });
@@ -427,6 +559,20 @@ function openReadme() {
 function clearTerminal() {
   // Clear the currently visible terminal output
   document.querySelectorAll('.terminal-output').forEach(el => el.textContent = '');
+}
+
+// Toggle logs panel visibility
+function toggleLogs() {
+  const panel = document.getElementById('logsPanel');
+  const icon = document.getElementById('logsToggleIcon');
+  
+  if (panel.classList.contains('collapsed')) {
+    panel.classList.remove('collapsed');
+    icon.textContent = '▼';
+  } else {
+    panel.classList.add('collapsed');
+    icon.textContent = '▶';
+  }
 }
 
 // ==================== Global Event Handlers ====================
@@ -444,8 +590,21 @@ window.openReadme = openReadme;
 window.buildIndexer = buildIndexer;
 window.installServer = installServer;
 
+// Log management functions
+window.loadLogs = loadLogs;
+window.clearLogs = clearLogs;
+window.addLogEntry = addLogEntry;
+
 // ==================== Initialize ====================
 
 document.addEventListener('DOMContentLoaded', () => {
   showStep(0);
+  
+  // Set up log entry listener from main process
+  window.codeatlas.onLogEntry((log) => {
+    addLogEntry(log.level, log.step || '', log.message);
+  });
+  
+  // Load initial logs
+  loadLogs();
 });

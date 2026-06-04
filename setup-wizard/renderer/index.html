@@ -202,6 +202,18 @@
       </section>
     </main>
 
+    <!-- Logs Panel (Collapsible) -->
+    <div class="logs-panel-container" id="logsPanel">
+      <div class="logs-header" onclick="toggleLogs()">
+        <span class="logs-title">📋 로그 보기</span>
+        <button class="btn-clear-logs" onclick="event.stopPropagation(); clearLogs()">전체 지우기</button>
+        <span class="logs-toggle-icon" id="logsToggleIcon">▼</span>
+      </div>
+      <div class="logs-content" id="logsContent">
+        <!-- Logs will be populated dynamically -->
+      </div>
+    </div>
+
     <!-- Footer Navigation -->
     <footer class="wizard-footer">
       <button class="btn-nav btn-back hidden" id="btnBack" onclick="goToStep(currentStep - 1)">← 이전</button>
