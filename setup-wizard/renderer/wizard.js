@@ -478,7 +478,7 @@ async function selectWorkspace() {
 
       // Auto-set data directory to .codeatlas inside workspace
       const dataDirsInput = document.getElementById('dataDirs');
-      dataDirsInput.value = `${selected}\.codeatlas`;
+      dataDirsInput.value = await window.codeatlas.joinPaths(selected, '.codeatlas');
 
       // Show directory listing preview
       statusEl.className = 'status-message info';
