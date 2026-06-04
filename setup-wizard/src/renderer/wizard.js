@@ -537,23 +537,18 @@ async function launchCodeAtlas() {
     
     const repoRoot = await window.codeatlas.getRepoRoot();
     
-    // Save configuration
-    const dataDirsValue = document.getElementById('dataDirs').value.trim();
-    let dataDirsList = [];
-    
-    if (dataDirsValue) {
-      // Parse comma-separated paths, default to .codeatlas in workspace if only one path
-      dataDirsList = dataDirsValue.split(',').map(d => d.trim()).filter(d => d.length > 0);
-    } else if (setupData.workspacePath) {
+    // Save configuration - single dataDir path
+    let dataDir = document.getElementById('dataDirs').value.trim();
+    if (!dataDir && setupData.workspacePath) {
       // Fallback: use .codeatlas inside workspace
-      dataDirsList = [await window.codeatlas.joinPaths(setupData.workspacePath, '.codeatlas')];
+      dataDir = await window.codeatlas.joinPaths(setupData.workspacePath, '.codeatlas');
     }
 
     const config = {
       dashboard: {
         autoOpen: true,
         port: parseInt(document.getElementById('serverPort').value) || 3000,
-        dataDirs: dataDirsList
+        dataDir: dataDir
       },
       watcher: {
         enabled: true,
