@@ -344,7 +344,7 @@ ipcMain.handle('get-repo-root', async (event) => {
   return repoRoot;
 });
 
-ipcMain.handle('join-paths', async (_event, ...parts: string[]) => {
+ipcMain.handle('join-paths', async (_event, parts: string[]) => {
   const joined = path.join(...parts);
   emitLogToRenderer(_event, { level: 'INFO', step: 'PATH', message: `Joined paths: ${joined}` });
   return joined;

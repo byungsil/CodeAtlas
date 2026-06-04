@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('codeatlas', {
   
   // Paths
   getRepoRoot: () => ipcRenderer.invoke('get-repo-root'),
-  joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', parts),
+  joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', [...parts]),
   fileExists: (filePath: string) => ipcRenderer.invoke('file-exists', filePath),
 
   // Log operations
