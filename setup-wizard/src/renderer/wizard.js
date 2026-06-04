@@ -52,8 +52,14 @@ async function nextStep() {
     return;
   }
   
-  // Create data directory before moving to next step from workspace config
-  if (currentStep === 3 && setupData.workspacePath) {
+  if (currentStep < totalSteps - 1) {
+    showStep(currentStep + 1);
+  }
+}
+
+async function handleNextStep() {
+  // Create data directory before moving to next step from workspace config (step 4)
+  if (currentStep === 4 && setupData.workspacePath) {
     const dataDir = document.getElementById('dataDirs').value.trim();
     if (dataDir) {
       addLogEntry('INFO', 'FS', `Creating data directory: ${dataDir}`);
@@ -67,9 +73,7 @@ async function nextStep() {
     }
   }
   
-  if (currentStep < totalSteps - 1) {
-    showStep(currentStep + 1);
-  }
+  nextStep();
 }
 
 function goToStep(stepIndex) {
@@ -131,6 +135,11 @@ function updateFooter(stepIndex) {
     btnNext.textContent = setupData.serverInstalled ? '다음 →' : '다음 →';
     btnNext.onclick = nextStep;
     btnNext.disabled = !setupData.serverInstalled || isInstallingServer;
+  } else if (stepIndex === 4) {
+    // Workspace config step - create data dir on next
+    btnNext.textContent = '다음 →';
+    btnNext.onclick = handleNextStep;
+    btnNext.disabled = false;
   } else if (isBuildingIndexer || isInstallingServer) {
     // During any build/install operation
     btnNext.textContent = '작업 중...';
