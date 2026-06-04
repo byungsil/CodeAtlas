@@ -317,7 +317,7 @@ async function buildIndexer() {
 
   try {
     const repoRoot = await window.codeatlas.getRepoRoot();
-    const indexerPath = require('path').join(repoRoot, 'indexer');
+    const indexerPath = await window.codeatlas.joinPaths(repoRoot, 'indexer');
     
     statusEl.className = 'status-message info';
     statusEl.textContent = '🔨 Rust 인덱서를 빌드하고 있습니다... (최초 빌드는 5-10 분 소요)';
@@ -374,7 +374,7 @@ async function installServer() {
 
   try {
     const repoRoot = await window.codeatlas.getRepoRoot();
-    const serverPath = require('path').join(repoRoot, 'server');
+    const serverPath = await window.codeatlas.joinPaths(repoRoot, 'server');
 
     statusEl.className = 'status-message info';
     statusEl.textContent = '📦 npm 의존성을 설치하고 있습니다...';
@@ -515,8 +515,9 @@ async function launchCodeAtlas() {
     }
 
     // Write config file
-    const configDir = require('path').join(process.env.APPDATA || process.env.HOME || '', 'CodeAtlas');
-    const configPath = require('path').join(configDir, 'codeatlas-config.json');
+    const appData = process.env.APPDATA || process.env.HOME || '';
+    const configDir = await window.codeatlas.joinPaths(appData, 'CodeAtlas');
+    const configPath = await window.codeatlas.joinPaths(configDir, 'codeatlas-config.json');
     
     addLogEntry('INFO', 'CONFIG', `Writing config to ${configPath}`);
     await window.codeatlas.writeConfig(configPath, config);
