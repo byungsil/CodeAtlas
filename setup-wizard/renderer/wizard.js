@@ -82,36 +82,49 @@ function updateFooter(stepIndex) {
   const btnBack = document.getElementById('btnBack');
   const btnNext = document.getElementById('btnNext');
 
-  // Disable next button during build/install
-  if (isBuildingIndexer || isInstallingServer) {
-    btnNext.disabled = true;
-    return; // Don't update other properties while disabled
-  } else {
-    btnNext.disabled = false;
-  }
-
-  // Back button
+  // Back button visibility
   if (stepIndex === 0 || stepIndex === totalSteps - 1) {
     btnBack.classList.add('hidden');
   } else {
     btnBack.classList.remove('hidden');
   }
 
-  // Next/Finish button
+  // Next/Finish button logic
   if (stepIndex === totalSteps - 1) {
+    // Complete step
     btnNext.textContent = '닫기';
     btnNext.onclick = () => window.close();
+    btnNext.disabled = false;
   } else if (stepIndex === 0) {
+    // Welcome step
     btnNext.textContent = '시작하기 →';
     btnNext.onclick = nextStep;
+    btnNext.disabled = false;
   } else if (stepIndex === 1) {
     // Prereqs step - check if all tools are installed
     const allInstalled = Object.values(setupData.tools).every(t => t.installed);
     btnNext.textContent = allInstalled ? '다음 →' : '완료';
     btnNext.onclick = nextStep;
+    btnNext.disabled = false;
+  } else if (stepIndex === 2) {
+    // Indexer build step - disable until build completes
+    btnNext.textContent = setupData.indexerBuilt ? '다음 →' : '다음 →';
+    btnNext.onclick = nextStep;
+    btnNext.disabled = !setupData.indexerBuilt || isBuildingIndexer;
+  } else if (stepIndex === 3) {
+    // Server install step - disable until install completes
+    btnNext.textContent = setupData.serverInstalled ? '다음 →' : '다음 →';
+    btnNext.onclick = nextStep;
+    btnNext.disabled = !setupData.serverInstalled || isInstallingServer;
+  } else if (isBuildingIndexer || isInstallingServer) {
+    // During any build/install operation
+    btnNext.textContent = '작업 중...';
+    btnNext.disabled = true;
   } else {
+    // Default: all other steps
     btnNext.textContent = '다음 →';
     btnNext.onclick = nextStep;
+    btnNext.disabled = false;
   }
 }
 
@@ -364,7 +377,8 @@ async function buildIndexer() {
   } finally {
     btn.disabled = false;
     btn.textContent = '빌드 시작';
-    isBuildingIndexer = false; // Re-enable next button
+    isBuildingIndexer = false;
+    updateFooter(currentStep); // Re-evaluate next button state
   }
 }
 
@@ -442,7 +456,8 @@ async function installServer() {
   } finally {
     btn.disabled = false;
     btn.textContent = '설치 시작';
-    isInstallingServer = false; // Re-enable next button
+    isInstallingServer = false;
+    updateFooter(currentStep); // Re-evaluate next button state
   }
 }
 
