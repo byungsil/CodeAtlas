@@ -45,11 +45,26 @@ function showStep(stepIndex) {
   if (stepIndex === 1) runPrereqCheck();
 }
 
-function nextStep() {
+async function nextStep() {
   // Prevent navigation during build/install
   if (isBuildingIndexer || isInstallingServer) {
     addLogEntry('WARN', 'NAV', 'Cannot navigate while build/install is in progress');
     return;
+  }
+  
+  // Create data directory before moving to next step from workspace config
+  if (currentStep === 3 && setupData.workspacePath) {
+    const dataDir = document.getElementById('dataDirs').value.trim();
+    if (dataDir) {
+      addLogEntry('INFO', 'FS', `Creating data directory: ${dataDir}`);
+      try {
+        await window.codeatlas.createDirectory(dataDir);
+        addLogEntry('INFO', 'FS', `Data directory created successfully`);
+      } catch (err) {
+        addLogEntry('WARN', 'FS', `Failed to create data directory: ${err.message}`);
+        // Continue anyway - user can create manually
+      }
+    }
   }
   
   if (currentStep < totalSteps - 1) {

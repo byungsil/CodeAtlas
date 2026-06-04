@@ -373,6 +373,22 @@ ipcMain.handle('get-appdata-path', async () => {
   return appData;
 });
 
+ipcMain.handle('create-directory', async (_event, dirPath: string) => {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+      emitLogToRenderer(_event as any, { level: 'INFO', step: 'FS', message: `Created directory: ${dirPath}` });
+    } else {
+      emitLogToRenderer(_event as any, { level: 'DEBUG', step: 'FS', message: `Directory already exists: ${dirPath}` });
+    }
+    return true;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    emitLogToRenderer(_event as any, { level: 'ERROR', step: 'FS', message: `Failed to create directory ${dirPath}: ${errorMsg}` });
+    throw new Error(errorMsg);
+  }
+});
+
 // Log retrieval IPC handlers
 ipcMain.handle('get-recent-logs', async (_event, count: number = 100) => {
   const logs = getRecentLogs(count);

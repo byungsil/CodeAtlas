@@ -50,5 +50,8 @@ contextBridge.exposeInMainWorld('codeatlas', {
     ipcRenderer.invoke('spawn-process', command, args, options || {}),
 
   // App paths
-  getAppDataPath: () => ipcRenderer.invoke('get-appdata-path')
+  getAppDataPath: () => ipcRenderer.invoke('get-appdata-path'),
+
+  // Directory operations
+  createDirectory: (dirPath: string) => ipcRenderer.invoke('create-directory', dirPath)
 });
