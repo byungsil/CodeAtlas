@@ -121,9 +121,11 @@ export function readPersistedMcpRuntimeStatsSnapshot(statsFilePath?: string): Mc
   if (mergeCache && mergeCache.dir === statsDir && now < mergeCache.expireAt) {
     return mergeCache.snapshot;
   }
-  const snapshot = mergeAllStatsInDirectory(statsDir);
-  mergeCache = { dir: statsDir, snapshot, expireAt: now + MERGE_CACHE_TTL_MS };
-  return snapshot;
+  // Read only the specific stats file, not all JSON files in directory
+  const snapshot = readStatsFile(statsFilePath);
+  const result = snapshot || emptySnapshot();
+  mergeCache = { dir: statsDir, snapshot: result, expireAt: now + MERGE_CACHE_TTL_MS };
+  return result;
 }
 
 export function resetMcpRuntimeStatsForTests(): void {
@@ -133,16 +135,13 @@ export function resetMcpRuntimeStatsForTests(): void {
 export function prepareRuntimeStatsPath(dataDir: string): string {
   const statsFilePath = resolveRuntimeStatsPath(dataDir);
   migrateLegacyStatsFile(path.resolve(dataDir), statsFilePath);
-  cleanupOrphanedStatsFragments(path.dirname(statsFilePath));
   return statsFilePath;
 }
 
 export function resolveRuntimeStatsPath(dataDir: string): string {
   const resolvedDataDir = path.resolve(dataDir);
-  const workspaceRoot = path.resolve(resolvedDataDir, "..");
-  const slug = sanitizeSegment(path.basename(workspaceRoot) || path.basename(resolvedDataDir) || "workspace");
-  const hash = shortStableHash(resolvedDataDir.toLowerCase());
-  return path.join(resolveCacheRoot(), "runtime-stats", `${slug}-${hash}.json`);
+  // MCP runtime stats are stored inside the .codeatlas directory
+  return path.join(resolvedDataDir, STATS_FILENAME);
 }
 
 function createEmptyState(): RuntimeStatsState {
@@ -153,43 +152,8 @@ function createEmptyState(): RuntimeStatsState {
   };
 }
 
-function resolveCacheRoot(): string {
-  const override = process.env.CODEATLAS_CACHE_DIR;
-  if (override && override.trim() !== "") {
-    return path.resolve(override);
-  }
-  if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA;
-    if (localAppData && localAppData.trim() !== "") {
-      return path.join(path.resolve(localAppData), "CodeAtlas");
-    }
-  }
-  if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches", "CodeAtlas");
-  }
-  const xdgCacheHome = process.env.XDG_CACHE_HOME;
-  if (xdgCacheHome && xdgCacheHome.trim() !== "") {
-    return path.join(path.resolve(xdgCacheHome), "CodeAtlas");
-  }
-  return path.join(os.homedir(), ".cache", "CodeAtlas");
-}
-
-function cleanupOrphanedStatsFragments(statsDir: string): void {
-  const ORPHAN_PATTERN = /^1-[0-9a-f]+\.json$/;
-  try {
-    const entries = fs.readdirSync(statsDir);
-    for (const entry of entries) {
-      if (!ORPHAN_PATTERN.test(entry)) continue;
-      try {
-        fs.unlinkSync(path.join(statsDir, entry));
-      } catch {
-        // Best-effort cleanup; ignore per-file failures.
-      }
-    }
-  } catch {
-    // Directory may not exist yet; nothing to clean.
-  }
-}
+// Removed resolveCacheRoot() - MCP stats now stored in .codeatlas/ directory
+// Removed cleanupOrphanedStatsFragments() - no longer needed with local storage
 
 function migrateLegacyStatsFile(dataDir: string, statsFilePath: string): void {
   const legacyPath = path.join(dataDir, STATS_FILENAME);

@@ -124,6 +124,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   const dashboardStatsPath = (options?.dashboardWorkspaces ?? [])
     .find((workspace) => workspace.isPrimary)?.statsPath;
 
+  app.get("/", (_req, res) => res.redirect("/dashboard/"));
   app.use("/dashboard", express.static(path.join(__dirname, "../public"), { index: "index.html" }));
   app.get("/dashboard", (_req, res) => res.redirect("/dashboard/"));
 
@@ -491,13 +492,16 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
           includeHeavy: 0,
         },
       };
+    const isEmptyIndex = indexDetails.counts.symbols === 0 && indexDetails.counts.files === 0;
     return {
       generatedAt: new Date().toISOString(),
       workspace: workspaceSummary,
       index: indexDetails,
-      mcp: dashboardStatsPath
-        ? readPersistedMcpRuntimeStatsSnapshot(dashboardStatsPath)
-        : getMcpRuntimeStatsSnapshot(),
+      mcp: isEmptyIndex
+        ? { startedAt: new Date().toISOString(), uptimeSeconds: 0, totalToolCalls: 0, totalErrors: 0, avgLatencyMs: 0, tools: [], recentCalls: [] }
+        : (dashboardStatsPath
+          ? readPersistedMcpRuntimeStatsSnapshot(dashboardStatsPath)
+          : getMcpRuntimeStatsSnapshot()),
     };
   }
 

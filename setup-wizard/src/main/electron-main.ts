@@ -360,7 +360,16 @@ ipcMain.handle('file-exists', async (event, filePath: string) => {
 ipcMain.handle('spawn-process', async (event, command: string, args: string[], options?: any) => {
   emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Spawning: ${command} ${args.join(' ')}` });
   return new Promise((resolve) => {
-    const child = cp.spawn(command, args, { ...options, detached: true, stdio: 'ignore' });
+    const logFile = path.join(process.env.APPDATA || os.homedir(), 'CodeAtlas', 'logs', `${command}-${Date.now()}.log`);
+    
+    const child = cp.spawn(command, args, { ...options, detached: true });
+    if (child.stdout) {
+      child.stdout.pipe(fs.createWriteStream(logFile, { flags: 'a' }));
+    }
+    if (child.stderr) {
+      child.stderr.pipe(fs.createWriteStream(logFile, { flags: 'a' }));
+    }
+    
     child.unref();
     emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Process started (PID: ${child.pid})` });
     resolve({ success: true, pid: child.pid });

@@ -589,11 +589,13 @@ async function launchCodeAtlas() {
     await window.codeatlas.writeConfig(configPath, config);
 
     // Try to start the server
-    const serverPath = await window.codeatlas.joinPaths(repoRoot, 'server', 'dist', 'app.js');
-    if (await window.codeatlas.fileExists(serverPath)) {
-      addLogEntry('INFO', 'LAUNCH', `Starting server: ${serverPath}`);
+    const serverIndexPath = await window.codeatlas.joinPaths(repoRoot, 'server', 'dist', 'index.js');
+    if (await window.codeatlas.fileExists(serverIndexPath)) {
+      addLogEntry('INFO', 'LAUNCH', `Starting server: ${serverIndexPath} with dataDir: ${dataDir}`);
       // Server is built - try to launch
-      await window.codeatlas.spawnProcess('node', [serverPath], { cwd: repoRoot });
+      await window.codeatlas.spawnProcess('node', [serverIndexPath, dataDir], { cwd: repoRoot });
+    } else {
+      addLogEntry('WARN', 'LAUNCH', `Server index.js not found at ${serverIndexPath}`);
     }
 
     addLogEntry('INFO', 'LAUNCH', 'CodeAtlas launched successfully');
