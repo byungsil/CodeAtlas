@@ -118,6 +118,8 @@
         <h2>Rust 인덱서 빌드</h2>
         <p class="description">Tree-sitter 기반 코드 분석 엔진을 컴파일합니다.</p>
         
+        <button class="btn-primary btn-start-build" id="btnStartIndexer" onclick="buildIndexer()">🔨 인덱서 빌드 시작</button>
+
         <div class="terminal-container">
           <div class="terminal-header">
             <span class="terminal-title">build-output</span>
@@ -127,7 +129,7 @@
         </div>
 
         <div class="status-message info" id="indexerStatus">
-          빌드를 시작하려면 '빌드 시작' 버튼을 클릭하세요.
+          '인덱서 빌드 시작' 버튼을 클릭하여 Rust 인덱서를 컴파일합니다.
         </div>
       </section>
 
@@ -136,6 +138,8 @@
         <h2>서버 의존성 설치</h2>
         <p class="description">Node.js 서버 패키지를 설치하고 컴파일합니다.</p>
         
+        <button class="btn-primary btn-start-build" id="btnStartServer" onclick="installServer()">📦 서버 의존성 설치</button>
+
         <div class="terminal-container">
           <div class="terminal-header">
             <span class="terminal-title">server-setup</span>
@@ -145,7 +149,7 @@
         </div>
 
         <div class="status-message info" id="serverStatus">
-          설치를 시작하려면 '설치 시작' 버튼을 클릭하세요.
+          '서버 의존성 설치' 버튼을 클릭하여 Node.js 서버 패키지를 설치합니다.
         </div>
       </section>
 
@@ -202,8 +206,15 @@
       </section>
     </main>
 
+    <!-- Footer Navigation -->
+    <footer class="wizard-footer">
+      <button class="btn-nav btn-back hidden" id="btnBack" onclick="goToStep(currentStep - 1)">← 이전</button>
+      <div class="spacer"></div>
+      <button class="btn-nav btn-next" id="btnNext" onclick="nextStep()">다음 →</button>
+    </footer>
+
     <!-- Logs Panel (Collapsible) -->
-    <div class="logs-panel-container" id="logsPanel">
+    <div class="logs-panel-container collapsed" id="logsPanel">
       <div class="logs-header" onclick="toggleLogs()">
         <span class="logs-title">📋 로그 보기</span>
         <button class="btn-clear-logs" onclick="event.stopPropagation(); clearLogs()">전체 지우기</button>
@@ -213,13 +224,6 @@
         <!-- Logs will be populated dynamically -->
       </div>
     </div>
-
-    <!-- Footer Navigation -->
-    <footer class="wizard-footer">
-      <button class="btn-nav btn-back hidden" id="btnBack" onclick="goToStep(currentStep - 1)">← 이전</button>
-      <div class="spacer"></div>
-      <button class="btn-nav btn-next" id="btnNext" onclick="nextStep()">다음 →</button>
-    </footer>
   </div>
 
   <script src="wizard.js"></script>

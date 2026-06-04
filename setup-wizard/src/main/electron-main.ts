@@ -20,10 +20,10 @@ function createWindow(): void {
   const rootDir = path.resolve(__dirname, '..');
   
   mainWindow = new BrowserWindow({
-    width: 720,
-    height: 580,
-    minWidth: 640,
-    minHeight: 500,
+    width: 800,
+    height: 700,
+    minWidth: 720,
+    minHeight: 600,
     frame: true,
     title: 'CodeAtlas Setup Wizard',
     icon: path.join(rootDir, 'assets', 'icon.png'),
