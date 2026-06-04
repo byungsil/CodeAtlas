@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" rx="48" fill="#6366F1"/>
+  
+  <!-- Code brackets -->
+  <path d="M96 80L64 128L96 176" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M160 80L192 128L160 176" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Center node -->
+  <circle cx="128" cy="128" r="24" fill="white" opacity="0.9"/>
+  
+  <!-- Connection lines -->
+  <line x1="128" y1="104" x2="128" y2="80" stroke="white" stroke-width="6" opacity="0.5"/>
+  <line x1="128" y1="152" x2="128" y2="176" stroke="white" stroke-width="6" opacity="0.5"/>
+</svg>

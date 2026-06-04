@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeAtlas Setup Wizard</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="wizard-header">
+      <div class="logo-area">
+        <svg class="logo-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="48" height="48" rx="12" fill="#6366F1"/>
+          <path d="M14 16h8c4.418 0 8 3.582 8 8s-3.582 8-8 8h-8V16zm0 16h8c4.418 0 8 3.582 8 8s-3.582 8-8 8h-8V32z" fill="white"/>
+        </svg>
+        <div class="logo-text">
+          <span class="logo-title">CodeAtlas</span>
+          <span class="logo-subtitle">Setup Wizard</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Progress Bar -->
+    <div class="progress-bar-container" id="progressContainer">
+      <div class="steps-indicator">
+        <div class="step-item active" data-step="0">
+          <span class="step-number">1</span>
+          <span class="step-label">환영합니다</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-item" data-step="1">
+          <span class="step-number">2</span>
+          <span class="step-label">환경 검사</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-item" data-step="2">
+          <span class="step-number">3</span>
+          <span class="step-label">인덱서 빌드</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-item" data-step="3">
+          <span class="step-number">4</span>
+          <span class="step-label">서버 설정</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-item" data-step="4">
+          <span class="step-number">5</span>
+          <span class="step-label">작업 공간</span>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step-item" data-step="5">
+          <span class="step-number">6</span>
+          <span class="step-label">완료</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <main class="wizard-content">
+      <!-- Step 0: Welcome -->
+      <section class="wizard-step active" id="step-welcome">
+        <h1>CodeAtlas에 오신 것을 환영합니다</h1>
+        <p class="description">
+          CodeAtlas는 AI 에이전트를 위한 구조화된 코드 인텔리전스 도구입니다.<br>
+          이 마법사가 설치 및 설정 과정을 안내해 드립니다.
+        </p>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <span class="feature-icon">🔍</span>
+            <h3>코드 인덱싱</h3>
+            <p>C++, Python, TypeScript 등 다중 언어 지원</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🧠</span>
+            <h3>AI 통합</h3>
+            <p>MCP 프로토콜을 통한 AI 에이전트 연동</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">📊</span>
+            <h3>대시보드</h3>
+            <p>실시간 코드 분석 및 시각화</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 1: Prerequisites Check -->
+      <section class="wizard-step" id="step-prereqs">
+        <h2>환경 검사</h2>
+        <p class="description">필수 도구 설치 상태를 확인합니다.</p>
+        
+        <div class="prereq-list" id="prereqList">
+          <div class="prereq-item" data-tool="node">
+            <span class="tool-name">Node.js</span>
+            <span class="tool-version" id="version-node">검사 중...</span>
+            <button class="btn-install hidden" id="install-node" onclick="window._installTool('node')">설치하기</button>
+          </div>
+          <div class="prereq-item" data-tool="npm">
+            <span class="tool-name">npm</span>
+            <span class="tool-version" id="version-npm">검사 중...</span>
+            <button class="btn-install hidden" id="install-npm" onclick="window._installTool('npm')">설치하기</button>
+          </div>
+          <div class="prereq-item" data-tool="cargo">
+            <span class="tool-name">Rust (Cargo)</span>
+            <span class="tool-version" id="version-cargo">검사 중...</span>
+            <button class="btn-install hidden" id="install-cargo" onclick="window._installTool('cargo')">설치하기</button>
+          </div>
+        </div>
+
+        <div class="status-message info" id="prereqStatus">
+          도구들을 자동으로 검사하고 있습니다...
+        </div>
+      </section>
+
+      <!-- Step 2: Build Indexer -->
+      <section class="wizard-step" id="step-indexer">
+        <h2>Rust 인덱서 빌드</h2>
+        <p class="description">Tree-sitter 기반 코드 분석 엔진을 컴파일합니다.</p>
+        
+        <div class="terminal-container">
+          <div class="terminal-header">
+            <span class="terminal-title">build-output</span>
+            <button class="btn-clear" onclick="clearTerminal()">Clear</button>
+          </div>
+          <pre class="terminal-output" id="indexerOutput"></pre>
+        </div>
+
+        <div class="status-message info" id="indexerStatus">
+          빌드를 시작하려면 '빌드 시작' 버튼을 클릭하세요.
+        </div>
+      </section>
+
+      <!-- Step 3: Server Setup -->
+      <section class="wizard-step" id="step-server">
+        <h2>서버 의존성 설치</h2>
+        <p class="description">Node.js 서버 패키지를 설치하고 컴파일합니다.</p>
+        
+        <div class="terminal-container">
+          <div class="terminal-header">
+            <span class="terminal-title">server-setup</span>
+            <button class="btn-clear" onclick="clearTerminal()">Clear</button>
+          </div>
+          <pre class="terminal-output" id="serverOutput"></pre>
+        </div>
+
+        <div class="status-message info" id="serverStatus">
+          설치를 시작하려면 '설치 시작' 버튼을 클릭하세요.
+        </div>
+      </section>
+
+      <!-- Step 4: Workspace Configuration -->
+      <section class="wizard-step" id="step-workspace">
+        <h2>작업 공간 설정</h2>
+        <p class="description">분석할 코드베이스 경로를 선택하세요.</p>
+        
+        <div class="config-form">
+          <div class="form-group">
+            <label for="workspacePath">📁 코드베이스 경로</label>
+            <div class="input-row">
+              <input type="text" id="workspacePath" placeholder="예: C:\Users\yourname\Projects\myproject">
+              <button class="btn-browse" onclick="selectWorkspace()">경로 선택</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="serverPort">🌐 서버 포트</label>
+            <input type="number" id="serverPort" value="3000" min="1024" max="65535">
+          </div>
+
+          <div class="form-group">
+            <label for="dataDirs">📊 데이터 디렉토리 (쉼표 구분)</label>
+            <input type="text" id="dataDirs" placeholder="예: C:\Data\codeatlas">
+          </div>
+
+          <div class="status-message info" id="workspaceStatus">
+            코드베이스 경로를 선택하면 해당 디렉토리 내용을 미리볼 수 있습니다.
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5: Complete -->
+      <section class="wizard-step" id="step-complete">
+        <h1>🎉 설정이 완료되었습니다!</h1>
+        <p class="description">
+          CodeAtlas가 성공적으로 설치 및 구성되었습니다.<br>
+          이제 코드 분석과 AI 통합을 시작할 수 있습니다.
+        </p>
+
+        <div class="summary-card" id="setupSummary">
+          <!-- Dynamically populated -->
+        </div>
+
+        <div class="action-buttons complete-actions">
+          <button class="btn-primary btn-large" onclick="launchCodeAtlas()">
+            🚀 CodeAtlas 시작하기
+          </button>
+          <button class="btn-secondary btn-large" onclick="openReadme()">
+            📖 문서 보기
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer Navigation -->
+    <footer class="wizard-footer">
+      <button class="btn-nav btn-back hidden" id="btnBack" onclick="goToStep(currentStep - 1)">← 이전</button>
+      <div class="spacer"></div>
+      <button class="btn-nav btn-next" id="btnNext" onclick="nextStep()">다음 →</button>
+    </footer>
+  </div>
+
+  <script src="wizard.js"></script>
+</body>
+</html>

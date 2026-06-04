@@ -1,145 +1,144 @@
+# CodeAtlas Setup - Full Installation Script
+# Run this to install all prerequisites and build everything
+
 param(
-    [switch]$SkipServerDeps,
-    [switch]$SkipServerBuild,
-    [switch]$SkipIndexerBuild
+    [switch]$Gui,
+    [Alias("g")]
+    [switch]$LaunchGui
 )
 
 $ErrorActionPreference = "Stop"
 
-function Test-CommandAvailable {
-    param([string]$Name)
-    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
-function Invoke-Step {
-    param(
-        [string]$Name,
-        [scriptblock]$Action
-    )
-
-    Write-Host ""
-    Write-Host "==> $Name"
-    & $Action
-}
-
-function Install-WithWinget {
-    param(
-        [string]$PackageId,
-        [string]$DisplayName,
-        [string]$Override
-    )
-
-    if (-not (Test-CommandAvailable "winget")) {
-        throw "winget is not available. Please install $DisplayName manually."
-    }
-
-    Write-Host "Installing $DisplayName with winget..."
-    if ($Override) {
-        & winget install --exact --id $PackageId --override $Override --accept-source-agreements --accept-package-agreements
-    } else {
-        & winget install --exact --id $PackageId --accept-source-agreements --accept-package-agreements
-    }
-}
-
-function Ensure-VisualCppToolchain {
-    # If cl exists in PATH, assume MSVC build tools are ready for this shell.
-    if (Test-CommandAvailable "cl") {
-        Write-Host "MSVC toolchain already available in current shell."
-        return
-    }
-
-    # Fallback: detect Visual Studio Build Tools install via vswhere.
-    $vsWherePath = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vsWherePath) {
-        $installPath = & $vsWherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-        if ($LASTEXITCODE -eq 0 -and $installPath) {
-            Write-Warning "Visual Studio Build Tools are installed, but cl.exe is not in current PATH."
-            Write-Warning "Continuing anyway. If indexer build fails later, rerun in 'Developer PowerShell for VS'."
-            return
-        }
-    }
-
-    $vsOverride = "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.22621"
-    Install-WithWinget -PackageId "Microsoft.VisualStudio.2022.BuildTools" -DisplayName "Visual Studio 2022 Build Tools (MSVC + Windows SDK)" -Override $vsOverride
-
-    if (-not (Test-CommandAvailable "cl")) {
-        Write-Warning "Build Tools installation finished, but cl.exe is still not visible in current shell."
-        Write-Warning "Continuing anyway. If indexer build fails later, rerun in a fresh 'Developer PowerShell for VS'."
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    switch ($Level) {
+        "ERROR" { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor Red }
+        "WARN"  { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor Yellow }
+        default { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor White }
     }
 }
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$IndexerRoot = Join-Path $RepoRoot "indexer"
-$ServerRoot = Join-Path $RepoRoot "server"
-$PrereqScript = Join-Path $PSScriptRoot "setup-prereqs.ps1"
 
-if (-not (Test-Path $PrereqScript)) {
-    throw "Missing script: $PrereqScript"
-}
+Write-Host ""
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host " CodeAtlas Full Setup"
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host ""
 
-Invoke-Step -Name "Install base prerequisites (Node.js, npm, Rust, server deps optional)" -Action {
-    if ($SkipServerDeps) {
-        & powershell -ExecutionPolicy Bypass -File $PrereqScript -SkipServerDeps
-    } else {
-        & powershell -ExecutionPolicy Bypass -File $PrereqScript
+# Check if running in GUI mode
+if ($Gui -or $LaunchGui) {
+    Write-Log "Launching GUI Setup Wizard..." "INFO"
+    
+    $wizardDir = Join-Path $RepoRoot "setup-wizard"
+    
+    if (-not (Test-Path $wizardDir)) {
+        Write-Log "Setup wizard directory not found: $wizardDir" "ERROR"
+        exit 1
     }
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "setup-prereqs.ps1 failed with exit code $LASTEXITCODE"
-    }
-}
-
-Invoke-Step -Name "Validate/install Windows C/C++ toolchain (MSVC + Windows SDK)" -Action {
-    Ensure-VisualCppToolchain
-}
-
-if (-not $SkipIndexerBuild) {
-    Invoke-Step -Name "Build indexer (cargo build --release)" -Action {
-        Push-Location $IndexerRoot
+    # Install npm dependencies for setup-wizard
+    if (-not (Test-Path (Join-Path $wizardDir "node_modules"))) {
+        Write-Host ""
+        Write-Log "Installing setup wizard dependencies..." "INFO"
+        Push-Location $wizardDir
         try {
-            & cargo build --release
-            if ($LASTEXITCODE -ne 0) {
-                throw "Indexer build failed with exit code $LASTEXITCODE"
-            }
+            & npm install 2>&1 | Out-Null
+            Write-Log "Setup wizard dependencies installed" "INFO"
+        } catch {
+            Write-Log "Failed to install setup wizard dependencies: $_" "ERROR"
+            throw
         } finally {
             Pop-Location
         }
     }
-}
 
-Invoke-Step -Name "Install server dependencies (npm install)" -Action {
-    if ($SkipServerDeps) {
-        Write-Host "Skipped (requested by -SkipServerDeps)."
-        return
+    # Build TypeScript
+    Write-Host ""
+    Write-Log "Building Setup Wizard..." "INFO"
+    Push-Location $wizardDir
+    try {
+        & npx tsc 2>&1 | Out-Null
+        Write-Log "Setup wizard build complete" "INFO"
+    } catch {
+        Write-Log "Failed to build setup wizard: $_" "ERROR"
+        throw
+    } finally {
+        Pop-Location
     }
 
-    Push-Location $ServerRoot
+    if (-not (Test-Path (Join-Path $wizardDir "electron-main.js"))) {
+        Write-Log "Build failed - electron-main.js not found" "ERROR"
+        exit 1
+    }
+
+    # Launch Electron
+    Write-Host ""
+    Write-Log "Starting GUI Setup Wizard..." "INFO"
+    Start-Sleep -Seconds 1
+    
+    Push-Location $wizardDir
     try {
-        & npm install
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed with exit code $LASTEXITCODE"
-        }
+        & npx electron .
+    } finally {
+        Pop-Location
+    }
+    
+    exit 0
+}
+
+# ==================== CLI Mode (Legacy) ====================
+
+Write-Log "Running in CLI mode. Use -Gui or -g flag for GUI." "INFO"
+Write-Host ""
+
+$scriptPath = Join-Path $PSScriptRoot "setup-prereqs.ps1"
+if (Test-Path $scriptPath) {
+    Write-Log "Running prerequisite setup..." "INFO"
+    & $scriptPath
+} else {
+    Write-Log "setup-prereqs.ps1 not found at: $scriptPath" "ERROR"
+    exit 1
+}
+
+Write-Host ""
+Write-Log "Prerequisites installed. Would you like to build the indexer and server now?" "INFO"
+$answer = Read-Host "Build now? (Y/n)"
+
+if ($answer -ne 'n' -and $answer -ne 'N') {
+    Write-Host ""
+    
+    # Build indexer
+    Write-Log "Building Rust indexer..." "INFO"
+    Push-Location (Join-Path $RepoRoot "indexer")
+    try {
+        & cargo build --release 2>&1 | Out-Null
+        Write-Log "Indexer built successfully" "INFO"
+    } catch {
+        Write-Log "Failed to build indexer: $_" "ERROR"
+    } finally {
+        Pop-Location
+    }
+
+    # Build server
+    Write-Log "Building TypeScript server..." "INFO"
+    Push-Location (Join-Path $RepoRoot "server")
+    try {
+        & npx tsc 2>&1 | Out-Null
+        Write-Log "Server built successfully" "INFO"
+    } catch {
+        Write-Log "Failed to build server: $_" "ERROR"
     } finally {
         Pop-Location
     }
 }
 
-if (-not $SkipServerBuild) {
-    Invoke-Step -Name "Build server (npm run build)" -Action {
-        Push-Location $ServerRoot
-        try {
-            & npm run build
-            if ($LASTEXITCODE -ne 0) {
-                throw "Server build failed with exit code $LASTEXITCODE"
-            }
-        } finally {
-            Pop-Location
-        }
-    }
-}
-
 Write-Host ""
-Write-Host "Setup complete."
-Write-Host "Artifacts:"
-Write-Host "  - indexer: indexer/target/release/codeatlas-indexer.exe"
-Write-Host "  - server build: server/dist (if build script outputs dist)"
+Write-Log "Setup complete!" "INFO"
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Cyan
+Write-Host "  1. Run 'setup-all.ps1 -Gui' for GUI setup wizard" -ForegroundColor White
+Write-Host "  2. Or run server: cd server && npm start" -ForegroundColor White
+Write-Host ""

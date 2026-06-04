@@ -22,6 +22,22 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
   - Linux: GCC/G++ (for example `build-essential`)
   - macOS: Xcode Command Line Tools (`clang`)
 
+## GUI Setup (Recommended for First-Time Users)
+
+The easiest way to get started is with the interactive setup wizard:
+
+```powershell
+# One-command GUI setup (installs prerequisites, builds indexer & server)
+powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
+```
+
+The wizard guides you through:
+1. **Environment check** — detects Node.js, npm, Rust and installs missing tools via winget
+2. **Indexer build** — compiles the Rust tree-sitter engine with progress feedback
+3. **Server setup** — installs npm dependencies and builds TypeScript
+4. **Workspace selection** — browse to your codebase and configure settings
+5. **Launch** — start CodeAtlas with one click
+
 ## Quick Start
 
 ### 1. Build
