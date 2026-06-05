@@ -66,6 +66,7 @@ import {
   toCompactSearchResponse,
   toFileGroupedReferenceQueryResponse,
 } from "./compact-responses";
+import { CompactCallReference } from "./models/responses";
 import {
   buildClassResponse,
   buildCallerQueryResponse,
@@ -78,6 +79,8 @@ import {
   makeRecoveredCallReference,
   makeResolvedCallReference,
   rankHeuristicCandidatesDetailed,
+  buildCompactCallReferences,
+  toCompactPropagationEvent,
 } from "./response-metadata";
 import { buildResponseReliability } from "./reliability";
 import { initRuntimeStats, prepareRuntimeStatsPath, recordMcpToolCall } from "./runtime-stats";
@@ -532,18 +535,29 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   function buildExactSymbolPayload(params: {
     matchedBy: "id" | "qualifiedName" | "both";
     symbol: ReturnType<Store["getSymbolById"]>;
+    maxCallers?: number;
+    maxCallees?: number;
+    compact?: boolean;
   }): SymbolLookupResponse | null {
-    const { symbol, matchedBy } = params;
+    const { symbol, matchedBy, maxCallers, maxCallees, compact } = params;
     if (!symbol) return null;
 
     const representativeMetadata = deriveRepresentativeMetadata(symbol, store.getRepresentativeCandidates(symbol.id));
     const base = buildExactLookupResponse({ symbol, matchedBy, representativeMetadata });
 
     if (symbol.type === "function" || symbol.type === "method") {
+      const rawCallers = applyLimit(store.getCallers(symbol.id), maxCallers ?? CALLERS_MAX_LIMIT);
+      const rawCallees = applyLimit(store.getCallees(symbol.id), maxCallees ?? CALLERS_MAX_LIMIT);
+      const callers: CallReference[] | CompactCallReference[] = compact
+        ? buildCompactCallReferences(rawCallers.results, "callerId", store.getSymbolById.bind(store))
+        : buildCallReferences(rawCallers.results, "callerId");
+      const callees: CallReference[] | CompactCallReference[] = compact
+        ? buildCompactCallReferences(rawCallees.results, "calleeId", store.getSymbolById.bind(store))
+        : buildCallReferences(rawCallees.results, "calleeId");
       return {
         ...base,
-        callers: buildCallReferences(store.getCallers(symbol.id), "callerId"),
-        callees: buildCallReferences(store.getCallees(symbol.id), "calleeId"),
+        callers,
+        callees,
       } as SymbolLookupResponse;
     }
 
@@ -806,6 +820,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     limit: number,
     propagationKinds?: PropagationKind[],
     filePath?: string,
+    compact = false,
   ): ExplainSymbolPropagationResponse {
     const incomingAll = store.getIncomingPropagation(symbol.id, propagationKinds, filePath);
     const outgoingAll = store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
@@ -822,12 +837,15 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       incoming.truncated || outgoing.truncated,
     );
 
+    const incomingEvents = compact ? incoming.results.map(toCompactPropagationEvent) : incoming.results;
+    const outgoingEvents = compact ? outgoing.results.map(toCompactPropagationEvent) : outgoing.results;
+
     return {
       ...buildExactLookupResponse({ symbol, matchedBy }),
       window: buildResultWindow(returnedCount, totalCount, incoming.truncated || outgoing.truncated, limit),
       propagationConfidence: assessment.propagationConfidence,
-      incoming: incoming.results,
-      outgoing: outgoing.results,
+      incoming: incomingEvents as ExplainSymbolPropagationResponse["incoming"],
+      outgoing: outgoingEvents as ExplainSymbolPropagationResponse["outgoing"],
       riskMarkers: assessment.riskMarkers,
       confidenceNotes: [...assessment.confidenceNotes, ...buildFileRiskNotes(symbol)],
       summary: [
@@ -1214,8 +1232,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     {
       id: z.string().optional().describe("Canonical exact symbol identity"),
       qualifiedName: z.string().optional().describe("Canonical exact human-readable symbol identity"),
+      maxCallers: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Cap the number of callers returned (function/method only)"),
+      maxCallees: z.number().int().min(1).max(CALLERS_MAX_LIMIT).default(CALLERS_DEFAULT_LIMIT).describe("Cap the number of callees returned (function/method only)"),
+      compact: z.boolean().optional().describe("Force compact caller/callee format (true) or full (false); omits matchReasons/resolutionKind/provenanceKind for smaller payloads"),
     },
-    async ({ id, qualifiedName }) => {
+    async ({ id, qualifiedName, maxCallers, maxCallees, compact }) => {
       if (!id && !qualifiedName) {
         return badRequestPayload();
       }
@@ -1231,7 +1252,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           return badRequestPayload();
         }
 
-        const payload = buildExactSymbolPayload({ matchedBy: "both", symbol: byId });
+        const payload = buildExactSymbolPayload({ matchedBy: "both", symbol: byId, maxCallers, maxCallees, compact });
         if (!payload) {
           return notFoundPayload();
         }
@@ -1249,6 +1270,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       const payload = buildExactSymbolPayload({
         matchedBy: id ? "id" : "qualifiedName",
         symbol,
+        maxCallers,
+        maxCallees,
+        compact,
       });
 
       if (!payload) {
@@ -1543,8 +1567,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       filePath: z.string().optional().describe("Optional exact file path filter"),
       limit: z.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT).describe("Maximum propagation events to return per section"),
       propagationKinds: z.array(z.enum(["assignment", "initializerBinding", "argumentToParameter", "returnValue", "fieldWrite", "fieldRead"])).optional().describe("Optional propagation-kind filters"),
+      compact: z.boolean().optional().describe("Force compact mode (true) or full (false); drops expressionText from anchors for smaller payloads"),
     },
-    async ({ id, qualifiedName, filePath, limit, propagationKinds }) => {
+    async ({ id, qualifiedName, filePath, limit, propagationKinds, compact }) => {
       if (!id && !qualifiedName) {
         return badRequestPayload();
       }
@@ -1575,6 +1600,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
               limit,
               propagationKinds,
               filePath,
+              compact ?? false,
             ),
             null,
             2,

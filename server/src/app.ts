@@ -18,6 +18,7 @@ import {
   CallGraphResponse,
   CallGraphEdge,
   CallReference,
+  CompactCallReference,
   ClassMembersOverviewResponse,
   BaseMethodsResponse,
   ErrorResponse,
@@ -70,6 +71,7 @@ import {
   makeRecoveredCallReference,
   makeResolvedCallReference,
   rankHeuristicCandidatesDetailed,
+  toCompactPropagationEvent,
 } from "./response-metadata";
 import { buildResponseReliability } from "./reliability";
 import { getMcpRuntimeStatsSnapshot, readPersistedMcpRuntimeStatsSnapshot } from "./runtime-stats";
@@ -898,30 +900,36 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     limit: number,
     propagationKinds?: PropagationKind[],
     filePath?: string,
+    compact = false,
+    preIncoming?: PropagationEventRecord[],
+    preOutgoing?: PropagationEventRecord[],
   ): ExplainSymbolPropagationResponse {
-    const incomingAll = store.getIncomingPropagation(symbol.id, propagationKinds, filePath);
-    const outgoingAll = store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
-    const incoming = applyLimit(incomingAll, limit);
-    const outgoing = applyLimit(outgoingAll, limit);
-    const returnedCount = incoming.results.length + outgoing.results.length;
-    const totalCount = incoming.totalCount + outgoing.totalCount;
+    const incomingAll = preIncoming ?? store.getIncomingPropagation(symbol.id, propagationKinds, filePath);
+    const outgoingAll = preOutgoing ?? store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
+    const incoming: PropagationEventRecord[] = Array.isArray(incomingAll) ? incomingAll : (incomingAll as any).results || incomingAll;
+    const outgoing: PropagationEventRecord[] = Array.isArray(outgoingAll) ? outgoingAll : (outgoingAll as any).results || outgoingAll;
+    const returnedCount = incoming.length + outgoing.length;
+    const totalCount = Math.min(incoming.length, limit) + Math.min(outgoing.length, limit);
     const assessment = buildPropagationAssessment(
-      [...incoming.results, ...outgoing.results],
-      incoming.truncated || outgoing.truncated,
+      [...incoming, ...outgoing],
+      incoming.length < (preIncoming ?? store.getIncomingPropagation(symbol.id, propagationKinds, filePath)).length || outgoing.length < (preOutgoing ?? store.getOutgoingPropagation(symbol.id, propagationKinds, filePath)).length,
     );
+
+    const mappedIncoming = compact ? incoming.map(toCompactPropagationEvent) : incoming;
+    const mappedOutgoing = compact ? outgoing.map(toCompactPropagationEvent) : outgoing;
 
     return {
       ...buildExactLookupResponse({ symbol, matchedBy }),
-      window: buildResultWindow(returnedCount, totalCount, incoming.truncated || outgoing.truncated, limit),
+      window: buildResultWindow(returnedCount, totalCount, false, limit),
       propagationConfidence: assessment.propagationConfidence,
-      incoming: incoming.results,
-      outgoing: outgoing.results,
+      incoming: mappedIncoming as ExplainSymbolPropagationResponse["incoming"],
+      outgoing: mappedOutgoing as ExplainSymbolPropagationResponse["outgoing"],
       riskMarkers: assessment.riskMarkers,
       confidenceNotes: [...assessment.confidenceNotes, ...buildFileRiskNotes(symbol)],
       summary: [
-        `incoming: ${incoming.totalCount} event(s)`,
-        `outgoing: ${outgoing.totalCount} event(s)`,
-        ...buildPropagationSummary([...incoming.results, ...outgoing.results]),
+        `incoming: ${totalCount} event(s)`,
+        `outgoing: ${totalCount} event(s)`,
+        ...buildPropagationSummary([...incoming, ...outgoing]),
       ],
       suggestedFollowUpQueries: buildPropagationFollowUpQueries(symbol, assessment.riskMarkers),
     };
@@ -1305,22 +1313,38 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     };
   }
 
-  function buildExactSymbolResponse(params: { matchedBy: "id" | "qualifiedName" | "both"; symbol: ReturnType<Store["getSymbolById"]> }): SymbolLookupResponse | null {
-    const { symbol, matchedBy } = params;
+  function buildExactSymbolResponse(params: { matchedBy: "id" | "qualifiedName" | "both"; symbol: ReturnType<Store["getSymbolById"]>; maxCallers?: number; maxCallees?: number; compact?: boolean }): SymbolLookupResponse | null {
+    const { symbol, matchedBy, maxCallers, maxCallees, compact } = params;
     if (!symbol) return null;
 
     const representativeMetadata = deriveRepresentativeMetadata(symbol, store.getRepresentativeCandidates(symbol.id));
     const base = buildExactLookupResponse({ symbol, matchedBy, representativeMetadata });
 
     if (symbol.type === "function" || symbol.type === "method") {
+      const callerLimit = maxCallers ?? CALLERS_DEFAULT_LIMIT;
+      const calleeLimit = maxCallees ?? CALLERS_DEFAULT_LIMIT;
       const resolvedCallers = buildCallRefs(store.getCallers(symbol.id), "callerId");
       const recoveredCallers = resolvedCallers.length === 0
-        ? buildRecoveredCallerRefs(symbol, CALLERS_DEFAULT_LIMIT).results
+        ? buildRecoveredCallerRefs(symbol, callerLimit).results
         : [];
+      let callers: CallReference[] | CompactCallReference[];
+      if (resolvedCallers.length > 0) {
+        const sliced = resolvedCallers.slice(0, callerLimit);
+        callers = compact ? sliced.map((c) => ({ symbolId: c.symbolId, qualifiedName: c.qualifiedName, filePath: c.filePath, line: c.line, confidence: c.confidence })) : sliced;
+      } else {
+        const sliced = recoveredCallers.slice(0, callerLimit);
+        callers = compact ? sliced.map((c) => ({ symbolId: c.symbolId, qualifiedName: c.qualifiedName, filePath: c.filePath, line: c.line, confidence: c.confidence })) : sliced;
+      }
+      const rawCallees = store.getCallees(symbol.id);
+      const calleeRefs = buildCallRefs(rawCallees.slice(0, calleeLimit), "calleeId");
+      let callees: CallReference[] | CompactCallReference[] = calleeRefs;
+      if (compact) {
+        callees = calleeRefs.map((c) => ({ symbolId: c.symbolId, qualifiedName: c.qualifiedName, filePath: c.filePath, line: c.line, confidence: c.confidence }));
+      }
       return {
         ...base,
-        callers: resolvedCallers.length > 0 ? resolvedCallers : recoveredCallers,
-        callees: buildCallRefs(store.getCallees(symbol.id), "calleeId"),
+        callers: callers as CallReference[],
+        callees: callees as CallReference[],
       };
     }
 
@@ -1344,6 +1368,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   app.get("/symbol", (req, res) => {
     const id = typeof req.query.id === "string" ? req.query.id : undefined;
     const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    const maxCallers = Math.min(parseInt((req.query.maxCallers as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
+    const maxCallees = Math.min(parseInt((req.query.maxCallees as string) || String(CALLERS_DEFAULT_LIMIT), 10), CALLERS_MAX_LIMIT);
+    const compact = req.query.compact === "true";
 
     if (!id && !qualifiedName) {
       return badRequest(res);
@@ -1360,7 +1387,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
         return badRequest(res);
       }
 
-      const response = buildExactSymbolResponse({ matchedBy: "both", symbol: byId });
+      const response = buildExactSymbolResponse({ matchedBy: "both", symbol: byId, maxCallers, maxCallees, compact });
       return response ? res.json(response) : notFound(res);
     }
 
@@ -1372,6 +1399,9 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const response = buildExactSymbolResponse({
       matchedBy: id ? "id" : "qualifiedName",
       symbol,
+      maxCallers,
+      maxCallees,
+      compact,
     });
     return response ? res.json(response) : notFound(res);
   });
@@ -1573,6 +1603,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
     const limit = Math.min(parseInt((req.query.limit as string) || String(SEARCH_DEFAULT_LIMIT), 10), SEARCH_MAX_LIMIT);
     const propagationKinds = parsePropagationKinds(req.query as Record<string, unknown>);
+    const compact = req.query.compact === "true";
 
     if (!id && !qualifiedName) {
       return badRequest(res);
@@ -1594,12 +1625,20 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       return notFound(res);
     }
 
+    const incomingAll = store.getIncomingPropagation(symbol.id, propagationKinds, filePath);
+    const outgoingAll = store.getOutgoingPropagation(symbol.id, propagationKinds, filePath);
+    const incoming = incomingAll.slice(0, limit);
+    const outgoing = outgoingAll.slice(0, limit);
+
     return res.json(buildExplainPropagation(
       symbol,
       id && qualifiedName ? "both" : id ? "id" : "qualifiedName",
       limit,
       propagationKinds,
       filePath,
+      compact,
+      incoming,
+      outgoing,
     ));
   });
 

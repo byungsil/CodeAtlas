@@ -265,6 +265,14 @@ export interface CallReference {
   provenanceKind?: CallProvenanceKind;
 }
 
+export interface CompactCallReference {
+  symbolId: string;
+  qualifiedName: string;
+  filePath: string;
+  line: number;
+  confidence: ConfidenceLevel;
+}
+
 export type ReferenceCategory =
   | "functionCall"
   | "methodCall"
@@ -586,6 +594,33 @@ export interface PropagationEventRecord {
 
 export interface PropagationPathStep extends PropagationEventRecord {
   hop: number;
+}
+
+export interface CompactPropagationAnchor {
+  anchorKind: PropagationAnchorKind;
+  symbolId?: string;
+}
+
+export interface CompactPropagationEventRecord {
+  propagationKind: PropagationKind;
+  filePath: string;
+  line: number;
+  confidence: PropagationConfidence;
+  sourceAnchor: CompactPropagationAnchor;
+  targetAnchor: CompactPropagationAnchor;
+}
+
+export interface CompactExplainSymbolPropagationResponse extends ConfidenceMetadata {
+  lookupMode: LookupMode;
+  symbol: Symbol;
+  window: ResultWindow;
+  propagationConfidence: PropagationConfidence;
+  incoming: CompactPropagationEventRecord[];
+  outgoing: CompactPropagationEventRecord[];
+  riskMarkers: PropagationRisk[];
+  confidenceNotes: string[];
+  summary: string[];
+  suggestedFollowUpQueries: string[];
 }
 
 export interface TraceVariableFlowResponse extends ConfidenceMetadata {

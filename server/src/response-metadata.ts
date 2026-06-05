@@ -1,6 +1,7 @@
 import {
   CallProvenanceKind,
   CallReference,
+  CompactCallReference,
   CallResolutionKind,
   ConfidenceLevel,
   CallerQueryResponse,
@@ -10,6 +11,10 @@ import {
   MatchReason,
   ClassResponse,
   OverloadQueryResponse,
+  PropagationConfidence,
+  PropagationEventRecord,
+  CompactPropagationAnchor,
+  CompactPropagationEventRecord,
   RepresentativeMetadata,
   RepresentativeSelectionReason,
   ResultWindow,
@@ -319,6 +324,16 @@ export function makeRecoveredCallReference(params: {
     matchReasons: params.matchReasons ?? [],
     resolutionKind: params.resolutionKind ?? "recovered",
     provenanceKind: params.provenanceKind ?? "raw_call",
+  };
+}
+
+export function toCompactCallReference(ref: CallReference): CompactCallReference {
+  return {
+    symbolId: ref.symbolId,
+    qualifiedName: ref.qualifiedName,
+    filePath: ref.filePath,
+    line: ref.line,
+    confidence: ref.confidence,
   };
 }
 
@@ -653,4 +668,52 @@ function normalizePathParts(filePath: string): string[] {
     .split("/")
     .map((part) => part.toLowerCase())
     .filter((part) => part.length > 0);
+}
+
+export function toCompactPropagationAnchor(anchor: PropagationEventRecord["sourceAnchor"] | PropagationEventRecord["targetAnchor"]): CompactPropagationAnchor {
+  return {
+    anchorKind: anchor.anchorKind,
+    ...(anchor.symbolId ? { symbolId: anchor.symbolId } : {}),
+  };
+}
+
+export function toCompactPropagationEvent(event: PropagationEventRecord): CompactPropagationEventRecord {
+  return {
+    propagationKind: event.propagationKind,
+    filePath: event.filePath,
+    line: event.line,
+    confidence: event.confidence,
+    sourceAnchor: toCompactPropagationAnchor(event.sourceAnchor),
+    targetAnchor: toCompactPropagationAnchor(event.targetAnchor),
+  };
+}
+
+export function buildCompactCallReferences(
+  calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
+  targetField: "callerId" | "calleeId",
+  symbolById: (id: string) => any,
+): CompactCallReference[] {
+  const symbolMap = new Map<string, any>();
+  for (const call of calls) {
+    const id = call[targetField];
+    if (!id || symbolMap.has(id)) continue;
+    const sym = symbolById(id);
+    if (sym) symbolMap.set(id, sym);
+  }
+
+  return calls
+    .map((c) => {
+      const targetId = c[targetField];
+      if (!targetId) return null;
+      const s = symbolMap.get(targetId);
+      if (!s) return null;
+      return toCompactCallReference({
+        symbolId: s.id,
+        qualifiedName: s.qualifiedName,
+        filePath: c.filePath,
+        line: c.line,
+        confidence: "high_confidence_heuristic",
+      } as CallReference);
+    })
+    .filter((r): r is CompactCallReference => r !== null);
 }

@@ -15,5 +15,6 @@ export {
   CallGraphNode,
   CallGraphEdge,
   CallReference,
+  CompactCallReference,
   ErrorResponse,
 } from "./responses";
