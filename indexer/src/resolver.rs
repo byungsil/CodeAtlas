@@ -40,11 +40,51 @@ enum ResolutionStatus {
     Unresolved,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
+struct FileRelationshipScore {
+    include_distance_bonus: i32,
+    is_same_file: bool,
+    is_directly_included: bool,
+    is_transitively_included: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MacroContextSignals {
+    has_conditional_symbols: bool,
+    gating_macros_used: Vec<String>,
+    caller_has_macro_sensitivity: bool,
+}
+
+impl FileRelationshipScore {
+    fn from_distance(distance: i32) -> Self {
+        let (include_distance_bonus, is_directly_included, is_transitively_included) = if distance == 0 {
+            (-50, false, false)
+        } else if distance < 0 {
+            (-30, true, false)
+        } else if distance <= 3 {
+            (-(distance as i32) * 8, false, true)
+        } else {
+            ((-distance as i32) * 15, false, false)
+        };
+
+        FileRelationshipScore {
+            include_distance_bonus,
+            is_same_file: distance == 0,
+            is_directly_included,
+            is_transitively_included,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 struct ResolutionContext<'a> {
     caller_parent: Option<&'a str>,
     caller_namespace: Option<&'a str>,
     caller_bases: &'a [&'a str],
+    caller_file: Option<&'a str>,
+    callee_files_len: usize,
+    file_relationship: FileRelationshipScore,
+    macro_context: MacroContextSignals,
 }
 
 pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call> {
@@ -56,10 +96,20 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
 
     for raw in raw_calls {
         let candidates = collect_candidates(raw, &by_name);
+        let callee_files: Vec<&str> = candidates.iter().map(|s| s.file_path.as_str()).collect();
+        let caller_file = raw.file_path.as_str();
+
+        let file_relationship = compute_file_relationship(caller_file, &callee_files);
+        let macro_signals = build_macro_context_signals(&candidates, raw.caller_id.as_str(), Some(&parent_of));
+
         let context = ResolutionContext {
             caller_parent: parent_of.get(raw.caller_id.as_str()).copied(),
             caller_namespace: namespace_scope(raw.caller_id.as_str(), parent_of.get(raw.caller_id.as_str()).copied()),
             caller_bases: &[],
+            caller_file: Some(caller_file),
+            callee_files_len: callee_files.len(),
+            file_relationship,
+            macro_context: macro_signals,
         };
         let decision = resolve_one(raw, candidates, context);
 
@@ -80,6 +130,89 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
     }
 
     calls
+}
+
+fn compute_file_relationship(caller_file: &str, callee_files: &[&str]) -> FileRelationshipScore {
+    if callee_files.is_empty() {
+        return FileRelationshipScore::default();
+    }
+
+    let mut best_score = FileRelationshipScore::from_distance(999);
+    for &callee_file in callee_files {
+        if callee_file == caller_file {
+            return FileRelationshipScore::from_distance(0);
+        }
+        let distance = compute_include_distance(caller_file, callee_file);
+        let score = FileRelationshipScore::from_distance(distance);
+        if score.include_distance_bonus > best_score.include_distance_bonus {
+            best_score = score;
+        }
+    }
+
+    best_score
+}
+
+fn compute_include_distance(source: &str, target: &str) -> i32 {
+    if source == target {
+        return 0;
+    }
+
+    let source_dir = source.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let target_dir = target.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+
+    if source_dir == target_dir && !source_dir.is_empty() {
+        return -1;
+    }
+
+    let common_parts: Vec<String> = source_dir.split('/').zip(target_dir.split('/'))
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.to_string())
+        .collect();
+
+    let source_depth = source_dir.split('/').count();
+    let target_depth = target_dir.split('/').count();
+    let common_depth = common_parts.len();
+
+    let distance = (source_depth - common_depth) + (target_depth - common_depth);
+
+    if distance <= 2 {
+        -1
+    } else if distance <= 5 {
+        distance as i32
+    } else {
+        distance as i32 * 2
+    }
+}
+
+fn build_macro_context_signals(
+    candidates: &[&Symbol],
+    caller_id: &str,
+    parent_of: Option<&HashMap<&str, &str>>,
+) -> MacroContextSignals {
+    let mut signals = MacroContextSignals::default();
+
+    for sym in candidates {
+        if let Some(flag) = &sym.parse_fragility {
+            if flag == "Elevated" {
+                signals.has_conditional_symbols = true;
+            }
+        }
+        if let Some(macro_sens) = &sym.macro_sensitivity {
+            if macro_sens == "High" {
+                signals.caller_has_macro_sensitivity = true;
+            }
+        }
+    }
+
+    if let Some(parent_id) = parent_of.and_then(|p| p.get(caller_id)) {
+        for sym in candidates {
+            if sym.parent_id.as_deref() == Some(parent_id) {
+                signals.gating_macros_used.push(sym.id.clone());
+            }
+        }
+    }
+
+    signals
 }
 
 fn build_callable_index<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'a Symbol>> {
@@ -140,7 +273,7 @@ fn score_candidates<'a>(
     let mut ranked: Vec<RankedCandidate<'a>> = candidates
         .into_iter()
         .map(|symbol| {
-            let mut reasons = Vec::with_capacity(4);
+            let mut reasons = Vec::with_capacity(6);
 
             if !matches!(raw.call_kind, RawCallKind::Qualified) {
                 if let Some(parent) = context.caller_parent {
@@ -173,7 +306,11 @@ fn score_candidates<'a>(
                 }
             }
 
-            push_receiver_aware_reasons(raw, symbol, context, &mut reasons);
+            push_receiver_aware_reasons(raw, symbol, &context, &mut reasons);
+            push_include_graph_reasons(symbol, &context, &mut reasons);
+            push_conditional_symbol_penalty(symbol, &context, &mut reasons);
+            push_inline_header_bonus(symbol, &mut reasons);
+            push_template_instance_match(raw, symbol, &mut reasons);
 
             push_arity_hint_reasons(raw, symbol, &mut reasons);
             push_argument_signature_reasons(raw, symbol, &mut reasons);
@@ -198,6 +335,103 @@ fn score_candidates<'a>(
     ranked
 }
 
+fn push_include_graph_reasons<'a>(
+    symbol: &'a Symbol,
+    context: &'a ResolutionContext<'_>,
+    reasons: &mut Vec<RankingReason>,
+) {
+    if let Some(caller_file) = context.caller_file {
+        let is_same_file = symbol.file_path == caller_file;
+
+        if is_same_file && context.file_relationship.is_same_file {
+            reasons.push(RankingReason {
+                kind: "same_file_call",
+                score: 40,
+            });
+        } else if context.file_relationship.is_directly_included {
+            reasons.push(RankingReason {
+                kind: "direct_include_neighbor",
+                score: 25,
+            });
+        } else if context.file_relationship.is_transitively_included {
+            reasons.push(RankingReason {
+                kind: "transitive_include_neighbor",
+                score: 10,
+            });
+        }
+
+        let distance_bonus = context.file_relationship.include_distance_bonus;
+        if distance_bonus < 0 && !is_same_file {
+            reasons.push(RankingReason {
+                kind: "include_distance_penalty",
+                score: distance_bonus,
+            });
+        }
+    }
+}
+
+fn push_conditional_symbol_penalty<'a>(
+    symbol: &'a Symbol,
+    context: &'a ResolutionContext<'_>,
+    reasons: &mut Vec<RankingReason>,
+) {
+    if context.macro_context.has_conditional_symbols && !context.macro_context.caller_has_macro_sensitivity {
+        let has_macro_flag = symbol.parse_fragility.as_deref() == Some("Elevated")
+            || symbol.macro_sensitivity.as_deref() == Some("High");
+
+        if has_macro_flag {
+            reasons.push(RankingReason {
+                kind: "conditional_symbol_penalty",
+                score: -35,
+            });
+        }
+    }
+}
+
+fn push_inline_header_bonus<'a>(
+    symbol: &'a Symbol,
+    reasons: &mut Vec<RankingReason>,
+) {
+    let is_header = looks_like_header_path(&symbol.file_path);
+    let is_implementation = looks_like_implementation_path(&symbol.file_path);
+
+    if let Some(role) = symbol.header_role.as_deref() {
+        if role == "public" && is_header {
+            reasons.push(RankingReason {
+                kind: "public_header_candidate",
+                score: 15,
+            });
+        }
+    }
+
+    if is_implementation && !is_header {
+        reasons.push(RankingReason {
+            kind: "implementation_file_preferred",
+            score: 20,
+        });
+    }
+}
+
+fn push_template_instance_match<'a>(
+    raw: &RawCallSite,
+    symbol: &'a Symbol,
+    reasons: &mut Vec<RankingReason>,
+) {
+    if let Some(signature) = &symbol.signature {
+        if signature.contains('<') && signature.contains('>') {
+            if raw.called_name.contains('<') || raw.called_name.contains(':') {
+                let name_matches = symbol.name == raw.called_name;
+                if name_matches {
+                    reasons.push(RankingReason {
+                        kind: "template_instance_match",
+                        score: 30,
+                    });
+                }
+            }
+        }
+    }
+}
+
 fn tie_break<'a>(ranked: &[RankedCandidate<'a>]) -> (ResolutionStatus, Option<&'a Symbol>) {
     let first = match ranked.first() {
         Some(first) => first,
@@ -214,10 +448,10 @@ fn tie_break<'a>(ranked: &[RankedCandidate<'a>]) -> (ResolutionStatus, Option<&'
     (ResolutionStatus::Resolved, Some(first.symbol))
 }
 
-fn push_receiver_aware_reasons(
+fn push_receiver_aware_reasons<'a>(
     raw: &RawCallSite,
-    symbol: &Symbol,
-    context: ResolutionContext<'_>,
+    symbol: &'a Symbol,
+    context: &'a ResolutionContext<'_>,
     reasons: &mut Vec<RankingReason>,
 ) {
     match raw.call_kind {
@@ -758,10 +992,19 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
             .and_then(|parent| db_bases_by_parent.get(parent))
             .map(|base_ids| base_ids.iter().map(|base_id| base_id.as_str()).collect())
             .unwrap_or_default();
+
+         let callee_files: Vec<&str> = owned_candidates.iter().map(|s| s.file_path.as_str()).collect();
+        let file_relationship = compute_file_relationship(&raw.file_path, &callee_files);
+        let macro_signals = build_macro_context_signals(&candidates, raw.caller_id.as_str(), None);
+
         let context = ResolutionContext {
             caller_parent,
             caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
             caller_bases: caller_base_ids.as_slice(),
+            caller_file: Some(raw.file_path.as_str()),
+            callee_files_len: callee_files.len(),
+            file_relationship,
+            macro_context: macro_signals,
         };
         let decision = resolve_one(raw, candidates, context);
 
@@ -1439,7 +1682,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent,
             caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
         resolve_one(raw, candidates, context)
     }
@@ -2070,7 +2313,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Gameplay::ShotNormal"),
             caller_namespace: Some("Gameplay"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2093,7 +2336,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Alpha"),
             caller_namespace: None,
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2117,7 +2360,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Gameplay"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2140,15 +2383,15 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Game::Player"),
             caller_namespace: Some("Game"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
 
         assert_eq!(decision.chosen.map(|symbol| symbol.id.as_str()), Some("Game::Player::Run"));
         assert_eq!(decision.status, ResolutionStatus::Resolved);
-        assert_eq!(decision.ranked[0].score, 150);
-        assert_eq!(decision.ranked[1].score, 50);
+        assert_eq!(decision.ranked[0].score, 170);
+        assert_eq!(decision.ranked[1].score, 70);
     }
 
     #[test]
@@ -2160,7 +2403,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("Game::Player"),
             caller_namespace: Some("Game"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2195,7 +2438,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2230,7 +2473,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2265,7 +2508,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("AI::Controller"),
             caller_namespace: Some("AI"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2300,7 +2543,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: Some("AI::Controller"),
             caller_namespace: Some("AI"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2343,7 +2586,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Math"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2384,7 +2627,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Math"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);
@@ -2403,7 +2646,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: Some("Game"),
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, Vec::new(), context);
@@ -2422,7 +2665,7 @@ mod tests {
         let context = ResolutionContext {
             caller_parent: None,
             caller_namespace: None,
-            caller_bases: &[],
+            caller_bases: &[], ..Default::default()
         };
 
         let decision = resolve_one(&raw, candidates, context);

@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use crate::models::{
-    Call, CallableFlowSummary, FileRecord, NormalizedReference, PropagationAnchorKind,
-    PropagationEvent, PropagationKind, RawExtractionConfidence, RawCallKind, RawCallSite,
-    RawQualifierKind, RawReceiverKind, ReferenceCategory, Symbol,
+    Call, CallableFlowSummary, CircularDependency, ConditionalSymbol, FileRecord, IncludeChain,
+    IncludeDependency, MacroType, NormalizedReference, PropagationAnchorKind, PropagationEvent,
+    PropagationKind, RawExtractionConfidence, RawCallKind, RawCallSite, RawQualifierKind,
+    RawReceiverKind, ReferenceCategory, Symbol,
 };
 #[cfg(test)]
 use crate::models::InheritanceEdge;
@@ -19,6 +20,14 @@ const DB_SCHEMA_VERSION: i64 = 1;
 const INDEX_FORMAT_VERSION: u32 = 1;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
+
+fn format_macro_type(macro_type: &MacroType) -> String {
+    match macro_type {
+        MacroType::ObjectLike => "objectLike".to_string(),
+        MacroType::FunctionLike => "functionLike".to_string(),
+        MacroType::ConditionalDefine => "conditionalDefine".to_string(),
+    }
+}
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS symbols_raw (
@@ -151,6 +160,57 @@ CREATE TABLE IF NOT EXISTS files (
     include_heaviness TEXT
 );
 
+CREATE TABLE IF NOT EXISTS include_dependencies (
+    source_file     TEXT NOT NULL,
+    included_file   TEXT NOT NULL,
+    line            INTEGER NOT NULL,
+    is_system_include INTEGER NOT NULL  -- 0 or 1
+);
+
+CREATE TABLE IF NOT EXISTS macro_definitions (
+    file_path   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    value       TEXT,  -- NULL for #define NAME without value
+    line        INTEGER NOT NULL,
+    macro_type  TEXT NOT NULL  -- objectLike, functionLike, conditionalDefine
+);
+
+CREATE TABLE IF NOT EXISTS conditional_blocks (
+    file_path       TEXT NOT NULL,
+    condition_text  TEXT NOT NULL,
+    start_line      INTEGER NOT NULL,
+    end_line        INTEGER NOT NULL,
+    is_negated      INTEGER NOT NULL  -- 0 or 1 (for #ifndef)
+);
+
+CREATE INDEX IF NOT EXISTS idx_macro_defs_file ON macro_definitions(file_path, line);
+CREATE INDEX IF NOT EXISTS idx_cond_blocks_file ON conditional_blocks(file_path, start_line);
+
+-- Phase 4: Dependency metrics and circular dependencies
+CREATE TABLE IF NOT EXISTS include_chains (
+    source_file   TEXT NOT NULL,
+    chain         TEXT NOT NULL,          -- JSON array of included files
+    depth         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_include_chains_source ON include_chains(source_file);
+
+CREATE TABLE IF NOT EXISTS circular_dependencies (
+    cycle     TEXT NOT NULL              -- JSON array of files in the cycle
+);
+
+-- Phase 5: Conditional symbol tracking
+CREATE TABLE IF NOT EXISTS conditional_symbols (
+    file_path       TEXT NOT NULL,
+    symbol_name     TEXT NOT NULL,
+    line            INTEGER NOT NULL,
+    gating_macro    TEXT NOT NULL,
+    is_negated      INTEGER NOT NULL  -- 0 or 1 (for #ifndef)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cond_symbols_file ON conditional_symbols(file_path, line);
+CREATE INDEX IF NOT EXISTS idx_cond_symbols_macro ON conditional_symbols(gating_macro);
+
 CREATE TABLE IF NOT EXISTS db_metadata (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL
@@ -188,6 +248,10 @@ CREATE INDEX IF NOT EXISTS idx_propagation_target_kind_file ON propagation_event
 CREATE INDEX IF NOT EXISTS idx_propagation_file ON propagation_events(file_path);
 CREATE INDEX IF NOT EXISTS idx_callable_flow_summaries_file ON callable_flow_summaries(file_path);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+
+CREATE INDEX IF NOT EXISTS idx_include_deps_source ON include_dependencies(source_file);
+CREATE INDEX IF NOT EXISTS idx_include_deps_included ON include_dependencies(included_file);
+CREATE INDEX IF NOT EXISTS idx_include_deps_source_included ON include_dependencies(source_file, included_file);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(id, name, qualified_name, tokenize='trigram');
 "#;
@@ -486,6 +550,95 @@ impl Database {
                 raw_call.qualifier_kind.as_ref().map(raw_qualifier_kind_key),
                 raw_call.file_path,
                 raw_call.line,
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_include_dependencies(&self, deps: &[IncludeDependency]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO include_dependencies (source_file, included_file, line, is_system_include) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for dep in deps {
+            stmt.execute(params![
+                dep.source_file,
+                dep.included_file,
+                dep.line,
+                if dep.is_system_include { 1 } else { 0 },
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_macro_definitions(&self, macros: &[crate::models::MacroDefinition]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO macro_definitions (file_path, name, value, line, macro_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for mac in macros {
+            stmt.execute(params![
+                mac.file_path,
+                mac.name,
+                mac.value.as_deref(),
+                mac.line,
+                format_macro_type(&mac.macro_type),
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_conditional_blocks(&self, blocks: &[crate::models::ConditionalBlock]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO conditional_blocks (file_path, condition_text, start_line, end_line, is_negated) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for block in blocks {
+            stmt.execute(params![
+                block.file_path,
+                block.condition_text,
+                block.start_line,
+                block.end_line,
+                if block.is_negated { 1 } else { 0 },
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_include_chains(&self, chains: &[IncludeChain]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO include_chains (source_file, chain, depth) VALUES (?1, ?2, ?3)",
+        )?;
+        for chain in chains {
+            stmt.execute(params![
+                chain.source_file,
+                serde_json::to_string(&chain.chain).unwrap_or_default(),
+                chain.depth,
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_circular_dependencies(&self, cycles: &[CircularDependency]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO circular_dependencies (cycle) VALUES (?1)",
+        )?;
+        for cycle in cycles {
+            stmt.execute(params![
+                serde_json::to_string(&cycle.cycle).unwrap_or_default(),
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_conditional_symbols(&self, symbols: &[ConditionalSymbol]) -> SqlResult<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO conditional_symbols (file_path, symbol_name, line, gating_macro, is_negated) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for sym in symbols {
+            stmt.execute(params![
+                sym.file_path,
+                sym.symbol_name,
+                sym.line,
+                sym.gating_macro,
+                if sym.is_negated { 1 } else { 0 },
             ])?;
         }
         Ok(())
@@ -1287,8 +1440,88 @@ impl Database {
         self.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
     }
 
+    pub fn find_included_files_for_source(&self, source_file: &str) -> SqlResult<Vec<String>> {
+        let sql = "SELECT DISTINCT included_file FROM include_dependencies WHERE source_file = ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![source_file], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    pub fn find_sources_including_target(&self, target_file: &str) -> SqlResult<Vec<String>> {
+        let sql = "SELECT DISTINCT source_file FROM include_dependencies WHERE included_file = ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![target_file], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    pub fn find_conditional_symbols_by_macro(&self, macro_name: &str) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
+        let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols WHERE gating_macro = ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![macro_name], |row| {
+            Ok(crate::models::ConditionalSymbol {
+                file_path: row.get(0)?,
+                symbol_name: row.get(1)?,
+                line: row.get(2)?,
+                gating_macro: row.get(3)?,
+                is_negated: row.get::<_, i32>(4)? == 1,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn find_conditional_symbols_by_file(&self, file_path: &str) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
+        let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols WHERE file_path = ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![file_path], |row| {
+            Ok(crate::models::ConditionalSymbol {
+                file_path: row.get(0)?,
+                symbol_name: row.get(1)?,
+                line: row.get(2)?,
+                gating_macro: row.get(3)?,
+                is_negated: row.get::<_, i32>(4)? == 1,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn find_all_conditional_symbols(&self) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
+        let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::models::ConditionalSymbol {
+                file_path: row.get(0)?,
+                symbol_name: row.get(1)?,
+                line: row.get(2)?,
+                gating_macro: row.get(3)?,
+                is_negated: row.get::<_, i32>(4)? == 1,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn has_data(&self) -> bool {
         self.count_files().unwrap_or(0) > 0
+    }
+
+    pub fn find_all_include_dependencies(&self) -> SqlResult<Vec<IncludeDependency>> {
+        let sql = "SELECT source_file, included_file, line, is_system_include FROM include_dependencies";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(IncludeDependency {
+                source_file: row.get(0)?,
+                included_file: row.get(1)?,
+                line: row.get(2)?,
+                is_system_include: row.get::<_, i32>(3)? == 1,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_all_symbols(&self) -> SqlResult<Vec<Symbol>> {
+        let sql = format!("SELECT {} FROM symbols", SYMBOL_SELECT_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_to_symbol)?;
+        rows.collect()
     }
 
     pub fn begin(&self) -> SqlResult<()> {
@@ -1897,7 +2130,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 32);
+        assert_eq!(idx_count, 40);
     }
 
     #[test]

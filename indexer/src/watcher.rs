@@ -524,6 +524,7 @@ fn run_full_index(
 
     // --- Stage 1: parse in batches and stream raw data straight to DB ---
     let mut all_relation_events = Vec::new();
+    let mut all_include_deps: Vec<crate::models::IncludeDependency> = Vec::new();
     db.begin().map_err(|e| format!("DB begin: {}", e))?;
     db.clear().map_err(|e| format!("DB clear: {}", e))?;
     for (batch_index, batch) in files.chunks(WATCH_FULL_REBUILD_BATCH_SIZE).enumerate() {
@@ -535,6 +536,10 @@ fn run_full_index(
             local_propagation_events,
             callable_flow_summaries,
             file_records,
+            include_dependencies,
+            macro_definitions,
+            conditional_blocks,
+            conditional_symbols,
             _metrics,
         ) = parse_discovered_files_with_progress(
             workspace_root,
@@ -555,7 +560,33 @@ fn run_full_index(
             .map_err(|e| format!("DB write callable summaries: {}", e))?;
         db.write_files(&file_records)
             .map_err(|e| format!("DB write files: {}", e))?;
+        if !include_dependencies.is_empty() {
+            db.write_include_dependencies(&include_dependencies)
+                .map_err(|e| format!("DB write include dependencies: {}", e))?;
+        }
+        if !macro_definitions.is_empty() {
+            db.write_macro_definitions(&macro_definitions)
+                .map_err(|e| format!("DB write macro definitions: {}", e))?;
+        }
+        if !conditional_blocks.is_empty() {
+            db.write_conditional_blocks(&conditional_blocks)
+                .map_err(|e| format!("DB write conditional blocks: {}", e))?;
+        }
+        if !conditional_symbols.is_empty() {
+            db.write_conditional_symbols(&conditional_symbols)
+                .map_err(|e| format!("DB write conditional symbols: {}", e))?;
+        }
+        all_include_deps.extend(include_dependencies);
         all_relation_events.extend(relation_events);
+    }
+
+    // Phase 4: Detect circular dependencies across all files
+    if !all_include_deps.is_empty() {
+        let cycles = parser::detect_circular_dependencies(&all_include_deps);
+        if !cycles.is_empty() {
+            db.write_circular_dependencies(&cycles)
+                .map_err(|e| format!("DB write circular dependencies: {}", e))?;
+        }
     }
 
     // --- Stage 2: merge symbols, write representative symbols, build FTS ---

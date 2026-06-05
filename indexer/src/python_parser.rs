@@ -378,6 +378,11 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
         callable_flow_summaries: Vec::new(),
         raw_calls,
         metrics: ParseMetrics::default(),
+        include_dependencies: Vec::new(),
+        macro_definitions: Vec::new(),
+        conditional_blocks: Vec::new(),
+        dependency_metrics: crate::models::DependencyMetrics::default(),
+        conditional_symbols: Vec::new(),
     })
 }
 
@@ -727,6 +732,11 @@ pub fn parse_python_file_treesitter(file_path: &str, source: &str) -> Result<Par
         callable_flow_summaries: Vec::new(),
         raw_calls,
         metrics: ParseMetrics::default(),
+        include_dependencies: Vec::new(),
+        macro_definitions: Vec::new(),
+        conditional_blocks: Vec::new(),
+        dependency_metrics: crate::models::DependencyMetrics::default(),
+        conditional_symbols: Vec::new(),
     })
 }
 

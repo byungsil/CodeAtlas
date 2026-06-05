@@ -310,6 +310,36 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     merge_normalized_references(&mut normalized_references, enum_value_references);
     let reference_normalization_ms = reference_normalization_start.elapsed().as_millis();
 
+    // Extract #include dependencies for cross-file analysis
+    let include_deps = extract_include_dependencies(source, file_path);
+    let include_extraction_ms = 0u128; // O(n) text scan is negligible
+
+    // Compute dependency metrics using the global include graph
+    let dep_metrics_start = Instant::now();
+    let global_graph = build_global_include_graph(&include_deps);
+    let dependency_metrics = compute_dependency_metrics(file_path, &include_deps, &global_graph);
+    let dep_metrics_ms = dep_metrics_start.elapsed().as_millis();
+
+    // Update include_heaviness based on transitive metrics
+    let mut file_risk_signals = file_risk_signals;
+    if dependency_metrics.transitive_include_count >= 30 || dependency_metrics.max_include_depth >= 6 {
+        file_risk_signals.include_heaviness = crate::models::IncludeHeaviness::Heavy;
+    }
+    // Update parse_fragility based on circular dependencies
+    if dependency_metrics.has_circular_dependency {
+        file_risk_signals.parse_fragility = crate::models::ParseFragility::Elevated;
+    }
+
+    // Extract macro definitions and conditional blocks for Phase 3
+    let macro_start = Instant::now();
+    let (macro_defs, cond_blocks) = extract_macro_info(source, file_path);
+    let macro_extraction_ms = macro_start.elapsed().as_millis();
+
+    // Phase 5: Extract conditional symbols — map symbols to gating macros
+    let cond_sym_start = Instant::now();
+    let cond_symbols = extract_conditional_symbols(source, file_path, &cond_blocks);
+    let conditional_symbol_ms = cond_sym_start.elapsed().as_millis();
+
     Ok(ParseResult {
         symbols: ctx.symbols,
         file_risk_signals,
@@ -335,7 +365,16 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
             graph_rule_compile_ms,
             graph_rule_execute_ms,
             reference_normalization_ms,
+            include_extraction_ms,
+            macro_extraction_ms,
+            dep_metrics_ms,
+            conditional_symbol_ms,
         },
+        include_dependencies: include_deps,
+        macro_definitions: macro_defs,
+        conditional_blocks: cond_blocks,
+        dependency_metrics,
+        conditional_symbols: cond_symbols,
     })
 }
 
@@ -432,6 +471,561 @@ fn enrich_graph_raw_calls_with_legacy_details(
     }
 
     enriched
+}
+
+/// Extract #include dependencies from C/C++ source code.
+/// Scans line-by-line for #include directives and returns structured dependencies.
+fn extract_include_dependencies(source: &str, file_path: &str) -> Vec<crate::models::IncludeDependency> {
+    let mut deps = Vec::new();
+
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        
+        // Match #include "header" or #include <header>
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let rest = rest.trim_start();
+            if let Some(include_path) = rest.strip_prefix("include") {
+                let include_path = include_path.trim_start();
+                
+                // Determine if system include (<...>) or user include ("...")
+                let is_system = include_path.starts_with('<');
+                
+                // Extract the header path
+                let header = if is_system {
+                    // #include <header>
+                    include_path.strip_prefix('<')
+                        .and_then(|p| p.strip_suffix('>'))
+                } else {
+                    // #include "header"
+                    include_path.strip_prefix('"')
+                        .and_then(|p| p.strip_suffix('"'))
+                };
+                
+                if let Some(header) = header {
+                    let header = header.trim();
+                    if !header.is_empty() {
+                        deps.push(crate::models::IncludeDependency {
+                            source_file: file_path.to_string(),
+                            included_file: header.to_string(),
+                            line: line_idx + 1, // 1-indexed
+                            is_system_include: is_system,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    deps
+}
+
+/// Extract macro definitions (#define) and conditional compilation blocks (#ifdef/#ifndef/#if)
+/// from C/C++ source code. Returns (macro_definitions, conditional_blocks).
+pub fn extract_macro_info(source: &str, file_path: &str) -> (
+    Vec<crate::models::MacroDefinition>,
+    Vec<crate::models::ConditionalBlock>,
+) {
+    let mut macros = Vec::new();
+    let mut cond_blocks = Vec::new();
+
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let line_num = line_idx + 1; // 1-indexed
+
+        // Match #define directives
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let rest = rest.trim_start();
+
+            if let Some(define_rest) = rest.strip_prefix("define") {
+                let define_rest = define_rest.trim_start();
+
+                // Extract macro name: find first whitespace OR '(' for function-like macros
+                let mut name_end: Option<usize> = None;
+                for (i, c) in define_rest.char_indices() {
+                    if c.is_whitespace() || c == '(' {
+                        name_end = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(end) = name_end {
+                    let name = &define_rest[..end];
+                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        // Extract value (rest after name)
+                        let value_part = &define_rest[end..];
+                        let macro_type = if value_part.starts_with('(') {
+                            crate::models::MacroType::FunctionLike
+                        } else {
+                            crate::models::MacroType::ObjectLike
+                        };
+                        let value = if value_part.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value_part.trim_start().to_string())
+                        };
+                        macros.push(crate::models::MacroDefinition {
+                            file_path: file_path.to_string(),
+                            name: name.to_string(),
+                            value,
+                            line: line_num,
+                            macro_type,
+                        });
+                    }
+                } else if !define_rest.is_empty() {
+                    // #define NAME (no value, no parenthesis)
+                    let name = define_rest.trim();
+                    if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        macros.push(crate::models::MacroDefinition {
+                            file_path: file_path.to_string(),
+                            name: name.to_string(),
+                            value: None,
+                            line: line_num,
+                            macro_type: crate::models::MacroType::ObjectLike,
+                        });
+                    }
+                }
+            } else if let Some(ifdef_rest) = rest.strip_prefix("ifdef") {
+                let ifdef_rest = ifdef_rest.trim_start();
+                // Extract condition name (first token)
+                if let Some(name_end) = ifdef_rest.find(char::is_whitespace) {
+                    let condition = &ifdef_rest[..name_end];
+                    cond_blocks.push(crate::models::ConditionalBlock {
+                        file_path: file_path.to_string(),
+                        condition_text: condition.to_string(),
+                        start_line: line_num,
+                        end_line: 0, // Will be filled during second pass
+                        is_negated: false,
+                    });
+                } else if !ifdef_rest.is_empty() {
+                    // #ifdef NAME with nothing after (just the name)
+                    let condition = ifdef_rest.trim();
+                    if condition.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        cond_blocks.push(crate::models::ConditionalBlock {
+                            file_path: file_path.to_string(),
+                            condition_text: condition.to_string(),
+                            start_line: line_num,
+                            end_line: 0,
+                            is_negated: false,
+                        });
+                    }
+                }
+            } else if let Some(ifndef_rest) = rest.strip_prefix("ifndef") {
+                let ifndef_rest = ifndef_rest.trim_start();
+                if let Some(name_end) = ifndef_rest.find(char::is_whitespace) {
+                    let condition = &ifndef_rest[..name_end];
+                    cond_blocks.push(crate::models::ConditionalBlock {
+                        file_path: file_path.to_string(),
+                        condition_text: condition.to_string(),
+                        start_line: line_num,
+                        end_line: 0,
+                        is_negated: true,
+                    });
+                } else if !ifndef_rest.is_empty() {
+                    let condition = ifndef_rest.trim();
+                    if condition.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        cond_blocks.push(crate::models::ConditionalBlock {
+                            file_path: file_path.to_string(),
+                            condition_text: condition.to_string(),
+                            start_line: line_num,
+                            end_line: 0,
+                            is_negated: true,
+                        });
+                    }
+                }
+            } else if rest.starts_with("if defined") || rest.starts_with("if !defined") {
+                let is_negated = rest.starts_with("if !defined");
+                let condition_text = rest.trim().to_string();
+                cond_blocks.push(crate::models::ConditionalBlock {
+                    file_path: file_path.to_string(),
+                    condition_text,
+                    start_line: line_num,
+                    end_line: 0,
+                    is_negated,
+                });
+            }
+        }
+    }
+
+    // Second pass: match #endif to close conditional blocks
+    let mut open_blocks: Vec<usize> = Vec::new(); // indices into cond_blocks
+    for (line_idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let rest = rest.trim_start();
+            if rest == "endif" || rest.starts_with("endif ") {
+                // Close the most recent open block
+                if let Some(block_idx) = open_blocks.pop() {
+                    if block_idx < cond_blocks.len() {
+                        cond_blocks[block_idx].end_line = line_idx + 1; // 1-indexed
+                    }
+                }
+            } else if rest.starts_with("ifdef") || rest.starts_with("ifndef")
+                || rest.starts_with("if defined") || rest.starts_with("if !defined")
+            {
+                // Find the index of this block (search by start_line)
+                let current_line = line_idx + 1;
+                if let Some(idx) = cond_blocks.iter().position(|b| b.start_line == current_line && b.end_line == 0) {
+                    open_blocks.push(idx);
+                }
+            }
+        }
+    }
+
+    (macros, cond_blocks)
+}
+
+/// Build a global adjacency list from include dependencies.
+/// Maps source_file -> [included files] for user includes only.
+fn build_global_include_graph(
+    deps: &[crate::models::IncludeDependency],
+) -> HashMap<String, Vec<String>> {
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for dep in deps {
+        if !dep.is_system_include {
+            graph.entry(dep.source_file.clone()).or_default().push(dep.included_file.clone());
+        }
+    }
+    graph
+}
+
+/// Compute per-file dependency metrics from include dependencies.
+/// Uses the global include graph to compute transitive closure for each file.
+pub fn compute_dependency_metrics(
+    file_path: &str,
+    direct_deps: &[crate::models::IncludeDependency],
+    global_graph: &HashMap<String, Vec<String>>,
+) -> crate::models::DependencyMetrics {
+    let mut metrics = crate::models::DependencyMetrics {
+        max_include_depth: 1, // baseline: file itself at depth 1
+        ..Default::default()
+    };
+
+    // Direct include count (only user includes for this specific file, not system)
+    let direct_user_deps: Vec<String> = direct_deps
+        .iter()
+        .filter(|d| !d.is_system_include && d.source_file == file_path)
+        .map(|d| d.included_file.clone())
+        .collect();
+    metrics.direct_include_count = direct_user_deps.len();
+
+    if direct_user_deps.is_empty() {
+        return metrics;
+    }
+
+    // Build adjacency list for this file's includes
+    let mut visited = HashSet::new();
+    let mut max_depth = 1usize; // self = depth 1
+    let mut longest_chain: Vec<String> = vec![file_path.to_string()];
+
+    // DFS to compute transitive closure
+    fn dfs(
+        current: &str,
+        global_graph: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        depth: usize,
+        max_depth: &mut usize,
+        longest_chain: &mut Vec<String>,
+        current_path: &mut Vec<String>,
+    ) {
+        // Always record the current node's depth
+        if depth > *max_depth {
+            *max_depth = depth;
+            if current_path.len() > longest_chain.len() {
+                *longest_chain = current_path.clone();
+            }
+        }
+        if let Some(neighbors) = global_graph.get(current) {
+            for neighbor in neighbors {
+                if visited.contains(neighbor) {
+                    // Found a cycle - mark depth but don't recurse
+                    if depth + 1 > *max_depth {
+                        *max_depth = depth + 1;
+                        let chain = current_path.clone();
+                        let mut full_chain = chain;
+                        full_chain.push(neighbor.clone());
+                        if full_chain.len() > longest_chain.len() {
+                            *longest_chain = full_chain;
+                        }
+                    }
+                    continue;
+                }
+                visited.insert(neighbor.clone());
+                current_path.push(neighbor.clone());
+                dfs(neighbor, global_graph, visited, depth + 1, max_depth, longest_chain, current_path);
+                current_path.pop();
+            }
+        }
+    }
+
+    // Start DFS from each direct dependency (depth = 2 since source file is depth 1)
+    for dep in &direct_user_deps {
+        let mut path = vec![file_path.to_string(), dep.clone()];
+        visited.insert(dep.clone());
+        dfs(
+            dep,
+            global_graph,
+            &mut visited,
+            2,
+            &mut max_depth,
+            &mut longest_chain,
+            &mut path,
+        );
+    }
+
+    metrics.transitive_include_count = visited.len();
+    metrics.max_include_depth = max_depth;
+    if longest_chain.len() > 1 {
+        metrics.longest_chain = Some(longest_chain);
+    }
+
+    metrics
+}
+
+/// Detect circular dependencies across all files in the batch.
+/// Returns a list of cycles found in the include graph.
+pub fn detect_circular_dependencies(
+    all_include_deps: &[crate::models::IncludeDependency],
+) -> Vec<crate::models::CircularDependency> {
+    // Build adjacency list (user includes only)
+    let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut all_files: HashSet<String> = HashSet::new();
+
+    for dep in all_include_deps {
+        if dep.is_system_include {
+            continue;
+        }
+        all_files.insert(dep.source_file.clone());
+        all_files.insert(dep.included_file.clone());
+        adj.entry(dep.source_file.clone())
+            .or_default()
+            .insert(dep.included_file.clone());
+    }
+
+    // DFS-based cycle detection (Tarjan-inspired: track current path)
+    let mut cycles = Vec::new();
+    let mut visited_global: HashSet<String> = HashSet::new();
+
+    fn dfs_cycles(
+        node: &str,
+        adj: &HashMap<String, HashSet<String>>,
+        path: &mut Vec<String>,
+        path_set: &HashSet<String>,
+        cycles: &mut Vec<Vec<String>>,
+        visited_global: &mut HashSet<String>,
+    ) {
+        if path_set.contains(node) {
+            // Found a cycle - extract the cycle from path
+            if let Some(start_idx) = path.iter().position(|p| p == node) {
+                let cycle: Vec<String> = path[start_idx..].iter().cloned().collect();
+                cycles.push(cycle);
+            }
+            return;
+        }
+        if visited_global.contains(node) && !path_set.contains(node) {
+            return;
+        }
+
+        path.push(node.to_string());
+        let mut path_set = path_set.clone();
+        path_set.insert(node.to_string());
+
+        if let Some(neighbors) = adj.get(node) {
+            for neighbor in neighbors {
+                dfs_cycles(neighbor, adj, path, &path_set, cycles, visited_global);
+            }
+        }
+
+        path.pop();
+        visited_global.insert(node.to_string());
+    }
+
+    // Run DFS from each unvisited file
+    let files: Vec<String> = all_files.iter().cloned().collect();
+    for file in &files {
+        if !visited_global.contains(file) {
+            dfs_cycles(
+                file,
+                &adj,
+                &mut Vec::new(),
+                &HashSet::new(),
+                &mut cycles,
+                &mut visited_global,
+            );
+        }
+    }
+
+    // Deduplicate cycles (normalize by rotating to start with the lexicographically smallest element)
+    let mut normalized: HashSet<Vec<String>> = HashSet::new();
+    for cycle in cycles {
+        if cycle.len() < 2 {
+            continue;
+        }
+        let min_idx = cycle
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, s)| s.as_str())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let mut rotated = Vec::new();
+        for i in 0..cycle.len() {
+            rotated.push(cycle[(min_idx + i) % cycle.len()].clone());
+        }
+        normalized.insert(rotated);
+    }
+
+    normalized
+        .into_iter()
+        .map(|cycle| crate::models::CircularDependency { cycle })
+        .collect()
+}
+
+/// Phase 5: Extract conditional symbols — map symbols to their gating macros.
+/// Scans source lines within each conditional block's range and identifies symbol
+/// definitions (functions, classes, etc.) that are gated by preprocessor conditions.
+pub fn extract_conditional_symbols(
+    source: &str,
+    file_path: &str,
+    blocks: &[crate::models::ConditionalBlock],
+) -> Vec<crate::models::ConditionalSymbol> {
+    let mut result = Vec::new();
+
+    // Parse all lines once for symbol detection
+    let lines: Vec<&str> = source.lines().collect();
+
+    for block in blocks {
+        // Extract gating macro name from condition_text
+        let gating_macro = extract_macro_name_from_condition(&block.condition_text);
+        if gating_macro.is_empty() {
+            continue;
+        }
+
+        let start = block.start_line.saturating_sub(1); // 0-indexed
+        let end = (block.end_line as usize).min(lines.len());
+
+        // Scan lines within this block for symbol definitions
+        for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
+            let trimmed = line.trim_start();
+
+            // Detect function definitions: look for identifier followed by '('
+            // or common patterns like "void func(", "int func(", etc.
+            if is_symbol_definition_line(trimmed) {
+                if let Some(symbol_name) = extract_symbol_name_from_line(trimmed) {
+                    result.push(crate::models::ConditionalSymbol {
+                        file_path: file_path.to_string(),
+                        symbol_name,
+                        line: i + 1, // back to 1-indexed
+                        gating_macro: gating_macro.clone(),
+                        is_negated: block.is_negated,
+                    });
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract macro name from condition text like "DEBUG", "ENABLE_X", "defined(DEBUG)", etc.
+fn extract_macro_name_from_condition(condition_text: &str) -> String {
+    let trimmed = condition_text.trim();
+
+    // Handle "!defined(MACRO)" or "defined(MACRO)"
+    for prefix in ["!defined(", "defined("] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            if let Some(end) = rest.find(')') {
+                return rest[..end].trim().to_string();
+            }
+        }
+    }
+
+    // Handle plain macro names (first token)
+    trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+        .to_string()
+}
+
+/// Check if a line looks like a symbol definition (function, class, struct, etc.)
+fn is_symbol_definition_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+
+    // Skip comments, preprocessor directives, empty lines
+    if trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("/*")
+    {
+        return false;
+    }
+
+    // Look for common definition patterns:
+    // - "type name(...)" or "type *name(...)" — function definitions
+    // - "class Name", "struct Name", "enum Name" — type definitions
+    let has_func_pattern = trimmed.matches('(').count() >= 1
+        && !trimmed.starts_with("if ")
+        && !trimmed.starts_with("while ")
+        && !trimmed.starts_with("for ")
+        && !trimmed.starts_with("switch ");
+
+    let has_type_pattern = trimmed.starts_with("class ")
+        || trimmed.starts_with("struct ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("union ");
+
+    has_func_pattern || has_type_pattern
+}
+
+/// Extract the symbol name from a definition line.
+fn extract_symbol_name_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+
+    // Handle "class Name", "struct Name", "enum Name"
+    for keyword in ["class ", "struct ", "enum ", "union "] {
+        if trimmed.starts_with(keyword) {
+            let rest = &trimmed[keyword.len()..];
+            return Some(
+                rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+    }
+
+    // Handle function definitions: look for pattern like "ReturnType Name(params)"
+    // Find the last identifier before '('
+    if let Some(paren_idx) = trimmed.find('(') {
+        let before_paren = &trimmed[..paren_idx].trim_end();
+        // Split by whitespace and get the last token (usually the name)
+        let tokens: Vec<&str> = before_paren.split_whitespace().collect();
+        if let Some(last) = tokens.last() {
+            // Handle qualified names like "MyClass::method" — extract after ::
+            let name = if let Some(colon_idx) = last.rfind("::") {
+                &last[colon_idx + 2..]
+            } else {
+                last
+            };
+            // Filter out keywords and return the last meaningful token
+            if !name.is_empty()
+                && !is_keyword(name)
+                && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn is_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "else" | "while" | "for" | "switch" | "return" | "new" | "delete"
+            | "throw" | "catch" | "try" | "sizeof" | "typeof" | "alignof"
+    )
 }
 
 #[cfg(test)]
@@ -5422,5 +6016,352 @@ Widget createWidget() {
             "Widget return type should be captured as typeUsage, got: {:?}",
             type_names
         );
+    }
+}
+
+#[cfg(test)]
+mod include_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_user_includes() {
+        let source = r#"#include "core.h"
+#include "../utils/helpers.hpp"
+#include <iostream>
+void foo() {}
+"#;
+        let deps = extract_include_dependencies(source, "main.cpp");
+        assert_eq!(deps.len(), 3);
+        assert!(!deps[0].is_system_include);
+        assert_eq!(deps[0].included_file, "core.h");
+        assert_eq!(deps[0].line, 1);
+        
+        assert!(!deps[1].is_system_include);
+        assert_eq!(deps[1].included_file, "../utils/helpers.hpp");
+        assert_eq!(deps[1].line, 2);
+        
+        assert!(deps[2].is_system_include);
+        assert_eq!(deps[2].included_file, "iostream");
+        assert_eq!(deps[2].line, 3);
+    }
+
+    #[test]
+    fn test_extract_no_includes() {
+        let source = "void foo() {}\nint main() { return 0; }\n";
+        let deps = extract_include_dependencies(source, "main.cpp");
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_extract_invalid_includes() {
+        let source = r#"#include
+#include <>
+#include ""
+"#;
+        let deps = extract_include_dependencies(source, "main.cpp");
+        assert!(deps.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod macro_extraction_tests {
+    use super::*;
+    use crate::models::MacroType;
+
+    #[test]
+    fn test_extract_simple_macros() {
+        let source = r#"#define MAX_SIZE 1024
+#define BUFFER_SIZE 256
+"#;
+        let (macros, _) = extract_macro_info(source, "config.h");
+        assert_eq!(macros.len(), 2);
+        assert_eq!(macros[0].name, "MAX_SIZE");
+        assert_eq!(macros[0].value, Some("1024".to_string()));
+        assert_eq!(macros[0].macro_type, MacroType::ObjectLike);
+        assert_eq!(macros[1].name, "BUFFER_SIZE");
+    }
+
+    #[test]
+    fn test_extract_function_like_macros() {
+        let source = r#"#define SQUARE(x) ((x) * (x))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+"#;
+        let (macros, _) = extract_macro_info(source, "utils.h");
+        assert_eq!(macros.len(), 2);
+        assert_eq!(macros[0].name, "SQUARE");
+        assert_eq!(macros[0].macro_type, MacroType::FunctionLike);
+        assert_eq!(macros[1].name, "MAX");
+    }
+
+    #[test]
+    fn test_extract_conditional_blocks() {
+        let source = r#"#ifdef DEBUG
+void debug_log() {}
+#endif
+
+#ifndef RELEASE
+void release_only() {}
+#endif
+"#;
+        let (_, blocks) = extract_macro_info(source, "app.h");
+        assert_eq!(blocks.len(), 2);
+        assert!(!blocks[0].is_negated);
+        assert_eq!(blocks[0].condition_text, "DEBUG");
+        assert_eq!(blocks[0].start_line, 1);
+        assert!(blocks[0].end_line > blocks[0].start_line);
+        
+        assert!(blocks[1].is_negated);
+        assert_eq!(blocks[1].condition_text, "RELEASE");
+    }
+
+    #[test]
+    fn test_extract_no_macros() {
+        let source = "void foo() {}\nint main() { return 0; }\n";
+        let (macros, blocks) = extract_macro_info(source, "main.c");
+        assert!(macros.is_empty());
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_extract_if_defined_conditionals() {
+        let source = r#"#if defined(_WIN32)
+// Windows code
+#elif defined(__linux__)
+// Linux code
+#endif
+"#;
+        let (_, blocks) = extract_macro_info(source, "platform.h");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].condition_text.contains("defined"));
+    }
+}
+
+#[cfg(test)]
+mod dependency_metrics_tests {
+    use std::collections::HashMap;
+
+    use crate::models::IncludeDependency;
+
+    fn make_dep(source: &str, included: &str, system: bool) -> IncludeDependency {
+        IncludeDependency {
+            source_file: source.to_string(),
+            included_file: included.to_string(),
+            line: 1,
+            is_system_include: system,
+        }
+    }
+
+    fn build_graph(deps: &[IncludeDependency]) -> HashMap<String, Vec<String>> {
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        for dep in deps {
+            if !dep.is_system_include {
+                graph.entry(dep.source_file.clone()).or_default().push(dep.included_file.clone());
+            }
+        }
+        graph
+    }
+
+    #[test]
+    fn test_no_includes() {
+        let deps = vec![
+            make_dep("main.cpp", "<iostream>", true),
+        ];
+        let graph = build_graph(&deps);
+        let metrics = super::compute_dependency_metrics("main.cpp", &deps, &graph);
+        assert_eq!(metrics.direct_include_count, 0);
+        assert_eq!(metrics.transitive_include_count, 0);
+        assert_eq!(metrics.max_include_depth, 1);
+        assert!(!metrics.has_circular_dependency);
+    }
+
+    #[test]
+    fn test_single_direct_include() {
+        let deps = vec![
+            make_dep("main.cpp", "core.h", false),
+        ];
+        let graph = build_graph(&deps);
+        let metrics = super::compute_dependency_metrics("main.cpp", &deps, &graph);
+        assert_eq!(metrics.direct_include_count, 1);
+        assert_eq!(metrics.transitive_include_count, 1);
+        assert_eq!(metrics.max_include_depth, 2);
+    }
+
+    #[test]
+    fn test_transitive_includes_chain() {
+        // main.cpp -> a.h -> b.h -> c.h (depth 4)
+        let deps = vec![
+            make_dep("main.cpp", "a.h", false),
+            make_dep("a.h", "b.h", false),
+            make_dep("b.h", "c.h", false),
+        ];
+        let graph = build_graph(&deps);
+        let metrics = super::compute_dependency_metrics("main.cpp", &deps, &graph);
+        assert_eq!(metrics.direct_include_count, 1);
+        assert_eq!(metrics.transitive_include_count, 3);
+        assert_eq!(metrics.max_include_depth, 4);
+        assert!(metrics.longest_chain.is_some());
+        let chain = metrics.longest_chain.as_ref().unwrap();
+        assert_eq!(chain.len(), 4); // main.cpp -> a.h -> b.h -> c.h
+    }
+
+    #[test]
+    fn test_multiple_direct_includes() {
+        // main.cpp -> a.h, main.cpp -> b.h (breadth 2)
+        let deps = vec![
+            make_dep("main.cpp", "a.h", false),
+            make_dep("main.cpp", "b.h", false),
+        ];
+        let graph = build_graph(&deps);
+        let metrics = super::compute_dependency_metrics("main.cpp", &deps, &graph);
+        assert_eq!(metrics.direct_include_count, 2);
+        assert_eq!(metrics.transitive_include_count, 2);
+    }
+
+    #[test]
+    fn test_heavy_classification() {
+        // heavy.cpp -> base.h -> util0..util30.h (32 transitive deps -> Heavy)
+        let mut deps = Vec::new();
+        deps.push(make_dep("heavy.cpp", "base.h", false));
+        for i in 0..31 {
+            deps.push(make_dep("base.h", &format!("util{}.h", i), false));
+        }
+        let graph = build_graph(&deps);
+        let metrics = super::compute_dependency_metrics("heavy.cpp", &deps, &graph);
+        assert_eq!(metrics.transitive_include_count, 32); // base.h + 31 util*.h
+        assert_eq!(metrics.max_include_depth, 3); // heavy.cpp(1) -> base.h(2) -> util*(3)
+    }
+
+    #[test]
+    fn test_detect_circular_dependencies_simple() {
+        // a.h <-> b.h (circular)
+        let deps = vec![
+            make_dep("a.h", "b.h", false),
+            make_dep("b.h", "a.h", false),
+        ];
+        let cycles = super::detect_circular_dependencies(&deps);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].cycle.len(), 2);
+    }
+
+    #[test]
+    fn test_detect_circular_dependencies_long_cycle() {
+        // a.h -> b.h -> c.h -> a.h (circular)
+        let deps = vec![
+            make_dep("a.h", "b.h", false),
+            make_dep("b.h", "c.h", false),
+            make_dep("c.h", "a.h", false),
+        ];
+        let cycles = super::detect_circular_dependencies(&deps);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].cycle.len(), 3);
+    }
+
+    #[test]
+    fn test_no_circular_dependencies() {
+        // a.h -> b.h -> c.h (no cycle)
+        let deps = vec![
+            make_dep("a.h", "b.h", false),
+            make_dep("b.h", "c.h", false),
+        ];
+        let cycles = super::detect_circular_dependencies(&deps);
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn test_system_includes_ignored() {
+        // Only user includes should contribute to the graph
+        let deps = vec![
+            make_dep("main.cpp", "<iostream>", true),
+            make_dep("main.cpp", "core.h", false),
+        ];
+        let metrics = super::compute_dependency_metrics("main.cpp", &deps, &build_graph(&deps));
+        assert_eq!(metrics.direct_include_count, 1);
+    }
+}
+
+#[cfg(test)]
+mod conditional_symbol_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_macro_name_from_condition() {
+        assert_eq!(extract_macro_name_from_condition("DEBUG"), "DEBUG");
+        assert_eq!(extract_macro_name_from_condition("ENABLE_FEATURE_X"), "ENABLE_FEATURE_X");
+        assert_eq!(extract_macro_name_from_condition("defined(DEBUG)"), "DEBUG");
+        assert_eq!(extract_macro_name_from_condition("!defined(NDEBUG)"), "NDEBUG");
+        assert_eq!(extract_macro_name_from_condition("WIN32 || _WIN64"), "WIN32");
+    }
+
+    #[test]
+    fn test_is_symbol_definition_line() {
+        assert!(is_symbol_definition_line("void myFunction(int x) {"));
+        assert!(is_symbol_definition_line("int MyClass::method() {"));
+        assert!(is_symbol_definition_line("class MyWidget : public QWidget"));
+        assert!(is_symbol_definition_line("struct Point2D {"));
+        assert!(!is_symbol_definition_line("// this is a comment"));
+        assert!(!is_symbol_definition_line("#ifdef DEBUG"));
+        assert!(!is_symbol_definition_line("if (x > 0) {"));
+        assert!(!is_symbol_definition_line("while (true) {"));
+        assert!(!is_symbol_definition_line("for (int i = 0; i < n; i++) {"));
+        assert!(!is_symbol_definition_line(""));
+    }
+
+    #[test]
+    fn test_extract_symbol_name_from_line() {
+        assert_eq!(extract_symbol_name_from_line("void myFunction(int x) {"), Some("myFunction".into()));
+        assert_eq!(extract_symbol_name_from_line("int MyClass::method() {"), Some("method".into()));
+        assert_eq!(extract_symbol_name_from_line("class MyWidget : public QWidget"), Some("MyWidget".into()));
+        assert_eq!(extract_symbol_name_from_line("struct Point2D {"), Some("Point2D".into()));
+        assert_eq!(extract_symbol_name_from_line("enum Color { RED, GREEN }"), Some("Color".into()));
+        assert_eq!(extract_symbol_name_from_line("union Data { int i; float f; }"), Some("Data".into()));
+        assert_eq!(extract_symbol_name_from_line("if (x > 0) {"), None);
+        assert_eq!(extract_symbol_name_from_line("return x;"), None);
+    }
+
+    #[test]
+    fn test_extract_conditional_symbols_basic() {
+        // Simple source with one conditional block containing a function
+        let source = r#"void normalFunction() {}
+
+#ifdef DEBUG
+void debugPrint(const char* msg) {
+}
+#endif
+
+#ifndef RELEASE
+class DebugWidget : public QWidget
+{
+};
+#endif
+"#;
+        let blocks = vec![
+            crate::models::ConditionalBlock {
+                file_path: "test.cpp".into(),
+                condition_text: "DEBUG".into(),
+                start_line: 3,
+                end_line: 5,
+                is_negated: false,
+            },
+            crate::models::ConditionalBlock {
+                file_path: "test.cpp".into(),
+                condition_text: "RELEASE".into(),
+                start_line: 8,
+                end_line: 12,
+                is_negated: true,
+            },
+        ];
+        let symbols = extract_conditional_symbols(source, "test.cpp", &blocks);
+        // Should find debugPrint and DebugWidget (normalFunction is NOT in any block)
+        assert!(symbols.iter().any(|s| s.symbol_name == "debugPrint" && s.gating_macro == "DEBUG" && !s.is_negated));
+        assert!(symbols.iter().any(|s| s.symbol_name == "DebugWidget" && s.gating_macro == "RELEASE" && s.is_negated));
+    }
+
+    #[test]
+    fn test_extract_conditional_symbols_empty() {
+        let source = r#"void normalFunction() {}
+"#;
+        let blocks: Vec<crate::models::ConditionalBlock> = Vec::new();
+        let symbols = extract_conditional_symbols(source, "test.cpp", &blocks);
+        assert!(symbols.is_empty());
     }
 }

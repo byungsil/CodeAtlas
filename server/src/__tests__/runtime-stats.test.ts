@@ -27,22 +27,20 @@ describe("runtime stats cache path", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  it("stores runtime stats under the user cache root instead of the workspace data dir", () => {
+  it("stores runtime stats directly inside the workspace data directory", () => {
     const dataDir = path.join(tempRoot, "workspace-a", ".codeatlas");
     fs.mkdirSync(dataDir, { recursive: true });
 
     const statsPath = resolveRuntimeStatsPath(dataDir);
 
-    expect(statsPath).toContain(path.join(tempRoot, "runtime-stats"));
-    expect(path.dirname(statsPath)).toBe(path.join(tempRoot, "runtime-stats"));
-    expect(statsPath).not.toBe(path.join(dataDir, "mcp-runtime-stats.json"));
+    expect(statsPath).toBe(path.join(dataDir, "mcp-runtime-stats.json"));
   });
 
-  it("migrates a legacy workspace-local stats file into the cache location", () => {
+ it("reads an existing workspace-local stats file in place", () => {
     const dataDir = path.join(tempRoot, "workspace-b", ".codeatlas");
     fs.mkdirSync(dataDir, { recursive: true });
-    const legacyPath = path.join(dataDir, "mcp-runtime-stats.json");
-    fs.writeFileSync(legacyPath, JSON.stringify({
+    const statsPath = path.join(dataDir, "mcp-runtime-stats.json");
+    fs.writeFileSync(statsPath, JSON.stringify({
       startedAt: "2026-04-20T00:00:00.000Z",
       uptimeSeconds: 120,
       totalToolCalls: 1,
@@ -64,13 +62,13 @@ describe("runtime stats cache path", () => {
       }],
     }, null, 2));
 
-    const statsPath = prepareRuntimeStatsPath(dataDir);
-    const migrated = readPersistedMcpRuntimeStatsSnapshot(statsPath);
+    const resolved = prepareRuntimeStatsPath(dataDir);
+    const persisted = readPersistedMcpRuntimeStatsSnapshot(resolved);
 
-    expect(fs.existsSync(statsPath)).toBe(true);
-    expect(migrated.totalToolCalls).toBe(1);
-    expect(migrated.tools[0].toolName).toBe("lookup_symbol");
-    expect(fs.existsSync(legacyPath)).toBe(true);
+    expect(fs.existsSync(resolved)).toBe(true);
+    expect(resolved).toBe(statsPath);
+    expect(persisted.totalToolCalls).toBe(1);
+    expect(persisted.tools[0].toolName).toBe("lookup_symbol");
   });
 
   it("persists fresh MCP runtime stats to the cache location", () => {

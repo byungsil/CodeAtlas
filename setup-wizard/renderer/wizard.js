@@ -5,18 +5,29 @@
 
 // ==================== State ====================
 let currentStep = 0;
-const totalSteps = 6; // 0-5 (welcome, prereqs, indexer, server, workspace, complete)
+const totalSteps = 7; // 0-6 (welcome, prereqs, indexer, server, workspace, indexing, complete)
 const setupData = {
   tools: {},
   indexerBuilt: false,
   serverInstalled: false,
   workspacePath: '',
-  config: {}
+  config: {},
+  selectedLangs: new Set()
 };
+
+// Supported languages and their extensions
+const LANGUAGES = [
+  { name: 'C/C++', key: 'cpp', icon: '🔧', extensions: ['c', 'cpp', 'h', 'hpp', 'cc', 'cxx', 'inl', 'inc'] },
+  { name: 'Python', key: 'python', icon: '🐍', extensions: ['py'] },
+  { name: 'TypeScript/TSX', key: 'typescript', icon: '📘', extensions: ['ts', 'tsx'] },
+  { name: 'Rust', key: 'rust', icon: '🦀', extensions: ['rs'] },
+  { name: 'Lua', key: 'lua', icon: '🌙', extensions: ['lua'] }
+];
 
 // Build/install state tracking
 let isBuildingIndexer = false;
 let isInstallingServer = false;
+let isIndexing = false;
 
 // Log state
 let logEntries = [];
@@ -29,7 +40,7 @@ function showStep(stepIndex) {
   document.querySelectorAll('.wizard-step').forEach(el => el.classList.remove('active'));
   
   // Show target step
-  const stepMap = ['welcome', 'prereqs', 'indexer', 'server', 'workspace', 'complete'];
+  const stepMap = ['welcome', 'prereqs', 'indexer', 'server', 'workspace', 'indexing', 'complete'];
   const targetId = `step-${stepMap[stepIndex]}`;
   document.getElementById(targetId).classList.add('active');
 
@@ -38,6 +49,9 @@ function showStep(stepIndex) {
 
   // Update footer buttons
   updateFooter(stepIndex);
+
+  // Auto-run step-specific logic
+  if (stepIndex === 5) buildLangGrid();
 
   currentStep = stepIndex;
 
@@ -72,6 +86,17 @@ async function handleNextStep() {
       }
     }
   }
+
+  // Save indexing config before moving to complete step (step 5 -> 6)
+  if (currentStep === 5) {
+    const allExts = [];
+    for (const lang of LANGUAGES) {
+      if (setupData.selectedLangs.has(lang.key)) {
+        allExts.push(...lang.extensions);
+      }
+    }
+    addLogEntry('INFO', 'INDEXING', `Saving indexing config: ${allExts.length} extensions (${setupData.selectedLangs.size} languages)`);
+  }
   
   nextStep();
 }
@@ -102,7 +127,7 @@ function updateFooter(stepIndex) {
   const btnNext = document.getElementById('btnNext');
 
   // Back button visibility
-  if (stepIndex === 0 || stepIndex === totalSteps - 1) {
+  if (stepIndex === 0) {
     btnBack.classList.add('hidden');
   } else {
     btnBack.classList.remove('hidden');
@@ -140,6 +165,11 @@ function updateFooter(stepIndex) {
     btnNext.textContent = '다음 →';
     btnNext.onclick = handleNextStep;
     btnNext.disabled = false;
+  } else if (stepIndex === 5) {
+    // Indexing config step - disable until indexing completes
+    btnNext.textContent = setupData.indexingDone ? '다음 →' : '다음 →';
+    btnNext.onclick = nextStep;
+    btnNext.disabled = !setupData.indexingDone || isIndexing;
   } else if (isBuildingIndexer || isInstallingServer) {
     // During any build/install operation
     btnNext.textContent = '작업 중...';
@@ -485,6 +515,192 @@ async function installServer() {
   }
 }
 
+// ==================== Step 5: Indexing Configuration ====================
+
+function buildLangGrid() {
+  const grid = document.getElementById('langGrid');
+  if (!grid) return;
+
+  let html = '';
+  for (const lang of LANGUAGES) {
+    const selected = setupData.selectedLangs.has(lang.key);
+    html += `
+      <div class="lang-card ${selected ? 'selected' : ''}" data-lang="${lang.key}" onclick="toggleLang('${lang.key}')">
+        <span class="lang-icon">${lang.icon}</span>
+        <div class="lang-info">
+          <span class="lang-name">${lang.name}</span>
+          <span class="lang-exts">.${lang.extensions.join(', .')}</span>
+        </div>
+        <span class="lang-check ${selected ? 'checked' : ''}">✓</span>
+      </div>`;
+  }
+  grid.innerHTML = html;
+  updateExtensionTags();
+}
+
+function toggleLang(key) {
+  if (setupData.selectedLangs.has(key)) {
+    setupData.selectedLangs.delete(key);
+  } else {
+    setupData.selectedLangs.add(key);
+  }
+  buildLangGrid();
+}
+
+function selectAllLangs() {
+  for (const lang of LANGUAGES) {
+    setupData.selectedLangs.add(lang.key);
+  }
+  buildLangGrid();
+}
+
+function deselectAllLangs() {
+  setupData.selectedLangs.clear();
+  buildLangGrid();
+}
+
+function updateExtensionTags() {
+  const container = document.getElementById('extensionTags');
+  if (!container) return;
+
+  const allExts = [];
+  for (const lang of LANGUAGES) {
+    if (setupData.selectedLangs.has(lang.key)) {
+      allExts.push(...lang.extensions);
+    }
+  }
+
+  if (allExts.length === 0) {
+    container.innerHTML = '<span class="tag tag-empty">선택된 확장자가 없습니다</span>';
+  } else {
+    let html = '';
+    for (const ext of allExts) {
+      html += `<span class="tag">.${ext}</span>`;
+    }
+    container.innerHTML = html;
+  }
+
+  // Update status message (only if not currently indexing)
+  const statusEl = document.getElementById('indexingStatus');
+  if (!isIndexing) {
+    if (allExts.length === 0) {
+      statusEl.className = 'status-message warn';
+      statusEl.textContent = `⚠️ 선택된 확장자가 없습니다. ${LANGUAGES.length}개 언어 중 최소 하나를 선택하세요.`;
+    } else {
+      statusEl.className = 'status-message info';
+      statusEl.textContent = `${allExts.length}개 확장자 (${setupData.selectedLangs.size}/${LANGUAGES.length} 언어)가 선택되었습니다. 인덱싱을 시작하려면 아래 버튼을 클릭하세요.`;
+    }
+  }
+}
+
+// ==================== Step 5: Run Indexing ====================
+
+async function runIndexing() {
+  const outputEl = document.getElementById('indexingOutput');
+  const statusEl = document.getElementById('indexingStatus');
+  const btn = document.getElementById('btnStartIndexing');
+
+  // Validate workspace path exists
+  if (!setupData.workspacePath) {
+    addLogEntry('ERROR', 'INDEXING', 'Workspace path not set. Please configure workspace first.');
+    statusEl.className = 'status-message error';
+    statusEl.textContent = '❌ 워크스페이스 경로가 설정되지 않았습니다. "작업 공간" 단계에서 경로를 먼저 설정해주세요.';
+    return;
+  }
+
+  // Validate at least one language is selected
+  if (setupData.selectedLangs.size === 0) {
+    addLogEntry('ERROR', 'INDEXING', 'No languages selected for indexing.');
+    statusEl.className = 'status-message error';
+    statusEl.textContent = '❌ 최소 하나의 언어를 선택해주세요.';
+    return;
+  }
+
+  // Collect extensions
+  const allExts = [];
+  for (const lang of LANGUAGES) {
+    if (setupData.selectedLangs.has(lang.key)) {
+      allExts.push(...lang.extensions);
+    }
+  }
+
+  addLogEntry('INFO', 'INDEXING', `Starting indexing: ${allExts.length} extensions (${setupData.selectedLangs.size} languages)`);
+
+  isIndexing = true;
+  btn.disabled = true;
+  btn.textContent = '인덱싱 중...';
+  outputEl.textContent = '';
+
+  try {
+    // Listen for command output
+    window.codeatlas.onCommandOutput((data) => {
+      if (data.type === 'stdout' || data.type === 'stderr') {
+        outputEl.textContent += data.text;
+        outputEl.scrollTop = outputEl.scrollHeight;
+
+        const prefix = data.type === 'stderr' ? '[STDERR] ' : '';
+        addLogEntry(data.type === 'stderr' ? 'WARN' : 'INFO', 'INDEXING', prefix + data.text.trim());
+      }
+    });
+
+    const repoRoot = await window.codeatlas.getRepoRoot();
+    const indexerPath = await window.codeatlas.joinPaths(repoRoot, 'indexer');
+    const releaseBin = await window.codeatlas.joinPaths(indexerPath, 'target', 'release', 'codeatlas-indexer.exe');
+
+    // Check if release binary exists; fall back to debug
+    let binExists = await window.codeatlas.fileExists(releaseBin);
+    let binPath = releaseBin;
+
+    if (!binExists) {
+      const debugBin = await window.codeatlas.joinPaths(indexerPath, 'target', 'debug', 'codeatlas-indexer.exe');
+      binExists = await window.codeatlas.fileExists(debugBin);
+      if (binExists) {
+        binPath = debugBin;
+        addLogEntry('INFO', 'INDEXING', `Release binary not found, using debug binary: ${debugBin}`);
+      }
+    }
+
+    if (!binExists) {
+      statusEl.className = 'status-message error';
+      statusEl.textContent = '❌ 인덱서 바이너리가 없습니다. "Rust 인덱서 빌드" 단계를 먼저 실행해주세요.';
+      addLogEntry('ERROR', 'INDEXING', 'Indexer binary not found. Please build the indexer first.');
+      return;
+    }
+
+    statusEl.className = 'status-message info';
+    statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`; 
+    addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}`);
+
+    const result = await window.codeatlas.runCommand(
+      binPath,
+      [setupData.workspacePath, '--extensions', allExts.join(',')],
+      indexerPath
+    );
+
+    if (result.success) {
+      setupData.indexingDone = true;
+      statusEl.className = 'status-message success';
+      statusEl.textContent = '✅ 인덱싱 완료!\n\n인덱싱 결과가 .codeatlas 디렉토리에 저장되었습니다.';
+      outputEl.textContent += '\n\n✅ 인덱싱 성공!\n';
+      addLogEntry('INFO', 'INDEXING', 'Indexing completed successfully');
+    } else {
+      statusEl.className = 'status-message error';
+      statusEl.textContent = `❌ 인덱싱 실패: ${result.stderr || result.stdout}`;
+      outputEl.textContent += `\n\n❌ 인덱싱 실패\n${result.stdout}\n${result.stderr}`;
+      addLogEntry('ERROR', 'INDEXING', `Indexing failed: ${result.stderr || result.stdout}`);
+    }
+  } catch (err) {
+    statusEl.className = 'status-message error';
+    statusEl.textContent = `❌ 오류: ${err.message}`;
+    addLogEntry('ERROR', 'INDEXING', `Indexing error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '인덱싱 재시작';
+    isIndexing = false;
+    updateFooter(currentStep);
+  }
+}
+
 // ==================== Step 4: Workspace Configuration ====================
 
 async function selectWorkspace() {
@@ -552,6 +768,24 @@ function populateSummary() {
     html += `<div class="summary-item"><span class="summary-label">📁 워크스페이스</span><span class="summary-value">${setupData.workspacePath}</span></div>`;
   }
 
+  // Indexing config
+  const exts = [];
+  for (const lang of LANGUAGES) {
+    if (setupData.selectedLangs.has(lang.key)) {
+      exts.push(...lang.extensions);
+    }
+  }
+  if (exts.length > 0) {
+    html += `<div class="summary-item"><span class="summary-label">📝 인덱싱 대상</span><span class="summary-value">.${exts.join(', .')}</span></div>`;
+  }
+
+  // Indexing status
+  if (setupData.indexingDone) {
+    html += `<div class="summary-item"><span class="summary-label">🚀 인덱싱</span><span class="summary-value">✅ 완료</span></div>`;
+  } else {
+    html += `<div class="summary-item"><span class="summary-label">🚀 인덱싱</span><span class="summary-value">⏭️ 건너뜀</span></div>`;
+  }
+
   summaryEl.innerHTML = html;
 }
 
@@ -568,6 +802,14 @@ async function launchCodeAtlas() {
       dataDir = await window.codeatlas.joinPaths(setupData.workspacePath, '.codeatlas');
     }
 
+    // Collect selected extensions for indexing
+    const indexedExts = [];
+    for (const lang of LANGUAGES) {
+      if (setupData.selectedLangs.has(lang.key)) {
+        indexedExts.push(...lang.extensions);
+      }
+    }
+
     const config = {
       dashboard: {
         autoOpen: true,
@@ -577,6 +819,10 @@ async function launchCodeAtlas() {
       watcher: {
         enabled: true,
         indexerPath: 'codeatlas-indexer'
+      },
+      indexing: {
+        extensions: indexedExts,
+        languages: Array.from(setupData.selectedLangs)
       }
     };
 
@@ -657,6 +903,7 @@ window.openReadme = openReadme;
 // Expose step-specific action functions
 window.buildIndexer = buildIndexer;
 window.installServer = installServer;
+window.runIndexing = runIndexing;
 
 // Log management functions
 window.loadLogs = loadLogs;

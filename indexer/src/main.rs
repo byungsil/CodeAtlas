@@ -1,5 +1,6 @@
 mod build_metadata;
 mod constants;
+mod vcxproj;
 mod discovery;
 mod graph_rules;
 mod ignore;
@@ -842,6 +843,7 @@ fn run_full(
     let parse_start = Instant::now();
     let mut parse_metrics = ParseMetrics::default();
     let mut all_relation_events = Vec::new();
+    let mut all_include_deps: Vec<crate::models::IncludeDependency> = Vec::new();
     db.begin().expect("Failed to begin full rebuild transaction");
     db.clear().expect("Failed to clear SQLite tables before full rebuild");
     for (batch_index, batch) in discovered_files
@@ -856,6 +858,10 @@ fn run_full(
             local_propagation_events,
             callable_flow_summaries,
             file_records,
+            include_dependencies,
+            macro_definitions,
+            conditional_blocks,
+            conditional_symbols,
             batch_metrics,
         ) = parse_discovered_files_with_progress(
             workspace_root,
@@ -876,6 +882,23 @@ fn run_full(
             .expect("Failed to write batch callable summaries");
         db.write_files(&file_records)
             .expect("Failed to write batch file records");
+        if !include_dependencies.is_empty() {
+            db.write_include_dependencies(&include_dependencies)
+                .expect("Failed to write include dependencies");
+        }
+        if !macro_definitions.is_empty() {
+            db.write_macro_definitions(&macro_definitions)
+                .expect("Failed to write macro definitions");
+        }
+        if !conditional_blocks.is_empty() {
+            db.write_conditional_blocks(&conditional_blocks)
+                .expect("Failed to write conditional blocks");
+        }
+        if !conditional_symbols.is_empty() {
+            db.write_conditional_symbols(&conditional_symbols)
+                .expect("Failed to write conditional symbols");
+        }
+        all_include_deps.extend(include_dependencies);
         all_relation_events.extend(relation_events);
         accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
         if !verbose {
@@ -887,6 +910,17 @@ fn run_full(
             );
             if log_diagnostics {
                 print_memory_snapshot("after parse batch flush");
+            }
+        }
+    }
+    // Phase 4: Detect circular dependencies across all files
+    if !all_include_deps.is_empty() {
+        let cycles = parser::detect_circular_dependencies(&all_include_deps);
+        if !cycles.is_empty() {
+            db.write_circular_dependencies(&cycles)
+                .expect("Failed to write circular dependencies");
+            if verbose {
+                println!("  Detected {} circular include chain(s)", cycles.len());
             }
         }
     }
@@ -955,6 +989,7 @@ fn run_full(
 
     println!("  Stage: resolve calls");
     let resolve_calls_start = Instant::now();
+    let _all_include_deps = db.find_all_include_dependencies().unwrap_or_default();
     let file_paths: Vec<String> = db
         .read_file_records()
         .expect("Failed to read staged file records for batching")

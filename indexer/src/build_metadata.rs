@@ -1,3 +1,5 @@
+use crate::vcxproj;
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -31,6 +33,12 @@ struct CompileCommandRecord {
 }
 
 pub fn load_build_metadata(workspace_root: &Path) -> Result<Option<BuildMetadataContext>, String> {
+    // Priority 1: Try .sln/.vcxproj (Visual Studio projects)
+    if let Some(vcx_ctx) = vcxproj::load_build_context(workspace_root) {
+        return Ok(Some(build_context_to_metadata(workspace_root, vcx_ctx)));
+    }
+
+    // Priority 2: Fall back to compile_commands.json
     let Some(compile_commands_path) = find_compile_commands_path(workspace_root) else {
         return Ok(None);
     };
@@ -81,6 +89,40 @@ pub fn load_build_metadata(workspace_root: &Path) -> Result<Option<BuildMetadata
         workspace_include_dirs,
         entries_by_file,
     }))
+}
+
+/// Convert vcxproj BuildContext to BuildMetadataContext.
+fn build_context_to_metadata(
+    _workspace_root: &Path,
+    vcx_ctx: vcxproj::BuildContext,
+) -> BuildMetadataContext {
+    let mut entries_by_file = HashMap::new();
+
+    for proj in &vcx_ctx.projects {
+        // Use first configuration (typically "Development" or "Debug")
+        let config = proj.configurations.first().unwrap_or(&"Development".to_string()).clone();
+
+        for file_path in vcx_ctx.file_to_project.keys() {
+            entries_by_file.insert(
+                file_path.clone(),
+                BuildMetadataEntry {
+                    file_path: file_path.clone(),
+                    output_path: proj.output_dir.get(&config).cloned(),
+                    include_dirs: proj.include_dirs.get(&config).cloned().unwrap_or_default(),
+                    defines: proj.defines.get(&config).cloned().unwrap_or_default(),
+                },
+            );
+        }
+    }
+
+    BuildMetadataContext {
+        source_path: vcx_ctx.solution
+            .map(|s| s.path.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| "vcxproj".to_string()),
+        translation_unit_count: entries_by_file.len(),
+        workspace_include_dirs: vcx_ctx.workspace_include_dirs,
+        entries_by_file,
+    }
 }
 
 impl BuildMetadataContext {

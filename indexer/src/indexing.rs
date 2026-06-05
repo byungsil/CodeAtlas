@@ -20,7 +20,7 @@ use crate::metadata::{
     apply_risk_signals_to_file_record, apply_risk_signals_to_symbol,
 };
 use crate::models::{
-    CallableFlowSummary, FileRecord, FileRiskSignals, IncludeHeaviness, MacroSensitivity,
+    CallableFlowSummary, FileRecord, FileRiskSignals, IncludeDependency, IncludeHeaviness, MacroSensitivity,
     ParseFragility, ParseMetrics, ParseResult, PropagationEvent, RawCallSite, RawRelationEvent,
     Symbol,
 };
@@ -331,6 +331,11 @@ fn empty_parse_result() -> ParseResult {
         callable_flow_summaries: Vec::new(),
         raw_calls: Vec::new(),
         metrics: ParseMetrics::default(),
+        include_dependencies: Vec::new(),
+        macro_definitions: Vec::new(),
+        conditional_blocks: Vec::new(),
+        dependency_metrics: crate::models::DependencyMetrics::default(),
+        conditional_symbols: Vec::new(),
     }
 }
 
@@ -363,6 +368,10 @@ pub fn parse_files(
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
+    Vec<IncludeDependency>,
+    Vec<crate::models::MacroDefinition>,
+    Vec<crate::models::ConditionalBlock>,
+    Vec<crate::models::ConditionalSymbol>,
     ParseMetrics,
 ) {
     let registry = default_language_registry();
@@ -389,6 +398,10 @@ pub fn parse_discovered_files(
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
+    Vec<IncludeDependency>,
+    Vec<crate::models::MacroDefinition>,
+    Vec<crate::models::ConditionalBlock>,
+    Vec<crate::models::ConditionalSymbol>,
     ParseMetrics,
 ) {
     parse_discovered_files_with_progress(
@@ -417,6 +430,10 @@ pub fn parse_discovered_files_with_progress(
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
+    Vec<IncludeDependency>,
+    Vec<crate::models::MacroDefinition>,
+    Vec<crate::models::ConditionalBlock>,
+    Vec<crate::models::ConditionalSymbol>,
     ParseMetrics,
 ) {
     let batch_total = discovered_files.len();
@@ -582,6 +599,10 @@ pub fn parse_discovered_files_with_progress(
     let mut relation_events = Vec::new();
     let mut propagation_events = Vec::new();
     let mut callable_flow_summaries = Vec::new();
+    let mut include_dependencies = Vec::new();
+    let mut macro_definitions = Vec::new();
+    let mut conditional_blocks = Vec::new();
+    let mut conditional_symbols = Vec::new();
     let mut file_records = Vec::new();
     let mut metrics = ParseMetrics::default();
 
@@ -631,6 +652,10 @@ pub fn parse_discovered_files_with_progress(
                 }
                 symbols.extend(enriched_symbols);
                 raw_calls.extend(pr.raw_calls);
+                include_dependencies.extend(pr.include_dependencies);
+                macro_definitions.extend(pr.macro_definitions);
+                conditional_blocks.extend(pr.conditional_blocks);
+                conditional_symbols.extend(pr.conditional_symbols);
             }
             Err(e) => {
                 if !verbose {
@@ -651,6 +676,10 @@ pub fn parse_discovered_files_with_progress(
         propagation_events,
         callable_flow_summaries,
         file_records,
+        include_dependencies,
+        macro_definitions,
+        conditional_blocks,
+        conditional_symbols,
         metrics,
     )
 }
@@ -1012,6 +1041,11 @@ mod tests {
                 callable_flow_summaries: Vec::new(),
                 raw_calls: Vec::<RawCallSite>::new(),
                 metrics: ParseMetrics::default(),
+                include_dependencies: Vec::new(),
+                macro_definitions: Vec::new(),
+                conditional_blocks: Vec::new(),
+                dependency_metrics: crate::models::DependencyMetrics::default(),
+                conditional_symbols: Vec::new(),
             })
         }
     }
@@ -1030,8 +1064,12 @@ mod tests {
             language: SourceLanguage::Lua,
         }];
 
-        let (symbols, raw_calls, references, propagation, summaries, files, metrics) =
+        let (symbols, raw_calls, references, propagation, summaries, files, include_deps, macro_defs, cond_blocks, cond_symbols, metrics) =
             parse_discovered_files(dir.path(), &discovered, false, None, &registry);
+        assert!(include_deps.is_empty());
+        assert!(macro_defs.is_empty());
+        assert!(cond_blocks.is_empty());
+        assert!(cond_symbols.is_empty());
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].file_path, "game.lua");

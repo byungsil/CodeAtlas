@@ -454,6 +454,95 @@ pub struct ParseMetrics {
     pub graph_rule_compile_ms: u128,
     pub graph_rule_execute_ms: u128,
     pub reference_normalization_ms: u128,
+    pub include_extraction_ms: u128,
+    pub macro_extraction_ms: u128,
+    pub dep_metrics_ms: u128,
+    pub conditional_symbol_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct IncludeDependency {
+    pub source_file: String,
+    pub included_file: String,
+    pub line: usize,
+    pub is_system_include: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MacroType {
+    ObjectLike,
+    FunctionLike,
+    ConditionalDefine,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacroDefinition {
+    pub file_path: String,
+    pub name: String,
+    pub value: Option<String>,
+    pub line: usize,
+    pub macro_type: MacroType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionalBlock {
+    pub file_path: String,
+    pub condition_text: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub is_negated: bool, // true for #ifndef
+}
+
+/// Per-file dependency metrics computed from the include graph.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyMetrics {
+    /// Number of direct (first-degree) includes.
+    pub direct_include_count: usize,
+    /// Number of unique files reachable through transitive includes.
+    pub transitive_include_count: usize,
+    /// Maximum depth of the include chain (1 = only self, 2 = one level deep).
+    pub max_include_depth: usize,
+    /// Whether this file participates in any circular include chain.
+    pub has_circular_dependency: bool,
+    /// The longest include chain from this file to its deepest transitive dependency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longest_chain: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncludeChain {
+    pub source_file: String,
+    /// Ordered list of files from source to deepest transitive dependency.
+    pub chain: Vec<String>,
+    /// Depth of this chain (number of edges).
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CircularDependency {
+    /// Files involved in the cycle, ordered from start to end.
+    pub cycle: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionalSymbol {
+    /// File path where the symbol is defined.
+    pub file_path: String,
+    /// Symbol name (function/class/etc).
+    pub symbol_name: String,
+    /// Line number of the symbol definition.
+    pub line: usize,
+    /// The macro condition that gates this symbol (e.g. "DEBUG", "ENABLE_FEATURE_X").
+    pub gating_macro: String,
+    /// Whether this symbol is negated (#ifndef) or positive (#ifdef).
+    pub is_negated: bool,
 }
 
 #[derive(Debug)]
@@ -468,4 +557,9 @@ pub struct ParseResult {
     pub callable_flow_summaries: Vec<CallableFlowSummary>,
     pub raw_calls: Vec<RawCallSite>,
     pub metrics: ParseMetrics,
+    pub include_dependencies: Vec<IncludeDependency>,
+    pub macro_definitions: Vec<MacroDefinition>,
+    pub conditional_blocks: Vec<ConditionalBlock>,
+    pub dependency_metrics: DependencyMetrics,
+    pub conditional_symbols: Vec<ConditionalSymbol>,
 }
