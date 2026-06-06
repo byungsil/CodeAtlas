@@ -30,7 +30,7 @@ npm run build        # tsc
 npm test             # jest
 npm run dev          # ts-node src/index.ts
 # Start with data dir
-CODEATLAS_PORT=3000 npx ts-node src/index.ts <workspace-root>/.codeatlas
+CODEATLAS_PORT=8090 npx ts-node src/index.ts <workspace-root>/.codeatlas
 ```
 
 ### One-command setup (Windows)
@@ -59,7 +59,7 @@ CODEATLAS_PORT=3000 npx ts-node src/index.ts <workspace-root>/.codeatlas
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CODEATLAS_PORT` | `3000` | HTTP/dashboard port |
+| `CODEATLAS_PORT` | `8090` | HTTP/dashboard port |
 | `CODEATLAS_WORKSPACE` | inferred | Workspace root override |
 | `CODEATLAS_WATCHER` | `true` | Auto-start watcher from MCP |
 | `CODEATLAS_INDEXER_PATH` | `codeatlas-indexer` | Indexer binary path |

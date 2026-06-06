@@ -91,13 +91,13 @@ Common optional flags:
 
 ```bash
 cd server
-CODEATLAS_PORT=3000 npx ts-node src/index.ts <workspace-root>/.codeatlas
+CODEATLAS_PORT=8090 npx ts-node src/index.ts <workspace-root>/.codeatlas
 ```
 
 Dashboard:
 
 ```text
-http://localhost:3000/dashboard/
+http://localhost:8090/dashboard/
 ```
 
 Run one dashboard instance per workspace/data dir. The dashboard shows the stored workspace name from DB metadata and resolves the active SQLite generation through `current-db.json`. Legacy `index.db` remains as a compatibility fallback for older workspaces.
@@ -114,7 +114,7 @@ Example MCP registration:
       "args": ["ts-node", "<path-to>/server/src/mcp.ts", "<workspace-root>/.codeatlas"],
       "env": {
         "CODEATLAS_WORKSPACE": "<workspace-root>",
-        "CODEATLAS_PORT": "3000",
+        "CODEATLAS_PORT": "8090",
         "CODEATLAS_WATCHER": "true",
         "CODEATLAS_INDEXER_PATH": "<path-to>/indexer/target/release/codeatlas-indexer"
       }
@@ -130,7 +130,7 @@ If `CODEATLAS_WATCHER=true`, the MCP server launches the Rust watcher automatica
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CODEATLAS_PORT` | `3000` | HTTP server and dashboard port |
+| `CODEATLAS_PORT` | `8090` | HTTP server and dashboard port |
 | `CODEATLAS_WORKSPACE` | inferred | Explicit workspace root |
 | `CODEATLAS_WATCHER` | `true` | Auto-start watcher from MCP server |
 | `CODEATLAS_INDEXER_PATH` | `codeatlas-indexer` | Indexer binary path |

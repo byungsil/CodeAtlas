@@ -813,7 +813,7 @@ async function launchCodeAtlas() {
     const config = {
       dashboard: {
         autoOpen: true,
-        port: parseInt(document.getElementById('serverPort').value) || 3000,
+        port: parseInt(document.getElementById('serverPort').value) || 8090,
         dataDir: dataDir
       },
       watcher: {
@@ -845,7 +845,7 @@ async function launchCodeAtlas() {
     }
 
     addLogEntry('INFO', 'LAUNCH', 'CodeAtlas launched successfully');
-    alert('🚀 CodeAtlas가 시작되었습니다!\n\n서버가 백그라운드에서 실행됩니다.\n대시보드는 http://localhost:' + (config.dashboard.port || 3000) + ' 에서 접속하세요.');
+    alert('🚀 CodeAtlas가 시작되었습니다!\n\n서버가 백그라운드에서 실행됩니다.\n대시보드는 http://localhost:' + (config.dashboard.port || 8090) + ' 에서 접속하세요.');
     
   } catch (err) {
     addLogEntry('ERROR', 'LAUNCH', `Failed to launch CodeAtlas: ${err.message}`);

@@ -20,13 +20,13 @@ describe("Config from environment variables", () => {
   it("returns defaults when no env vars set", () => {
     const config = loadConfig();
     expect(config.dashboard.autoOpen).toBe(false);
-    expect(config.dashboard.port).toBe(3000);
+    expect(config.dashboard.port).toBe(8090);
   });
 
   it("reads CODEATLAS_PORT", () => {
-    process.env.CODEATLAS_PORT = "4567";
+    process.env.CODEATLAS_PORT = "8090";
     const config = loadConfig();
-    expect(config.dashboard.port).toBe(4567);
+    expect(config.dashboard.port).toBe(8090);
   });
 
   it("reads CODEATLAS_DASHBOARD_AUTOOPEN=true", () => {
@@ -50,13 +50,13 @@ describe("Config from environment variables", () => {
   it("ignores invalid port, uses default", () => {
     process.env.CODEATLAS_PORT = "not_a_number";
     const config = loadConfig();
-    expect(config.dashboard.port).toBe(3000);
+    expect(config.dashboard.port).toBe(8090);
   });
 
   it("empty env var uses default", () => {
     process.env.CODEATLAS_PORT = "";
     const config = loadConfig();
-    expect(config.dashboard.port).toBe(3000);
+    expect(config.dashboard.port).toBe(8090);
   });
 
   it("watcher enabled by default", () => {

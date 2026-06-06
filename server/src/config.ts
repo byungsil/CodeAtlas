@@ -16,7 +16,7 @@ export function loadConfig(): CodeAtlasConfig {
   return {
     dashboard: {
       autoOpen: envBool("CODEATLAS_DASHBOARD_AUTOOPEN", false),
-      port: envInt("CODEATLAS_PORT", 3000),
+      port: envInt("CODEATLAS_PORT", 8090),
       dataDir: process.env.CODEATLAS_DATA_DIR || '',
     },
     watcher: {

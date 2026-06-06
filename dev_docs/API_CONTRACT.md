@@ -1,6 +1,6 @@
 # CodeAtlas API Contract
 
-Base URL: `http://localhost:3000`
+Base URL: `http://localhost:8090`
 
 ---
 

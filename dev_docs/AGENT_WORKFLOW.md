@@ -41,7 +41,7 @@ Add to your Claude Code MCP config (`.claude/settings.json`):
       "args": ["ts-node", "server/src/mcp.ts", "<workspace-root>/.codeatlas"],
       "env": {
         "CODEATLAS_WORKSPACE": "<workspace-root>",
-        "CODEATLAS_PORT": "3000",
+        "CODEATLAS_PORT": "8090",
         "CODEATLAS_DASHBOARD_AUTOOPEN": "false",
         "CODEATLAS_WATCHER": "true",
         "CODEATLAS_INDEXER_PATH": "<path-to>/indexer/target/release/codeatlas-indexer"
