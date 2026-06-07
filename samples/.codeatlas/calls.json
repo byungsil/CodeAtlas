@@ -1,5 +1,473 @@
 [
   {
+    "callerId": "Game::Tick",
+    "calleeId": "Game::MakeWorker",
+    "filePath": "ambiguity/src/complex_receivers.cpp",
+    "line": 11
+  },
+  {
+    "callerId": "Game::Tick",
+    "calleeId": "Game::Worker::Update",
+    "filePath": "ambiguity/src/complex_receivers.cpp",
+    "line": 11
+  },
+  {
+    "callerId": "AI::Controller::Update",
+    "calleeId": "Gameplay::Update",
+    "filePath": "ambiguity/src/namespace_dupes.cpp",
+    "line": 13
+  },
+  {
+    "callerId": "AI::Controller::Update",
+    "calleeId": "UI::Update",
+    "filePath": "ambiguity/src/namespace_dupes.cpp",
+    "line": 14
+  },
+  {
+    "callerId": "Renderer::Blend",
+    "calleeId": "Math::Blend",
+    "filePath": "ambiguity/src/overloads.cpp",
+    "line": 15
+  },
+  {
+    "callerId": "Game::Player::Process",
+    "calleeId": "Game::Player::Run",
+    "filePath": "ambiguity/src/sibling_methods.cpp",
+    "line": 6
+  },
+  {
+    "callerId": "Game::Enemy::Process",
+    "calleeId": "Game::Enemy::Run",
+    "filePath": "ambiguity/src/sibling_methods.cpp",
+    "line": 12
+  },
+  {
+    "callerId": "Game::Worker::Tick",
+    "calleeId": "Game::Worker::Update",
+    "filePath": "ambiguity/src/split_update.cpp",
+    "line": 8
+  },
+  {
+    "callerId": "Game::Worker::Tick",
+    "calleeId": "Game::Worker::Update",
+    "filePath": "ambiguity/src/split_update.cpp",
+    "line": 9
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Gone",
+    "filePath": "incremental/delete_file/after/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Gone",
+    "filePath": "incremental/delete_file/before/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Stable",
+    "filePath": "incremental/header_comment_change/after/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Stable",
+    "filePath": "incremental/header_comment_change/before/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::A",
+    "filePath": "incremental/mass_churn/after/main.cpp",
+    "line": 5
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::B",
+    "filePath": "incremental/mass_churn/after/main.cpp",
+    "line": 6
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::A",
+    "filePath": "incremental/mass_churn/before/main.cpp",
+    "line": 5
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::B",
+    "filePath": "incremental/mass_churn/before/main.cpp",
+    "line": 6
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Helper",
+    "filePath": "incremental/rename_move/after/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "main",
+    "calleeId": "demo::Helper",
+    "filePath": "incremental/rename_move/before/main.cpp",
+    "line": 4
+  },
+  {
+    "callerId": "Game::Editor::RefreshShotPreview",
+    "calleeId": "Game::Editor::UpdateShot",
+    "filePath": "investigation/editor/update_shot.cpp",
+    "line": 7
+  },
+  {
+    "callerId": "Game::Runtime::TickRuntimeShot",
+    "calleeId": "Game::Runtime::UpdateShot",
+    "filePath": "investigation/runtime/update_shot.cpp",
+    "line": 7
+  },
+  {
+    "callerId": "Game::Investigation::HandleFallback",
+    "calleeId": "Game::Investigation::CopyArmedFlag",
+    "filePath": "investigation/src/partial_flow.cpp",
+    "line": 21
+  },
+  {
+    "callerId": "Game::Investigation::HandleFallback",
+    "calleeId": "Game::Investigation::ConsumeArmedFlag",
+    "filePath": "investigation/src/partial_flow.cpp",
+    "line": 22
+  },
+  {
+    "callerId": "Game::Investigation::MakeEnvelope",
+    "calleeId": "Game::Investigation::MakeHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 25
+  },
+  {
+    "callerId": "Game::Investigation::MakeNestedEnvelope",
+    "calleeId": "Game::Investigation::MakeEnvelope",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 30
+  },
+  {
+    "callerId": "Game::Investigation::ShotController::LaunchIfReady",
+    "calleeId": "Game::Investigation::LaunchShot",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 50
+  },
+  {
+    "callerId": "Game::Investigation::EmitRelayHint",
+    "calleeId": "Game::Investigation::LaunchHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 63
+  },
+  {
+    "callerId": "Game::Investigation::EmitForwardedPower",
+    "calleeId": "Game::Investigation::EmitRelayHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 67
+  },
+  {
+    "callerId": "Game::Investigation::HintController::EmitHint",
+    "calleeId": "Game::Investigation::LaunchHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 72
+  },
+  {
+    "callerId": "Game::Investigation::RelayFieldController::EmitStored",
+    "calleeId": "Game::Investigation::EmitRelayHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 80
+  },
+  {
+    "callerId": "Game::Investigation::ConstructedHintController::EmitConstructed",
+    "calleeId": "Game::Investigation::LaunchHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 88
+  },
+  {
+    "callerId": "Game::Investigation::NestedConstructedHintController::EmitNestedConstructed",
+    "calleeId": "Game::Investigation::LaunchHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 96
+  },
+  {
+    "callerId": "Game::Investigation::QueueShot",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 100
+  },
+  {
+    "callerId": "Game::Investigation::QueueShot",
+    "calleeId": "Game::Investigation::ReadInputArmed",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 101
+  },
+  {
+    "callerId": "Game::Investigation::QueueShot",
+    "calleeId": "Game::Investigation::BuildShotRequest",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 102
+  },
+  {
+    "callerId": "Game::Investigation::QueueShot",
+    "calleeId": "Game::Investigation::ShotController::LoadRequest",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 103
+  },
+  {
+    "callerId": "Game::Investigation::QueueShot",
+    "calleeId": "Game::Investigation::ShotController::LaunchIfReady",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 104
+  },
+  {
+    "callerId": "Game::Investigation::RunHintWorkflow",
+    "calleeId": "Game::Investigation::MakeHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 108
+  },
+  {
+    "callerId": "Game::Investigation::RunHintWorkflow",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 108
+  },
+  {
+    "callerId": "Game::Investigation::RunHintWorkflow",
+    "calleeId": "Game::Investigation::HintController::EmitHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 110
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedHintWorkflow",
+    "calleeId": "Game::Investigation::MakeNestedEnvelope",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 114
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedHintWorkflow",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 114
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedHintWorkflow",
+    "calleeId": "Game::Investigation::HintController::EmitHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 116
+  },
+  {
+    "callerId": "Game::Investigation::RunConstructedHintWorkflow",
+    "calleeId": "Game::Investigation::ConstructedHintController::EmitConstructed",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 121
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedConstructedHintWorkflow",
+    "calleeId": "Game::Investigation::NestedConstructedHintController::EmitNestedConstructed",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 126
+  },
+  {
+    "callerId": "Game::Investigation::RunRelayFieldWorkflow",
+    "calleeId": "Game::Investigation::MakeHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 130
+  },
+  {
+    "callerId": "Game::Investigation::RunRelayFieldWorkflow",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 130
+  },
+  {
+    "callerId": "Game::Investigation::RunRelayFieldWorkflow",
+    "calleeId": "Game::Investigation::RelayFieldController::EmitStored",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 132
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayWorkflow",
+    "calleeId": "Game::Investigation::MakeNestedEnvelope",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 136
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayWorkflow",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 136
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayWorkflow",
+    "calleeId": "Game::Investigation::ExtractHintPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 137
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayWorkflow",
+    "calleeId": "Game::Investigation::EmitRelayHint",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 138
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayToForwarderWorkflow",
+    "calleeId": "Game::Investigation::MakeNestedEnvelope",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 142
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayToForwarderWorkflow",
+    "calleeId": "Game::Investigation::ReadInputPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 142
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayToForwarderWorkflow",
+    "calleeId": "Game::Investigation::ExtractHintPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 143
+  },
+  {
+    "callerId": "Game::Investigation::RunNestedRelayToForwarderWorkflow",
+    "calleeId": "Game::Investigation::EmitForwardedPower",
+    "filePath": "investigation/src/workflow.cpp",
+    "line": 144
+  },
+  {
+    "callerId": "Game::BoundaryWorker::Run",
+    "calleeId": "Game::MakeHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 25
+  },
+  {
+    "callerId": "Game::BoundaryWorker::Run",
+    "calleeId": "Game::BoundaryWorker::ApplyHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 26
+  },
+  {
+    "callerId": "Game::Tick",
+    "calleeId": "Game::Consume",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 35
+  },
+  {
+    "callerId": "Game::Tick",
+    "calleeId": "Game::Forward",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 36
+  },
+  {
+    "callerId": "Game::MakeEnvelope",
+    "calleeId": "Game::MakeHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 44
+  },
+  {
+    "callerId": "Game::MakeNestedEnvelope",
+    "calleeId": "Game::MakeEnvelope",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 53
+  },
+  {
+    "callerId": "Game::EmitPower",
+    "calleeId": "Game::Consume",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 62
+  },
+  {
+    "callerId": "Game::EnvelopeWorker::RunEnvelope",
+    "calleeId": "Game::MakeEnvelope",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 72
+  },
+  {
+    "callerId": "Game::EnvelopeWorker::RunEnvelope",
+    "calleeId": "Game::EnvelopeWorker::ApplyHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 73
+  },
+  {
+    "callerId": "Game::NestedEnvelopeWorker::RunNestedEnvelope",
+    "calleeId": "Game::MakeNestedEnvelope",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 87
+  },
+  {
+    "callerId": "Game::NestedEnvelopeWorker::RunNestedEnvelope",
+    "calleeId": "Game::NestedEnvelopeWorker::ApplyHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 88
+  },
+  {
+    "callerId": "Game::MemberRelayWorker::EmitStored",
+    "calleeId": "Game::EmitPower",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 102
+  },
+  {
+    "callerId": "Game::MemberRelayWorker::RunMemberRelay",
+    "calleeId": "Game::MakeHint",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 106
+  },
+  {
+    "callerId": "Game::MemberRelayWorker::RunMemberRelay",
+    "calleeId": "Game::MemberRelayWorker::Seed",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 107
+  },
+  {
+    "callerId": "Game::MemberRelayWorker::RunMemberRelay",
+    "calleeId": "Game::MemberRelayWorker::EmitStored",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 108
+  },
+  {
+    "callerId": "Game::RelayNestedHint",
+    "calleeId": "Game::MakeNestedEnvelope",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 116
+  },
+  {
+    "callerId": "Game::RelayNestedHint",
+    "calleeId": "Game::ExtractHintPower",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 117
+  },
+  {
+    "callerId": "Game::RelayNestedHint",
+    "calleeId": "Game::Consume",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 118
+  },
+  {
+    "callerId": "Game::RelayNestedHintToEmitter",
+    "calleeId": "Game::MakeNestedEnvelope",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 122
+  },
+  {
+    "callerId": "Game::RelayNestedHintToEmitter",
+    "calleeId": "Game::ExtractHintPower",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 123
+  },
+  {
+    "callerId": "Game::RelayNestedHintToEmitter",
+    "calleeId": "Game::EmitPower",
+    "filePath": "propagation/src/function_boundary.cpp",
+    "line": 124
+  },
+  {
+    "callerId": "Game::MakeCarrierEnvelope",
+    "calleeId": "Game::MakeCarrier",
+    "filePath": "propagation/src/member_state.cpp",
+    "line": 17
+  },
+  {
     "callerId": "Game::AIComponent::UpdateAI",
     "calleeId": "Game::AIComponent::ProcessIdle",
     "filePath": "src/ai_system.cpp",

@@ -2212,6 +2212,274 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     },
   );
 
+
+  // Phase 1: Enhanced Symbol Lookup with Type Inference + Analysis Tags
+
+  server.tool(
+    "get_enhanced_symbol",
+    "Look up a symbol by exact qualified name and enrich the result with type inference data, flow tags (Phase 2), and analysis/pattern results (Phase 3)",
+    {
+      qualifiedName: z.string().describe("Exact function/method/class/variable qualified name"),
+      includeTypeInference: z.boolean().optional().default(true).describe("Include inferred type data from Phase 1"),
+      includeAnalysisTags: z.boolean().optional().default(true).describe("Include pattern analysis results from Phase 3"),
+    },
+    async ({ qualifiedName, includeTypeInference, includeAnalysisTags }) => {
+      const symbol = store.getSymbolByQualifiedName(qualifiedName);
+      if (!symbol) return notFoundPayload();
+
+      const base = buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const response: Record<string, any> = { ...base };
+
+      // Phase 1: Type inference enrichment
+      if (includeTypeInference && typeof store.readTypeInferencesForSymbol === "function") {
+        try {
+          const typeInf = store.readTypeInferencesForSymbol(symbol.id);
+          response.inferred_types = typeInf.map((t) => t.inferred_type).filter(Boolean);
+          response.type_inference_confidence =
+            typeInf[0]?.confidence ?? "unresolved";
+        } catch {
+          /* table may not exist yet */
+        }
+      }
+
+      // Phase 2: Flow tags enrichment (if available)
+      if (typeof store.readFlowTagsForSymbol === "function") {
+        try {
+          const flowTags = store.readFlowTagsForSymbol(symbol.id);
+          response.flow_tags = flowTags.map((t) => ({
+            kind: t.tagKind,
+            label: t.label ?? undefined,
+          }));
+        } catch {
+          /* table may not exist yet */
+        }
+      }
+
+      // Phase 3: Analysis tags (violation results for this symbol's file)
+      if (
+        includeAnalysisTags &&
+        typeof store.readAnalysisResultsForFile === "function" &&
+        typeof store.readAnalysisRules === "function"
+      ) {
+        try {
+          const filePath = symbol.filePath;
+          if (filePath) {
+            const results = store.readAnalysisResultsForFile(filePath);
+            const allRules = store.readAnalysisRules(null, null);
+            const ruleMap = new Map(allRules.map((r) => [r.rule_id, r]));
+            response.analysis_tags = results
+              .map((r) => {
+                const ruleInfo = ruleMap.get(r.rule_id);
+                return ruleInfo
+                  ? { patternId: r.rule_id, severity: ruleInfo.severity as string, category: ruleInfo.category, description: "", lineStart: r.line_start, lineEnd: r.line_end }
+                  : null;
+              })
+              .filter(Boolean);
+          }
+        } catch {
+          /* tables may not exist yet */
+        }
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+      };
+    },
+  );
+
+  // Phase 2: Cross-Function Flow Tracing
+
+  server.tool(
+    "trace_cross_function_flow",
+    "Trace data flow paths across function boundaries from a source symbol. Returns hop-by-hop breakdown with semantic tags (user_input, config_value, etc.) and risk markers.",
+    {
+      sourceSymbolId: z.string().describe("Source symbol ID to trace flow from"),
+      maxDepth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(5).describe("Maximum traversal depth for flow tracing"),
+    },
+    async ({ sourceSymbolId, maxDepth }) => {
+      if (typeof store.readFlowPathsFromSource !== "function") {
+        return notFoundPayload();
+      }
+
+      try {
+        const paths = store.readFlowPathsFromSource(sourceSymbolId);
+        const hops: Array<Record<string, unknown>> = [];
+        const semanticTags: string[] = [];
+        let sinkSymbolId: string | undefined;
+
+        for (const path of paths) {
+          if (!sinkSymbolId && path.target_symbol_id) sinkSymbolId = path.target_symbol_id;
+          try {
+            const parsedHops = JSON.parse(path.hops_json ?? "[]") as Array<Record<string, unknown>>;
+            hops.push(...parsedHops);
+          } catch {
+            /* skip malformed hop data */
+          }
+          try {
+            const parsedTags = JSON.parse(path.semantic_tags_json ?? "[]") as string[];
+            for (const t of parsedTags) {
+              if (!semanticTags.includes(t)) semanticTags.push(t);
+            }
+          } catch {
+            /* skip malformed tag data */
+          }
+        }
+
+        // Build risk signals based on flow patterns
+        const risks: Array<{ hopIndex: number; riskType: string; description: string }> = [];
+        if (semanticTags.includes("user_input") && semanticTags.includes("sql_execution")) {
+          risks.push({
+            hopIndex: 0,
+            riskType: "potential_sql_injection",
+            description:
+              "User input detected in flow — verify that data is sanitized before SQL execution.",
+          });
+        }
+        if (semanticTags.includes("user_input") && semanticTags.includes("command_execution")) {
+          risks.push({
+            hopIndex: 0,
+            riskType: "potential_command_injection",
+            description:
+              "User input detected in flow — verify that data is sanitized before shell execution.",
+          });
+        }
+
+        const payload = {
+          pathFound: paths.length > 0,
+          sourceSymbolId,
+          sinkSymbolId,
+          hops,
+          semanticTags,
+          risks,
+          maxDepthReached:
+            hops.some((h) => h.value_transformed === true || h.transfer_kind === "Transformed")
+              ? false
+              : undefined,
+        };
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify({ error: `Flow trace failed: ${(err as Error).message}`, code: "TRACE_ERROR" }) },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Phase 3: File-Level Pattern Analysis
+
+  server.tool(
+    "analyze_file",
+    "Run pattern-based structural analysis on a file. Detects code smells, security risks, build issues, and design patterns based on loaded rulesets.",
+    {
+      filePath: z.string().describe("Source file path to analyze"),
+      categories: z
+        .array(z.enum(["code_smell", "security_risk", "build_risk", "design_pattern", "memory_risk"]))
+        .optional()
+        .describe("Filter by category (omit=all)"),
+    },
+    async ({ filePath, categories }) => {
+      if (
+        typeof store.readAnalysisResultsForFile !== "function" ||
+        typeof store.readAnalysisRules !== "function"
+      ) {
+        return notFoundPayload();
+      }
+
+      try {
+        const results = store.readAnalysisResultsForFile(filePath);
+        let filtered: Array<Record<string, unknown>>;
+
+        if (categories && categories.length > 0) {
+          // Enrich with rule metadata and filter by category
+          const allRules = store.readAnalysisRules(null, null);
+          const ruleMap = new Map(allRules.map((r) => [r.rule_id, r]));
+          filtered = results
+            .map((r) => {
+              const ruleInfo = ruleMap.get(r.rule_id);
+              const cat = ruleInfo?.category ?? "";
+              return ruleInfo && (categories as readonly string[]).includes(cat)
+                ? { ...r, severity: ruleInfo.severity as string, category: ruleInfo.category }
+                : null;
+            })
+            .filter(Boolean) as Array<Record<string, unknown>>;
+        } else {
+          const allRules = store.readAnalysisRules(null, null);
+          const ruleMap = new Map(allRules.map((r) => [r.rule_id, r]));
+          filtered = results
+            .map((r) => {
+              const ruleInfo = ruleMap.get(r.rule_id);
+              return ruleInfo ? { ...r, severity: ruleInfo.severity as string, category: ruleInfo.category } : null;
+            })
+            .filter(Boolean) as Array<Record<string, unknown>>;
+        }
+
+        // Group by severity for compact summary
+        const violationsBySeverity = {
+          error: filtered.filter((r) => r.severity === "error").length,
+          warning: filtered.filter((r) => r.severity === "warning").length,
+          info: filtered.filter(
+            (r) => !categories || categories.length === 0 ? true : r.severity !== "error" && r.severity !== "warning",
+          ).length,
+        };
+
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ filePath, total_violations: filtered.length, violations_by_severity: violationsBySeverity, results: filtered }, null, 2) },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify({ error: `Analysis failed: ${(err as Error).message}`, code: "ANALYSIS_ERROR", filePath }) },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // Phase 3: List Available Analysis Rules
+
+  server.tool(
+    "list_analysis_rules",
+    "List available analysis rulesets and their patterns. Filter by category (code_smell, security_risk, build_risk, design_pattern) or language.",
+    {
+      category: z.enum(["code_smell", "security_risk", "build_risk", "design_pattern", "memory_risk"]).optional().describe("Filter by rule category"),
+      language: z.enum(["cpp", "python", "typescript", "rust", "lua"]).optional().describe("Filter by target language (NULL = all languages)"),
+    },
+    async ({ category, language }) => {
+      if (typeof store.readAnalysisRules !== "function") {
+        return notFoundPayload();
+      }
+
+      try {
+        const rules = store.readAnalysisRules(category ?? null, language ?? null);
+
+        // Group by category for structured response
+        const rulesByCategory: Record<string, Array<{ rule_id: string; severity: string; description?: string }>> = {};
+        for (const r of rules) {
+          if (!rulesByCategory[r.category]) rulesByCategory[r.category] = [];
+          rulesByCategory[r.category].push({ rule_id: r.rule_id, severity: r.severity });
+        }
+
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ total_rules: rules.length, rules_by_category: rulesByCategory }, null, 2) },
+          ],
+        };
+      } catch (err) {
+        return notFoundPayload();
+      }
+    },
+  );
+
   const close = () => {
     const closable = store as Store & { close?: () => void };
     closable.close?.();

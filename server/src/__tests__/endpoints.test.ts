@@ -840,8 +840,8 @@ describe("GET /search", () => {
     expect(res.body.window.totalCount).toBe(res.body.totalCount);
     expect(res.body.window.returnedCount).toBe(res.body.results.length);
     expect(res.body.results).toBeInstanceOf(Array);
-    expect(res.body.results.length).toBe(3);
-    expect(res.body.totalCount).toBe(3);
+    expect(res.body.results.length).toBe(10);
+    expect(res.body.totalCount).toBe(10);
     expect(res.body.truncated).toBe(false);
   });
 

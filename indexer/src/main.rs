@@ -839,7 +839,9 @@ fn run_full(
         print_memory_snapshot("full rebuild start");
     }
 
-    println!("  Stage: parse files");
+    if verbose {
+        println!("  Stage: parse files");
+    }
     let parse_start = Instant::now();
     let mut parse_metrics = ParseMetrics::default();
     let mut all_relation_events = Vec::new();
@@ -862,6 +864,8 @@ fn run_full(
             macro_definitions,
             conditional_blocks,
             conditional_symbols,
+            batch_type_inferences,
+            batch_analysis_results,
             batch_metrics,
         ) = parse_discovered_files_with_progress(
             workspace_root,
@@ -901,16 +905,17 @@ fn run_full(
         all_include_deps.extend(include_dependencies);
         all_relation_events.extend(relation_events);
         accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
-        if !verbose {
+        // Verbose-only: detailed per-batch progress and memory snapshots
+        if verbose && !log_diagnostics {
             println!(
                 "  Parse batch {}/{} committed ({} files)",
                 batch_index + 1,
                 discovered_files.len().div_ceil(batch_size),
                 batch.len()
             );
-            if log_diagnostics {
-                print_memory_snapshot("after parse batch flush");
-            }
+        }
+        if log_diagnostics {
+            print_memory_snapshot("after parse batch flush");
         }
     }
     // Phase 4: Detect circular dependencies across all files
@@ -925,15 +930,16 @@ fn run_full(
         }
     }
     timings.parse_ms = parse_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: parse files in {}",
-        format_elapsed(timings.parse_ms)
-    );
+    if verbose {
+        println!("\r  Stage complete: parse files in {}", format_elapsed(timings.parse_ms)); // \r to overwrite batch progress
+    } else {
+        print!("."); std::io::Write::flush(&mut std::io::stdout()).ok(); // minimal dot progress for non-verbose
+    }
     if log_diagnostics {
         print_memory_snapshot("after parse files");
     }
 
-    println!("  Stage: merge symbols");
+    if verbose { println!("  Stage: merge symbols"); }
     let resolve_start = Instant::now();
     let merge_symbols_start = Instant::now();
     let raw_symbols = db
@@ -979,15 +985,14 @@ fn run_full(
         );
     }
     resolve_breakdown.merge_symbols_ms = merge_symbols_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: merge symbols in {}",
-        format_elapsed(resolve_breakdown.merge_symbols_ms)
-    );
+    if verbose {
+        println!("  Stage complete: merge symbols in {}", format_elapsed(resolve_breakdown.merge_symbols_ms));
+    }
     if log_diagnostics {
         print_memory_snapshot("after merge symbols");
     }
 
-    println!("  Stage: resolve calls");
+    if verbose { println!("  Stage: resolve calls"); }
     let resolve_calls_start = Instant::now();
     let _all_include_deps = db.find_all_include_dependencies().unwrap_or_default();
     let file_paths: Vec<String> = db
@@ -1005,7 +1010,8 @@ fn run_full(
             db.write_calls(&calls)
                 .expect("Failed to write resolved call batch");
         }
-        if !verbose {
+        // Verbose-only: detailed per-batch resolve progress
+        if verbose {
             println!(
                 "  Resolve batch {}/{} committed ({} files, {} calls)",
                 batch_index + 1,
@@ -1016,10 +1022,9 @@ fn run_full(
         }
     }
     resolve_breakdown.resolve_calls_ms = resolve_calls_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: resolve calls in {}",
-        format_elapsed(resolve_breakdown.resolve_calls_ms)
-    );
+    if verbose {
+        println!("  Stage complete: resolve calls in {}", format_elapsed(resolve_breakdown.resolve_calls_ms));
+    }
     if log_diagnostics {
         print_memory_snapshot("after resolve calls");
     }
@@ -1039,7 +1044,7 @@ fn run_full(
     let symbols_for_json = if json_mode { Some(symbols.clone()) } else { None };
     drop(symbols);
 
-    println!("  Stage: derive boundary propagation");
+    if verbose { println!("  Stage: derive boundary propagation"); }
     let boundary_start = Instant::now();
     let mut propagation_keys = db
         .read_all_propagation_event_keys()
@@ -1076,7 +1081,8 @@ fn run_full(
             db.write_propagation_events(&unique_boundary_events)
                 .expect("Failed to write boundary propagation batch");
         }
-        if !verbose {
+        // Verbose-only: detailed boundary propagation progress
+        if verbose {
             println!(
                 "  Boundary batch {}/{} appended {} event(s)",
                 batch_index + 1,
@@ -1086,44 +1092,38 @@ fn run_full(
         }
     }
     resolve_breakdown.boundary_propagation_ms = boundary_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: derive boundary propagation in {}",
-        format_elapsed(resolve_breakdown.boundary_propagation_ms)
-    );
+    if verbose {
+        println!("  Stage complete: derive boundary propagation in {}", format_elapsed(resolve_breakdown.boundary_propagation_ms));
+    }
     if log_diagnostics {
         print_memory_snapshot("after boundary propagation");
     }
 
-    println!("  Stage: merge propagation");
+    if verbose { println!("  Stage: merge propagation"); }
     let propagation_merge_start = Instant::now();
     resolve_breakdown.propagation_merge_ms = propagation_merge_start.elapsed().as_millis();
     timings.resolve_ms = resolve_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: merge propagation in {}",
-        format_elapsed(resolve_breakdown.propagation_merge_ms)
-    );
-    println!(
-        "  Propagation merge: appended {} boundary event(s)",
-        appended_boundary_propagation
-    );
+    if verbose {
+        println!("  Stage complete: merge propagation in {}", format_elapsed(resolve_breakdown.propagation_merge_ms));
+        println!("  Propagation merge: appended {} boundary event(s)", appended_boundary_propagation);
+    }
     if log_diagnostics {
         print_memory_snapshot("after merge propagation");
     }
 
+    if verbose { println!("  Stage: persist sqlite"); }
     let raw_count: usize = discovered_files.len();
-    println!("  Stage: persist sqlite");
     let persist_start = Instant::now();
     timings.persist_ms = persist_start.elapsed().as_millis();
-    println!(
-        "  Stage complete: persist sqlite in {}",
-        format_elapsed(timings.persist_ms)
-    );
+    if verbose {
+        println!("  Stage complete: persist sqlite in {}", format_elapsed(timings.persist_ms));
+    }
     if log_diagnostics {
         print_memory_snapshot("after persist sqlite");
     }
 
     if json_mode {
-        println!("  Stage: write json");
+        if verbose { println!("  Stage: write json"); }
         let json_start = Instant::now();
         let calls = db
             .read_all_calls()
@@ -1146,10 +1146,9 @@ fn run_full(
         write_json(&data_dir.join("propagation.json"), &propagation_events);
         write_json(&data_dir.join("files.json"), &file_records);
         timings.json_ms = json_start.elapsed().as_millis();
-        println!(
-            "  Stage complete: write json in {}",
-            format_elapsed(timings.json_ms)
-        );
+        if verbose {
+            println!("  Stage complete: write json in {}", format_elapsed(timings.json_ms));
+        }
         if log_diagnostics {
             print_memory_snapshot("after write json");
         }
@@ -1192,6 +1191,8 @@ fn run_incremental(
         new_local_propagation,
         new_callable_summaries,
         new_files,
+        incremental_type_inferences,
+        incremental_analysis_results,
         parse_metrics,
     ) = if !plan.to_index.is_empty() {
         parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata)?
@@ -1203,6 +1204,8 @@ fn run_incremental(
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),   // TypeInferenceResult
+            Vec::new(),   // AnalysisResult
             ParseMetrics::default(),
         )
     };
@@ -1469,12 +1472,11 @@ fn write_json<T: serde::Serialize>(path: &Path, data: &T) {
 }
 
 fn log_incremental_plan(plan: &incremental::IncrementalPlan, verbose: bool) {
-    if !plan.rename_hints.is_empty() {
+    // Verbose-only: planner rename/move hints and detailed plan entries
+    if !plan.rename_hints.is_empty() && verbose {
         println!("  Planner: {} rename/move hint(s)", plan.rename_hints.len());
-        if verbose {
-            for hint in &plan.rename_hints {
-                println!("    MOVE?: {} -> {}", hint.from_path, hint.to_path);
-            }
+        for hint in &plan.rename_hints {
+            println!("    MOVE?: {} -> {}", hint.from_path, hint.to_path);
         }
     }
 

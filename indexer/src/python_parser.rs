@@ -365,6 +365,12 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
         }
     }
 
+    // Python type inference from return statements and assignments
+    let python_type_inferences = infer_python_types(source, file_path);
+
+    // Python pattern detection
+    let py_patterns = detect_python_patterns(source, file_path);
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -383,6 +389,8 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: python_type_inferences,
+        analysis_results: py_patterns,
     })
 }
 
@@ -560,6 +568,183 @@ fn imported_symbol_leaf(symbol_id: &str) -> &str {
     symbol_id.rsplit("::").next().unwrap_or(symbol_id)
 }
 
+// Phase 1: Python Type Inference
+pub(crate) fn infer_python_types(source: &str, file_path: &str) -> Vec<crate::models::TypeInferenceResult> {
+    use crate::models::{TypeEvidence, TypeInferenceConfidence};
+    
+    let mut results = HashMap::<String, Vec<TypeEvidence>>::new();
+    let lines: Vec<&str> = source.lines().collect();
+    
+    // Track which function each line belongs to (simple indentation-based)
+    let mut current_func_id: Option<String> = None;
+    
+    for (line_no, &line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        
+        // Detect function definition
+        if trimmed.starts_with("def ") && trimmed.ends_with(":") {
+            current_func_id = Some(format!("{}::function@L{}", file_path, line_no + 1));
+            continue;
+        }
+        
+        // Detect class definition
+        if trimmed.starts_with("class ") && trimmed.contains(":") {
+            current_func_id = None; // reset to module level
+            continue;
+        }
+        
+        if let Some(ref func_id) = current_func_id {
+            // Return statement type inference
+            if trimmed.starts_with("return ") || trimmed == "return" {
+                let return_expr = trimmed.strip_prefix("return").unwrap_or("").trim();
+                if !return_expr.is_empty() && !return_expr.ends_with(",") {
+                    // Simple heuristic: detect common Python patterns
+                    let inferred_type = infer_python_return_type(return_expr);
+                    results.entry(func_id.clone()).or_default().push(TypeEvidence {
+                        expression_text: return_expr.to_string(),
+                        inferred_type_hint: Some(inferred_type),
+                        confidence: TypeInferenceConfidence::Partial,
+                    });
+                }
+            }
+            
+            // Assignment type inference
+            if let Some(eq_pos) = trimmed.find('=') {
+                if eq_pos > 0 && !trimmed.starts_with('!') {
+                    let var_name = &trimmed[..eq_pos].trim();
+                    let expr_value = &trimmed[eq_pos+1..].trim();
+                    
+                    // Skip function/class definitions (they have ':', not '=')
+                    if !var_name.contains(':') && !expr_value.starts_with('(') {
+                        let inferred_type = infer_python_assignment_type(var_name, expr_value);
+                        results.entry(format!("{}::variable@L{}", file_path, line_no + 1))
+                            .or_default()
+                            .push(TypeEvidence {
+                                expression_text: expr_value.to_string(),
+                                inferred_type_hint: Some(inferred_type),
+                                confidence: TypeInferenceConfidence::Partial,
+                            });
+                    }
+                }
+            }
+        }
+    }
+    
+    // Convert to TypeInferenceResult
+    results.into_iter()
+        .map(|(sym_id, evidences)| {
+            let best_type = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).next();
+            crate::models::TypeInferenceResult {
+                symbol_id: sym_id,
+                inferred_type: best_type,
+                confidence: if evidences.len() > 1 { 
+                    TypeInferenceConfidence::Partial 
+                } else if evidences.first().map_or(false, |e| e.confidence == TypeInferenceConfidence::High) {
+                    TypeInferenceConfidence::High
+                } else {
+                    TypeInferenceConfidence::Partial
+                },
+                evidence_sources: evidences,
+            }
+        })
+        .collect()
+}
+
+/// Infer type from a Python return expression string.
+pub(crate) fn infer_python_return_type(expr: &str) -> String {
+    let e = expr.trim();
+    
+    if e.starts_with("'") || e.starts_with('"') || e.starts_with("r'") || e.starts_with("f'") {
+        return "str".to_string();
+    }
+    if let Ok(n) = e.parse::<i64>() { n.to_string() }
+    else if e == "True" || e == "False" { "bool".to_string() }
+    else if e.starts_with("[") && e.ends_with("]") { "list".to_string() }
+    else if e.starts_with("{") && e.ends_with("}") {
+        // Distinguish dict vs set
+        if e.contains(':') { "dict".to_string() } else { "set".to_string() }
+    }
+    else if let Some(dot_pos) = e.find('.') {
+        let method_name = &e[dot_pos+1..];
+        match method_name.split('(').next().unwrap_or("") {
+            "strip" | "lower" | "upper" | "split" | "join" | "replace" | "find" => "str".to_string(),
+            "append" | "extend" | "pop" | "sort" | "reverse" | "index" | "count" => "list".to_string(),
+            "get" | "keys" | "values" | "items" | "popitem" => "dict".to_string(),
+            _ => e[..dot_pos].split('.').last().unwrap_or(e).to_lowercase()
+        }
+    } else {
+        // Check for common function calls
+        if let Some(paren_pos) = e.find('(') {
+            match &e[..paren_pos] {
+                "len" | "str" | "int" | "float" | "bool" | "list" | "dict" => { /* type() call */ }
+                _ => {}
+            }
+        }
+        e.split('.').last().unwrap_or(e).to_lowercase()
+    }
+}
+
+/// Infer type from a Python assignment expression.
+pub(crate) fn infer_python_assignment_type(var_name: &str, expr_value: &str) -> String {
+    let v = var_name.trim();
+    let e = expr_value.trim().trim_end_matches(','); // strip trailing comma for tuple unpacking
+    
+    if e.starts_with("'") || e.starts_with('"') || e.starts_with("r'") { "str".to_string() }
+    else if let Ok(_) = e.parse::<i64>() { "int".to_string() }
+    else if let Ok(_) = e.parse::<f64>() { "float".to_string() }
+    else if e == "True" || e == "False" { "bool".to_string() }
+    else if e.starts_with("[") && e.ends_with("]") { "list".to_string() }
+    else if e.starts_with("{") && e.ends_with("}") {
+        if e.contains(':') { "dict".to_string() } else { "set".to_string() }
+    }
+    // Special pattern: request.args.get('key', None)
+    else if v == "_" || !v.is_empty() {
+        infer_python_return_type(e)  // reuse return inference logic
+    } else {
+        e.split('.').last().unwrap_or(e).to_lowercase()
+    }
+}
+
+fn detect_python_patterns(source: &str, file_path: &str) -> Vec<crate::models::AnalysisResult> {
+    let mut results = Vec::new();
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+
+        // python-mutable-default-arg: list/dict/set literals as default function parameters
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            if re_mutable_default().is_match(trimmed) {
+                results.push(crate::models::AnalysisResult {
+                    rule_id: "python-mutable-default-arg".into(),
+                    file_path: file_path.into(),
+                    line_start: line_no + 1,
+                    line_end: line_no + 1,
+                    match_text: Some(trimmed.to_string()),
+                    symbol_id: None,
+                });
+            }
+        }
+
+        // python-bare-except: bare except without specific exception type
+        if trimmed.starts_with("except:") {
+            results.push(crate::models::AnalysisResult {
+                rule_id: "python-bare-except".into(),
+                file_path: file_path.into(),
+                line_start: line_no + 1,
+                line_end: line_no + 1,
+                match_text: Some(trimmed.to_string()),
+                symbol_id: None,
+            });
+        }
+    }
+
+    results
+}
+
+fn re_mutable_default() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*(\[|\{[^}]*:)").unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +904,12 @@ pub fn parse_python_file_treesitter(file_path: &str, source: &str) -> Result<Par
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
+    // Phase 1: Python type inference from return statements and assignments (py_visit_node path)
+    let python_type_inferences = infer_python_types(source, file_path);
+
+    // Phase 3: Python pattern detection
+    let py_patterns = detect_python_patterns(source, file_path);
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -737,6 +928,8 @@ pub fn parse_python_file_treesitter(file_path: &str, source: &str) -> Result<Par
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: python_type_inferences,
+        analysis_results: py_patterns,
     })
 }
 

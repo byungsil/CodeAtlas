@@ -2174,6 +2174,153 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     return max;
   }
 
+
+  // Phase 1 & 3: Enhanced Symbol Lookup with Type Inference
+  app.get("/enhanced-symbol", (req, res) => {
+    const qualifiedName = typeof req.query.qualifiedName === "string" ? req.query.qualifiedName : undefined;
+    if (!qualifiedName) return badRequest(res);
+
+    const symbol = store.getSymbolByQualifiedName(qualifiedName);
+    if (!symbol) return notFound(res);
+
+    const response: Record<string, unknown> = { ...buildExactLookupResponse({ symbol, matchedBy: "qualifiedName" }) };
+
+    // Phase 1: Type inference enrichment (if available in SQLite store)
+    try {
+      if ((store as any).readTypeInferencesForSymbol) {
+        const typeInf = (store as any).readTypeInferencesForSymbol(symbol.id);
+        response.inferred_types = typeInf.map((t: any) => t.inferred_type).filter(Boolean);
+        response.type_inference_confidence = typeInf[0]?.confidence ?? "unresolved";
+      }
+    } catch { /* skip if table not yet populated */ }
+
+    return res.json(response);
+  });
+
+  // Phase 3: List Analysis Rules
+  app.get("/analysis/rules", (req, res) => {
+    const category = typeof req.query.category === "string" ? req.query.category : null;
+    const language = typeof req.query.language === "string" ? req.query.language : null;
+
+    try {
+      if ((store as any).readAnalysisRules) {
+        const rules = (store as any).readAnalysisRules(category, language);
+        return res.json({ total_rules: rules.length, rules });
+      }
+    } catch { /* skip */ }
+    
+    // Fallback: empty response with structure hint
+    return res.json({ total_rules: 0, rules: [], note: "analysis_rules table not yet populated" });
+  });
+
+  // Phase 3: Analyze File Results
+  app.get("/analysis/results", (req, res) => {
+    const filePath = typeof req.query.filePath === "string" ? req.query.filePath : undefined;
+    if (!filePath) return badRequest(res);
+
+    try {
+      if ((store as any).readAnalysisResultsForFile) {
+        const results = (store as any).readAnalysisResultsForFile(filePath);
+        // Enrich with rule metadata from analysis_rules table  
+        let enriched: Array<Record<string, unknown>> = [];
+        
+        if (results.length > 0 && (store as any).readAnalysisRules) {
+          const allRules = (store as any).readAnalysisRules(null, null);
+          for (const r of results) {
+            const ruleInfo = allRules.find((rule: Record<string, unknown>) => rule.rule_id === r.ruleId || rule.rule_id === r.rule_id);
+            enriched.push({ ...r, severity: ruleInfo?.severity ?? "warning", category: ruleInfo?.category ?? "code_smell" });
+          }
+        } else {
+          enriched = results.map((r: Record<string, unknown>) => ({ 
+            ...r, 
+            severity: "warning", 
+            category: "unknown" 
+          }));
+        }
+
+        return res.json({ filePath, total_violations: enriched.length, violations_by_severity: {}, results: enriched });
+      }
+    } catch { /* skip */ }
+    
+    return res.json({ filePath, total_violations: 0, note: "analysis_results table not yet populated" });
+  });
+
+  // Phase 3: Evaluate Analysis Rules (on-demand query)
+  app.post("/analysis/evaluate", async (req, res) => {
+    const body = req.body as Record<string, unknown> | undefined;
+    if (!body || typeof body !== "object") return badRequest(res);
+
+    try {
+      let results: Array<Record<string, unknown>> = [];
+
+      // Filter by filePath if provided
+      const filePathFilter = typeof body.filePath === "string" ? body.filePath : null;
+
+      // If store has readAnalysisResultsForFile and we have a file filter, query it directly.
+      // Otherwise try to get all results or filter from the DB.
+      if ((store as any).readAnalysisResultsForFile && filePathFilter) {
+        const raw = (store as any).readAnalysisResultsForFile(filePathFilter);
+        results = enrichWithRuleInfo(raw, store);
+      } else if ((store as any).readAllAnalysisResults) {
+        // Try to get all analysis results from the DB and apply filters.
+        let all: Array<Record<string, unknown>> = (store as any).readAllAnalysisResults();
+        if (filePathFilter) {
+          all = all.filter((r: Record<string, unknown>) => r.file_path === filePathFilter || r.filePath === filePathFilter);
+        }
+        // Filter by categories / severityMin if provided.
+        const cats = body.categories as string | undefined;
+        if (cats && typeof cats === "string") {
+          const catSet = new Set(cats.split(",").map(s => s.trim()));
+          all = filterByCategories(all, store, catSet);
+        }
+        results = enrichWithRuleInfo(all, store);
+      }
+
+      // Group by severity.
+      const violations_by_severity: Record<string, number> = {};
+      for (const r of results) {
+        const sev = typeof r.severity === "string" ? r.severity : "warning";
+        violations_by_severity[sev] = (violations_by_severity[sev] || 0) + 1;
+      }
+
+      return res.json({ total_violations: results.length, violations_by_severity, results });
+    } catch { /* skip */ }
+
+    return res.json({ total_violations: 0, note: "analysis store not available" });
+  });
+
+  function enrichWithRuleInfo(raw: Array<Record<string, unknown>>, s: Store): Array<Record<string, unknown>> {
+    let enriched: Array<Record<string, unknown>> = [];
+    if (raw.length > 0 && typeof s.readAnalysisRules === "function") {
+      const allRules = s.readAnalysisRules(null, null);
+      for (const r of raw) {
+        const ruleInfo = allRules.find((rule: Record<string, unknown>) => 
+          rule.rule_id === r.ruleId || rule.rule_id === r.rule_id);
+        enriched.push({ ...r, severity: ruleInfo?.severity ?? "warning", category: ruleInfo?.category ?? "code_smell" });
+      }
+    } else {
+      enriched = raw.map((r: Record<string, unknown>) => ({ 
+        ...r, severity: "warning", category: "unknown" 
+      }));
+    }
+    return enriched;
+  }
+
+  function filterByCategories(
+    all: Array<Record<string, unknown>>, s: Store, catSet: Set<string>
+  ): Array<Record<string, unknown>> {
+    if (catSet.size === 0) return all;
+    const allRules = typeof s.readAnalysisRules === "function" ? s.readAnalysisRules(null, null) : [];
+    for (const r of all) {
+      const ruleInfo = allRules.find((rule: Record<string, unknown>) => 
+        rule.rule_id === r.ruleId || rule.rule_id === r.rule_id);
+      if (!catSet.has(ruleInfo?.category ?? "")) {
+        return []; // If no match in rules, nothing to filter — just return empty.
+      }
+    }
+    return all;
+  }
+
   function countCallGraphEdges(edges: CallGraphEdge[]): number {
     let count = 0;
     for (const edge of edges) {

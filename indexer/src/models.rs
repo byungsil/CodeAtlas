@@ -545,7 +545,205 @@ pub struct ConditionalSymbol {
     pub is_negated: bool,
 }
 
-#[derive(Debug)]
+// Type Inference Models
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TypeInferenceConfidence {
+    High,
+    Partial,
+    Unresolved,
+}
+
+impl std::fmt::Display for TypeInferenceConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeInferenceConfidence::High => write!(f, "high"),
+            TypeInferenceConfidence::Partial => write!(f, "partial"),
+            TypeInferenceConfidence::Unresolved => write!(f, "unresolved"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeEvidence {
+    pub expression_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inferred_type_hint: Option<String>,
+    pub confidence: TypeInferenceConfidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeInferenceResult {
+    pub symbol_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inferred_type: Option<String>,
+    pub confidence: TypeInferenceConfidence,
+    pub evidence_sources: Vec<TypeEvidence>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolTypeEnrichment {
+    /// Merged type hints for a representative symbol (may be multiple due to overloads).
+    pub inferred_types: Vec<String>,
+    pub confidence: TypeInferenceConfidence,
+}
+
+// Cross-Boundary Flow Models
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowKind {
+    UserInput,
+    ConfigValue,
+    ComputedValue,
+    Sink,
+    ConstantLiteral,
+}
+
+impl std::fmt::Display for FlowKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlowKind::UserInput => write!(f, "user_input"),
+            FlowKind::ConfigValue => write!(f, "config_value"),
+            FlowKind::ComputedValue => write!(f, "computed_value"),
+            FlowKind::Sink => write!(f, "sink"),
+            FlowKind::ConstantLiteral => write!(f, "constant_literal"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowTag {
+    pub kind: FlowKind,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>, // "high" | "partial"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolFlowTag {
+    pub symbol_id: String,
+    pub tag_kind: FlowKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub confidence: String, // "high" | "partial"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossBoundaryFlowHop {
+    pub from_symbol: String,
+    pub to_symbol: String,
+    pub transfer_kind: TransferKind,
+    pub value_transformed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferKind {
+    DirectPassThrough,
+    Transformed,
+    FieldStorage,
+    SplitBranch,
+}
+
+impl std::fmt::Display for TransferKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransferKind::DirectPassThrough => write!(f, "direct_pass_through"),
+            TransferKind::Transformed => write!(f, "transformed"),
+            TransferKind::FieldStorage => write!(f, "field_storage"),
+            TransferKind::SplitBranch => write!(f, "split_branch"),
+        }
+    }
+}
+
+// Pattern Analysis Models
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternSpec {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ruleset_name: Option<String>,
+    pub category: PatternCategory,
+    pub severity: SeverityLevel,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PatternCategory {
+    DesignPattern,
+    CodeSmell,
+    SecurityRisk,
+    PerformanceHint,
+    StyleViolation,
+}
+
+impl std::fmt::Display for PatternCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatternCategory::DesignPattern => write!(f, "design_pattern"),
+            PatternCategory::CodeSmell => write!(f, "code_smell"),
+            PatternCategory::SecurityRisk => write!(f, "security_risk"),
+            PatternCategory::PerformanceHint => write!(f, "performance_hint"),
+            PatternCategory::StyleViolation => write!(f, "style_violation"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SeverityLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+impl std::fmt::Display for SeverityLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SeverityLevel::Info => write!(f, "info"),
+            SeverityLevel::Warning => write!(f, "warning"),
+            SeverityLevel::Error => write!(f, "error"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisResult {
+    pub rule_id: String,
+    pub file_path: String,
+    pub line_start: usize,
+    pub line_end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisRule {
+    pub rule_id: String,
+    pub ruleset_name: String,
+    /// cpp | python | typescript | rust | lua (empty means all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    pub category: PatternCategory,
+    pub severity: SeverityLevel,
+    pub description: String,
+}
+
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub file_risk_signals: FileRiskSignals,
@@ -562,4 +760,105 @@ pub struct ParseResult {
     pub conditional_blocks: Vec<ConditionalBlock>,
     pub dependency_metrics: DependencyMetrics,
     pub conditional_symbols: Vec<ConditionalSymbol>,
+    #[allow(dead_code)]
+    pub type_inferences: Vec<TypeInferenceResult>,
+
+    // Pattern detection results for this file
+    pub analysis_results: Vec<AnalysisResult>,
+}
+
+// Built-in Analysis Rules Seed
+// Generate built-in analysis rules for C++ patterns. These are shipped with the indexer.
+pub fn seed_builtin_analysis_rules() -> Vec<AnalysisRule> {
+    vec![
+        // === Code Smell Patterns (C++) ===
+        AnalysisRule {
+            rule_id: "cpp-no-virtual-destructor".to_string(),
+            ruleset_name: "cpp-anti-patterns".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::CodeSmell,
+            severity: SeverityLevel::Warning,
+            description: "Derived class without virtual destructor — undefined behavior on delete base*".to_string(),
+        },
+        AnalysisRule {
+            rule_id: "cpp-missing-include-guard".to_string(),
+            ruleset_name: "cpp-build-rules".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::StyleViolation,
+            severity: SeverityLevel::Warning,
+            description: "Header file without include guard or #pragma once — potential multiple definition errors".to_string(),
+        },
+        AnalysisRule {
+            rule_id: "cpp-mutable-default-arg".to_string(),
+            ruleset_name: "cpp-code-smells".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::CodeSmell,
+            severity: SeverityLevel::Info,
+            description: "Function parameter uses mutable default argument — potential side effects on repeated calls".to_string(),
+        },
+
+        // === Security Risk Patterns (C++) ===
+        AnalysisRule {
+            rule_id: "cpp-use-after-free-risk".to_string(),
+            ruleset_name: "cpp-security-rules".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::SecurityRisk,
+            severity: SeverityLevel::Error,
+            description: "Potential use-after-free pattern — pointer accessed after delete/free without null check".to_string(),
+        },
+        AnalysisRule {
+            rule_id: "cpp-buffer-overflow-risk".to_string(),
+            ruleset_name: "cpp-security-rules".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::SecurityRisk,
+            severity: SeverityLevel::Error,
+            description: "Potential buffer overflow — raw array access without bounds checking (e.g., strcpy, gets)".to_string(),
+        },
+
+        // === Design Patterns (C++) ===
+        AnalysisRule {
+            rule_id: "cpp-factory-method".to_string(),
+            ruleset_name: "cpp-design-patterns".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::DesignPattern,
+            severity: SeverityLevel::Info,
+            description: "Factory method pattern detected — static/abstract method that returns new instances of derived types".to_string(),
+        },
+        AnalysisRule {
+            rule_id: "cpp-observer-pattern".to_string(),
+            ruleset_name: "cpp-design-patterns".to_string(),
+            language: Some("cpp".to_string()),
+            category: PatternCategory::DesignPattern,
+            severity: SeverityLevel::Info,
+            description: "Observer pattern detected — class maintains a collection of listeners/callbacks with add/remove/notify methods".to_string(),
+        },
+
+        // === Python Patterns ===
+        AnalysisRule {
+            rule_id: "python-mutable-default-arg".to_string(),
+            ruleset_name: "python-code-smells".to_string(),
+            language: Some("python".to_string()),
+            category: PatternCategory::CodeSmell,
+            severity: SeverityLevel::Error,
+            description: "Mutable default argument (list/dict/set) — shared state across function calls leads to bugs".to_string(),
+        },
+        AnalysisRule {
+            rule_id: "python-bare-except".to_string(),
+            ruleset_name: "python-security-rules".to_string(),
+            language: Some("python".to_string()),
+            category: PatternCategory::SecurityRisk,
+            severity: SeverityLevel::Error,
+            description: "Bare except clause — catches all exceptions including SystemExit, preventing proper error handling".to_string(),
+        },
+
+        // === TypeScript Patterns ===
+        AnalysisRule {
+            rule_id: "ts-any-type-overuse".to_string(),
+            ruleset_name: "typescript-code-smells".to_string(),
+            language: Some("typescript".to_string()),
+            category: PatternCategory::CodeSmell,
+            severity: SeverityLevel::Info,
+            description: "Overuse of 'any' type — defeats TypeScript's static type checking benefits".to_string(),
+        },
+    ]
 }

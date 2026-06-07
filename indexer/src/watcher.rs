@@ -12,6 +12,7 @@ use crate::build_metadata;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
 use crate::discovery;
 use crate::indexing::{default_language_registry, make_relative, parse_discovered_files_with_progress, parse_file_strict, parse_files_strict};
+
 use crate::ignore::IgnoreRules;
 use crate::incremental;
 use crate::parser;
@@ -525,6 +526,8 @@ fn run_full_index(
     // --- Stage 1: parse in batches and stream raw data straight to DB ---
     let mut all_relation_events = Vec::new();
     let mut all_include_deps: Vec<crate::models::IncludeDependency> = Vec::new();
+    let mut all_type_inferences_batched: Vec<crate::models::TypeInferenceResult> = Vec::new();
+    let mut all_analysis_results_batched: Vec<crate::models::AnalysisResult> = Vec::new();
     db.begin().map_err(|e| format!("DB begin: {}", e))?;
     db.clear().map_err(|e| format!("DB clear: {}", e))?;
     for (batch_index, batch) in files.chunks(WATCH_FULL_REBUILD_BATCH_SIZE).enumerate() {
@@ -540,6 +543,8 @@ fn run_full_index(
             macro_definitions,
             conditional_blocks,
             conditional_symbols,
+            type_inferences,
+            batch_analysis_results,
             _metrics,
         ) = parse_discovered_files_with_progress(
             workspace_root,
@@ -577,7 +582,21 @@ fn run_full_index(
                 .map_err(|e| format!("DB write conditional symbols: {}", e))?;
         }
         all_include_deps.extend(include_dependencies);
+
+        // Phase 1+3: Accumulate type inferences and analysis results from batch
+        all_type_inferences_batched.extend(type_inferences);
+        all_analysis_results_batched.extend(batch_analysis_results);
         all_relation_events.extend(relation_events);
+    }
+
+    // Phase 1+3: Write accumulated type inferences and analysis results
+    if !all_type_inferences_batched.is_empty() {
+        db.write_type_inferences(&all_type_inferences_batched)
+            .map_err(|e| format!("DB write type inferences: {}", e))?;
+    }
+    if !all_analysis_results_batched.is_empty() {
+        db.write_symbol_analysis_results(&all_analysis_results_batched)
+            .map_err(|e| format!("DB write analysis results: {}", e))?;
     }
 
     // Phase 4: Detect circular dependencies across all files
@@ -833,6 +852,8 @@ fn run_incremental_index(
         new_local_propagation,
         new_callable_summaries,
         new_files,
+        incremental_type_inferences,
+        incremental_analysis_results,
         _parse_metrics,
     ) = if !plan.to_index.is_empty() {
         parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata.as_ref())?
@@ -843,7 +864,9 @@ fn run_incremental_index(
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            Vec::new(),  // FileRecord
+            Vec::new(),   // TypeInferenceResult
+            Vec::new(),   // AnalysisResult
             crate::models::ParseMetrics::default(),
         )
     };
@@ -879,6 +902,13 @@ fn run_incremental_index(
                 .map_err(|e| format!("DB delete raw symbols: {}", e))?;
             db.delete_file_record(path)
                 .map_err(|e| format!("DB delete file record: {}", e))?;
+            // Phase 1-3 cleanup
+            db.delete_type_inferences_for_file(path)
+                .map_err(|e| format!("DB delete type inferences for {}: {}", path, e))?;
+            db.delete_symbol_analysis_results_for_file(path)
+                .map_err(|e| format!("DB delete analysis results for {}: {}", path, e))?;
+            db.delete_symbol_flow_tags_for_file(path)
+                .map_err(|e| format!("DB delete flow tags for {}: {}", path, e))?;
         }
         for path in &plan.to_index {
             db.delete_calls_for_file(path)
@@ -893,12 +923,30 @@ fn run_incremental_index(
                 .map_err(|e| format!("DB delete raw symbols: {}", e))?;
             db.delete_file_record(path)
                 .map_err(|e| format!("DB delete file record: {}", e))?;
+            // Phase 1-3 cleanup for re-indexed files
+            db.delete_type_inferences_for_file(path)
+                .map_err(|e| format!("DB delete type inferences for {}: {}", path, e))?;
+            db.delete_symbol_analysis_results_for_file(path)
+                .map_err(|e| format!("DB delete analysis results for {}: {}", path, e))?;
+            db.delete_symbol_flow_tags_for_file(path)
+                .map_err(|e| format!("DB delete flow tags for {}: {}", path, e))?;
         }
 
         if !parsed_symbols.is_empty() {
             db.write_raw_symbols(&parsed_symbols)
                 .map_err(|e| format!("DB write raw symbols: {}", e))?;
         }
+
+        // Phase 1+3: Write incremental type inferences and analysis results
+        if !incremental_type_inferences.is_empty() {
+            db.write_type_inferences(&incremental_type_inferences)
+                .map_err(|e| format!("DB write incremental type inferences: {}", e))?;
+        }
+        if !incremental_analysis_results.is_empty() {
+            db.write_symbol_analysis_results(&incremental_analysis_results)
+                .map_err(|e| format!("DB write incremental analysis results: {}", e))?;
+        }
+
         db.refresh_symbols_for_ids(&affected_symbol_ids)
             .map_err(|e| format!("DB refresh symbols: {}", e))?;
 
@@ -962,6 +1010,14 @@ fn run_incremental_index(
                 .map_err(|e| format!("DB delete references: {}", e))?;
             db.delete_propagation_for_file(path)
                 .map_err(|e| format!("DB delete propagation: {}", e))?;
+            // Phase 1-3 cleanup for affected file reparsing
+            db.delete_type_inferences_for_file(path)
+                .map_err(|e| format!("DB delete type inferences for {}: {}", path, e))?;
+            db.delete_symbol_analysis_results_for_file(path)
+                .map_err(|e| format!("DB delete analysis results for {}: {}", path, e))?;
+            db.delete_symbol_flow_tags_for_file(path)
+                .map_err(|e| format!("DB delete flow tags for {}: {}", path, e))?;
+
             all_raw_calls.extend(result.raw_calls);
             all_relation_events.extend(
                 result

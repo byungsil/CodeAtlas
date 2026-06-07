@@ -1,3 +1,5 @@
+#![allow(private_interfaces)]
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -19,7 +21,11 @@ use crate::models::{
     RawQualifierKind, RawReceiverKind, RawRelationEvent, RawRelationKind,
     ReferenceCategory, Symbol,
 };
+use crate::models::{AnalysisResult, TypeEvidence, TypeInferenceResult, TypeInferenceConfidence};
 
+// Allow private_interfaces: these pub(crate) functions expose Ctx which is module-private.
+// This is intentional - the type inference pipeline runs entirely within parser.rs during indexing.
+#[allow(private_interfaces)]
 struct Ctx {
     file_path: String,
     source: Vec<u8>,
@@ -27,6 +33,7 @@ struct Ctx {
     raw_calls: Vec<RawCallSite>,
     ns_stack: Vec<String>,
     namespace_ids: HashSet<String>,
+    verbose: bool,
 }
 
 impl Ctx {
@@ -189,7 +196,7 @@ fn local_propagation_enabled() -> bool {
     )
 }
 
-pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, String> {
+pub fn parse_cpp_file(file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
     let mut parser = Parser::new();
     let lang = tree_sitter_cpp::LANGUAGE;
     parser
@@ -216,6 +223,7 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         raw_calls: Vec::new(),
         ns_stack: Vec::new(),
         namespace_ids: HashSet::new(),
+        verbose,
     };
 
     let syntax_walk_start = Instant::now();
@@ -255,6 +263,16 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
             (Vec::new(), 0, 0)
         };
     let graph_relation_ms = graph_relation_start.elapsed().as_millis();
+
+    // Phase 6: Extract type inferences from function bodies
+    // Must happen BEFORE raw_calls is moved out of ctx.
+    let root_node_for_type_inference = tree.root_node();
+    let type_inferences = extract_type_inferences(
+        root_node_for_type_inference,
+        &ctx,
+        &ctx.symbols,
+    );
+
     let enum_value_references = extract_enum_value_references(tree.root_node(), &ctx, &ctx.symbols);
     let enum_value_relation_events = extract_enum_value_relation_events(tree.root_node(), &ctx);
     let legacy_raw_calls = ctx.raw_calls;
@@ -340,6 +358,13 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
     let cond_symbols = extract_conditional_symbols(source, file_path, &cond_blocks);
     let conditional_symbol_ms = cond_sym_start.elapsed().as_millis();
 
+    // tree.root_node() was already consumed by extract_type_inferences above.
+
+    // Pattern-based structural analysis for this C++ file
+    let source_str = std::str::from_utf8(&ctx.source).unwrap_or("");
+    let symbols_for_patterns = ctx.symbols.clone();
+    let pattern_results = detect_analysis_patterns_for_cpp(source_str, &ctx.file_path, &symbols_for_patterns);
+
     Ok(ParseResult {
         symbols: ctx.symbols,
         file_risk_signals,
@@ -375,6 +400,8 @@ pub fn parse_cpp_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         conditional_blocks: cond_blocks,
         dependency_metrics,
         conditional_symbols: cond_symbols,
+        type_inferences,
+        analysis_results: pattern_results,
     })
 }
 
@@ -6019,6 +6046,434 @@ Widget createWidget() {
     }
 }
 
+// C++ Pattern Detection Engine
+// Run all built-in C++ pattern checks on a parsed file. Returns detected violations.
+pub(crate) fn detect_analysis_patterns_for_cpp(
+    source: &str,
+    file_path: &String,
+    _all_symbols: &[Symbol],
+) -> Vec<AnalysisResult> {
+    let is_header = file_path.ends_with(".h") || file_path.ends_with(".hpp");
+
+    // Collect class/struct definitions with their line ranges for analysis.
+    let classes = extract_class_definitions(source, file_path);
+
+    let mut results: Vec<AnalysisResult> = Vec::new();
+
+   // Rule 1: cpp-no-virtual-destructor — check each class has a virtual destructor (~ClassName)
+    for cls in &classes {
+        if !has_virtual_destructor(cls, source) {
+            results.push(AnalysisResult {
+                rule_id: "cpp-no-virtual-destructor".to_string(),
+                file_path: file_path.clone(),
+                line_start: cls.line, // class definition start
+                line_end: cls.end_line,
+                match_text: Some(format!("class {}", cls.name)),
+                symbol_id: None,
+            });
+        }
+    }
+
+    // Rule 2: raw-pointer-member — check for T* member declarations inside classes
+    for cls in &classes {
+        let members = extract_class_members(source, file_path);
+        for mem in &members {
+            if mem.class_name == cls.name && is_raw_pointer_type(&mem.type_str) {
+                results.push(AnalysisResult {
+                    rule_id: "raw-pointer-member".to_string(),
+                    file_path: file_path.clone(),
+                    line_start: mem.line,
+                    line_end: mem.end_line.unwrap_or(mem.line),
+                    match_text: Some(format!("{} {}", mem.type_str, mem.name)),
+                    symbol_id: None,
+                });
+            }
+        }
+    }
+
+    // Rule 3: missing-include-guard — header without #pragma once or include guard
+    if is_header {
+        let first_lines = source.lines().take(10).collect::<Vec<_>>().join("\n");
+        let fp_str = file_path.as_str();
+        if !first_lines.contains("#pragma once") && !has_include_guard(&first_lines, fp_str) {
+            results.push(AnalysisResult {
+                rule_id: "cpp-missing-include-guard".to_string(),
+                file_path: file_path.clone(),
+                line_start: 1,
+                line_end: source.lines().count(),
+                match_text: None,
+                symbol_id: None,
+            });
+        }
+    }
+
+    // Rule 4: cpp-buffer-overflow-risk — unsafe C functions (strcpy, gets)
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if (trimmed.contains("strcpy(") || trimmed.contains("gets(") || trimmed.contains("sprintf("))
+            && !trimmed.starts_with("//") {
+            results.push(AnalysisResult {
+                rule_id: "cpp-buffer-overflow-risk".to_string(),
+                file_path: file_path.clone(),
+                line_start: source[..source.find(trimmed).unwrap_or(0)].lines().count() + 1,
+                line_end: source[..source.find(trimmed).unwrap_or(0) + trimmed.len()].lines().count() + 1,
+                match_text: Some(trimmed.to_string()),
+                symbol_id: None,
+            });
+        }
+    }
+
+    // Rule 5: cpp-use-after-free-risk — delete followed by pointer dereference in same scope
+    let fp_owned = file_path.clone();
+    detect_use_after_free(source, &fp_owned, &mut results);
+
+    // Rule 6: cpp-factory-method — static method returning new derived instance
+    for sym in _all_symbols {
+        if sym.symbol_type == "function" && is_factory_method(sym) {
+            results.push(AnalysisResult {
+                rule_id: "cpp-factory-method".to_string(),
+                file_path: file_path.clone(),
+                line_start: sym.line,
+                line_end: sym.end_line,
+                match_text: Some(format!("{}({})", sym.name, sym.signature.as_deref().unwrap_or(""))),
+                symbol_id: Some(sym.id.clone()),
+            });
+        }
+    }
+
+    // Rule 7: cpp-observer-pattern — class with listener collection + add/remove/notify methods
+    for cls in &classes {
+        if is_observer_pattern(&cls, source) {
+            results.push(AnalysisResult {
+                rule_id: "cpp-observer-pattern".to_string(),
+                file_path: file_path.clone(),
+                line_start: cls.line,
+                line_end: cls.end_line,
+                match_text: Some(format!("class {}", cls.name)),
+                symbol_id: None,
+            });
+        }
+    }
+
+    // Rule 8: cpp-mutable-default-arg — function parameter uses mutable container by value (performance smell)
+    let fp = file_path.clone();
+    detect_cpp_mutable_default_arg(source, &fp, &mut results);
+
+    results
+}
+
+// ── Helper structs and functions for C++ pattern detection ────────────
+
+#[derive(Debug, Clone)]
+struct ClassDef {
+    name: String,
+    line: usize,
+    end_line: usize,
+    base_classes: Vec<String>, // e.g., ["Widget"] if "class Derived : public Widget"
+}
+
+#[derive(Debug, Clone)]
+struct MemberDecl {
+    class_name: String,
+    name: String,
+    type_str: String,
+    line: usize,
+    end_line: Option<usize>,
+}
+
+fn extract_class_definitions(source: &str, _file_path: &str) -> Vec<ClassDef> {
+    let mut classes = Vec::new();
+    for (line_no, line) in source.lines().enumerate() {
+        // Match class/struct definitions like "class Foo : public Base {" or just "class Foo {"
+        if let Some(class_match) = extract_class_name(line) {
+            let mut base_classes = Vec::new();
+            if let Some(base_part) = line.split(':').nth(1) {
+                for part in base_part.split(',') {
+                    let tokens: Vec<&str> = part.trim().split_whitespace().collect();
+                    if !tokens.is_empty() {
+                        let mut idx = tokens.len() - 1;
+                        while idx > 0 && (tokens[idx] == "public" || tokens[idx] == "private"
+                            || tokens[idx] == "protected" || tokens[idx] == "{" || tokens[idx] == ",") {
+                            idx -= 1;
+                        }
+                        let base_name = tokens[idx];
+                        if !base_name.is_empty() && base_name != "{" && base_name != "," {
+                            let clean: String = base_name.chars().take_while(|&c| c != '{').collect();
+                            if !clean.is_empty() {
+                                base_classes.push(clean);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Find closing brace by tracking brace depth from this line.
+            let end_line = find_class_end(source, line_no);
+            classes.push(ClassDef {
+                name: class_match.name.clone(),
+                line: line_no + 1,
+                end_line,
+                base_classes,
+            });
+        }
+    }
+    classes
+}
+
+fn extract_class_name(line: &str) -> Option<ClassDef> {
+    let trimmed = line.trim();
+    // Skip if it's a forward declaration only (e.g., "class Foo;" or "struct Bar;")
+    if trimmed.ends_with(';') && !trimmed.contains('{') { return None; }
+
+    // Match: class/struct Name : Base {
+    let keywords = ["class ", "struct "];
+    for kw in &keywords {
+        if trimmed.starts_with(kw) {
+            let rest = &trimmed[kw.len()..];
+            // Skip namespace/class declarations like "namespace Game {"
+            if rest.is_empty() || rest.contains('{') && !rest.chars().any(|c| c.is_alphanumeric()) {
+                continue;
+            }
+            // Extract name (up to whitespace, ':', or '{')
+            let name_end = rest.find(|c: char| c == ' ' || c == ':' || c == '{').unwrap_or(rest.len());
+            if name_end > 0 && !rest[..name_end].contains('(') {
+                return Some(ClassDef {
+                    name: rest[..name_end].to_string(),
+                    line: 0, // placeholder
+                    end_line: 0,
+                    base_classes: Vec::new(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn find_class_end(source: &str, start_line: usize) -> usize {
+    // depth starts at -1 because the class definition line already contains '{'.
+    // After processing that '{', depth becomes 0 and subsequent '}' will match it.
+    let mut depth = -1;
+    for (i, line) in source.lines().enumerate() {
+        if i < start_line { continue; }
+        for ch in line.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == -1 { return i + 1; }
+                }
+                _ => {}
+            }
+        }
+    }
+    start_line + source[start_line..].lines().count()
+}
+
+fn has_virtual_destructor(cls: &ClassDef, source: &str) -> bool {
+    if cls.base_classes.is_empty() { return true; }
+
+    let start = (cls.line - 1).min(source.lines().count());
+    let end = cls.end_line.min(source.lines().count());
+    for line in source.lines().skip(start).take(end - start) {
+        // Pattern A: explicit virtual destructor — "virtual ~Foo" or "~Foo() override/virtual"
+        if has_virtual_or_override_destructor_pattern(line) { return true; }
+    }
+    false
+}
+
+/// Check whether a single line declares/defines a virtual destructor.
+/// Covers the two standard C++ patterns:
+///   1. "virtual ~ClassName(...)"          — explicit virtual keyword before tilde
+///   2. "~ClassName(...) override"         — modern C++ (C++11+) with override specifier
+fn has_virtual_or_override_destructor_pattern(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    // Pattern A: "virtual ~..." anywhere in the line
+    if let Some(virt_pos) = trimmed.find("virtual") {
+        if trimmed[virt_pos..].contains('~') { return true; }
+    }
+
+    // Pattern B: "~ClassName(...) override" — tilde followed later by 'override' keyword
+    if let Some(tilde_pos) = trimmed.find('~') {
+        // Make sure it's not in a comment-only line (check no code before the ~)
+        let after_tilde = &trimmed[tilde_pos..];
+        // Look for "override" anywhere after tilde on this line
+        if after_tilde.contains("override") || trimmed.contains("virtual override") { return true; }
+    }
+
+    false
+}
+
+fn extract_class_members(source: &str, _file_path: &str) -> Vec<MemberDecl> {
+    use regex::Regex;
+
+    let mut members = Vec::new();
+
+    // Regex for typical C++ member declarations (type + name ending with ';'):
+    let re = match Regex::new(
+        r#"^(?P<qualifiers>mutable\s+)?(?P<const_>const\s+)?(?P<type>(?:\w+(?:\s*::<[^>]+>)?)?(?:\s*\*)?(?:\s*&?)?)\s*(?P<name>\w+)\s*(?:=\s*[^;]+)?;\s*$"#,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("extract_class_members: regex compile error: {}", e);
+            return members;
+        }
+    };
+
+
+    // Global scan — matches any line that looks like a C++ member declaration,
+    // regardless of class scope.  This is the primary extraction path used by
+    // analysis patterns (raw-pointer-member etc.) since they do not require precise class association.
+    for (_line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
+            continue;
+        }
+        // Skip lines with '(' + ')' (function declarations/definitions).
+        if trimmed.contains('(') && trimmed.contains(')') {
+            continue;
+        }
+
+        let line_no = _line_no as usize;
+
+        for cap in re.captures_iter(trimmed) {
+            let type_str = &cap["type"];
+            let name = &cap["name"];
+
+ 
+            if is_cpp_keyword(name) || (name.starts_with('_') && !is_raw_pointer_type(type_str)) {
+                continue;
+            }
+
+            members.push(MemberDecl {
+                class_name: String::new(),  // not determinable without full AST walk
+                name: name.to_string(),
+                type_str: type_str.to_string(),
+                line: line_no,
+                end_line: None,
+            });
+        }
+    }
+
+    members
+}
+
+fn is_raw_pointer_type(type_str: &str) -> bool {
+    type_str.contains('*') && !type_str.contains("shared_ptr")
+        && !type_str.contains("unique_ptr") && !type_str.contains("weak_ptr")
+}
+
+fn is_cpp_keyword(name: &str) -> bool {
+    matches!(name,
+        "auto" | "break" | "case" | "char" | "class" | "const" | "constexpr"
+        | "continue" | "default" | "delete" | "do" | "double" | "else"
+        | "enum" | "extern" | "float" | "for" | "goto" | "if" | "inline"
+        | "int" | "long" | "mutable" | "namespace" | "new" | "noexcept"
+        | "nullptr" | "operator" | "override" | "private" | "protected"
+        | "public" | "register" | "return" | "short" | "signed" | "sizeof"
+        | "static" | "struct" | "switch" | "template" | "this" | "throw"
+        | "try" | "typedef" | "typeid" | "typename" | "union" | "unsigned"
+        | "using" | "virtual" | "void" | "volatile" | "wchar_t"
+    )
+}
+
+fn has_include_guard(first_lines: &str, file_path: &str) -> bool {
+    let guard_name = include_guard_macro(file_path);
+    if guard_name.is_empty() { return false; }
+    first_lines.contains(&format!("#ifndef {}", guard_name))
+        && first_lines.contains(&format!("#define {}", guard_name))
+}
+
+fn include_guard_macro(file_path: &str) -> String {
+    let stem = file_path.rsplit('/').next().unwrap_or("unknown");
+    let name = stem.trim_end_matches(|c: char| c != '_' && !c.is_ascii_alphanumeric());
+    format!("{}_H_", name.to_uppercase())
+}
+
+fn detect_use_after_free(source: &str, file_path: &String, results: &mut Vec<AnalysisResult>) {
+    let lines: Vec<&str> = source.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        // Look for delete or free followed by dereference of same pointer within 10 lines
+        if line.contains("delete ") || line.contains("free(") {
+            let ptr_name = extract_delete_target(line);
+            if let Some(ptr) = ptr_name {
+                for j in (i+1)..std::cmp::min(i+10, lines.len()) {
+                    let next_line = lines[j].trim();
+                    // Check for pointer dereference: *ptr or ptr->method()
+                    if next_line.contains(&format!("*{}", ptr)) || next_line.contains(&format!("{}->", ptr)) {
+                        results.push(AnalysisResult {
+                            rule_id: "cpp-use-after-free-risk".to_string(),
+                            file_path: file_path.clone(),
+                            line_start: i + 1,
+                            line_end: j + 2, // inclusive end
+                            match_text: Some(format!("delete at L{} then deref at L{}", i+1, j+1)),
+                            symbol_id: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn extract_delete_target(line: &str) -> Option<String> {
+    if let Some(pos) = line.find("delete ") {
+        let rest = &line[pos+7..].trim();
+        // Extract the pointer name (up to whitespace, *, or ;)
+        let end = rest.find(|c: char| c == ' ' || c == '*' || c == ';' || c == '(').unwrap_or(rest.len());
+        if end > 0 {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+fn is_factory_method(sym: &Symbol) -> bool {
+    // Factory method heuristic: static-like pattern (scope::method), returns new instance.
+    // We check if the signature suggests factory behavior:
+    // - Name contains "create", "make", "new", or "build" prefix
+    let name_lower = sym.name.to_lowercase();
+    name_lower.contains("create") || name_lower.contains("make_")
+}
+
+fn is_observer_pattern(cls: &ClassDef, source: &str) -> bool {
+    // Observer pattern heuristic:
+    // - Class has a collection (vector/list/set/map) of listeners/callbacks
+    // - Methods named addListener/addObserver/removeListener/removeObserver/notify
+    let _class_name_lower = cls.name.to_lowercase();
+    if !source.contains("addListener") && !source.contains("addObserver") {
+        return false;
+    }
+    source.contains("removeListener") || source.contains("removeObserver") || source.contains("notify")
+}
+
+/// Detect C++ functions that take mutable containers (std::vector, std::map, etc.) by value —
+/// a performance smell: each call copies the entire container. Prefer const ref (&const).
+fn detect_cpp_mutable_default_arg(source_str: &str, file_path: &String, results: &mut Vec<AnalysisResult>) {
+    for (line_no, line) in source_str.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() { continue; }
+
+        // Check: contains a container type AND is NOT passed by const ref.
+        let containers = ["std::vector", "std::map", "std::set", "unordered_map", "unordered_set", "std::list"];
+        for c in &containers {
+            if trimmed.contains(c) && !trimmed.contains("const") && !trimmed.contains('&') {
+                results.push(AnalysisResult {
+                    rule_id: "cpp-mutable-default-arg".to_string(),
+                    file_path: file_path.clone(),
+                    line_start: line_no + 1,
+                    line_end: line_no + 2,
+                    match_text: Some(trimmed.to_string()),
+                    symbol_id: None,
+                });
+                break; // Only one result per line.
+            }
+
+        } // close containers loop
+    } // close lines enumerate loop
+} // close detect_cpp_mutable_default_arg fn
+
 #[cfg(test)]
 mod include_extraction_tests {
     use super::*;
@@ -6061,6 +6516,499 @@ void foo() {}
         let deps = extract_include_dependencies(source, "main.cpp");
         assert!(deps.is_empty());
     }
+}
+
+// C++ Type Inference
+pub(crate) fn extract_type_inferences(
+    root_node: Node,
+    ctx: &Ctx, 
+    all_symbols: &[Symbol],
+) -> Vec<TypeInferenceResult> {
+    // Collect all function/method symbols and their IDs for lookup.
+    let mut symbol_map: HashMap<String, &Symbol> = HashMap::new();
+    for sym in all_symbols {
+        if (sym.symbol_type == "function" || sym.symbol_type == "method") && !sym.id.is_empty() {
+            symbol_map.insert(sym.qualified_name.clone(), sym);
+        }
+    }
+
+    // Walk the AST to find function definitions and collect type evidence.
+    let mut results: HashMap<String, Vec<TypeEvidence>> = HashMap::new();
+    walk_functions_for_type_evidence(root_node, ctx, &mut results);
+
+    // Convert per-function evidence maps into TypeInferenceResult vecs.
+    results.into_iter()
+        .map(|(sym_id, evidences)| {
+            merge_type_evidence(&sym_id, evidences)
+        })
+        .collect()
+}
+
+// Walk all function_definition nodes in the AST and extract type evidence.
+fn walk_functions_for_type_evidence(
+    node: Node,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    // DEBUG: log all function_definitions
+    if node.kind() == "function_definition" {
+        // DEBUG: log function definition details
+        let fn_name = extract_function_name_from_node(&node, ctx);
+        eprintln!("[DEBUG] found function_definition name={} file={}", fn_name, ctx.file_path);
+        
+        if let Some(body) = node.child_by_field_name("body") {
+            eprintln!("  -> body kind={}, named_children={}", body.kind(), body.named_child_count());
+        } else {
+            eprintln!("  -> NO BODY FOUND!");
+        }
+
+        let owner_id = find_function_owner_symbol(&node, ctx);
+        if let Some(ref oid) = owner_id {
+            eprintln!("  -> matched symbol id={}", oid);
+        } else {
+            eprintln!("  -> NO MATCH (ctx has {} symbols)", ctx.symbols.len());
+        }
+        
+        if let Some(owner_id) = owner_id {
+            collect_return_type_evidence_for_fn(&node, &owner_id, ctx, results);
+            collect_variable_inferences_for_fn(&node, &owner_id, ctx, results);
+        }
+    }
+
+    // Recurse into children.
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_functions_for_type_evidence(child, ctx, results);
+    }
+}
+
+fn find_function_owner_symbol<'a>(node: &'a Node<'_>, ctx: &Ctx) -> Option<String> {
+    // Try to match function_definition against known symbols.
+    let name_text = extract_function_name_from_node(node, ctx);
+    if name_text.is_empty() { return None; }
+
+    for sym in &ctx.symbols {
+        if (sym.symbol_type == "function" || sym.symbol_type == "method")
+            && sym.file_path == ctx.file_path
+        {
+            // Match 1: exact member name match (for simple functions)
+            if sym.name == name_text { return Some(sym.id.clone()); }
+            
+            // Match 2: tree-sitter gives qualified names like "AIComponent::GetState"
+            // while symbol id is e.g. "Game::AIComponent::GetState" — check suffix match
+            // This handles both cases where parent_id exists and doesn't.
+            if name_text.ends_with(&format!("::{}", sym.name)) {
+                return Some(sym.id.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Extract function name from a node - tries declarator first, then falls back to direct identifier search.
+fn extract_function_name_from_node(node: &Node, ctx: &Ctx) -> String {
+    // DEBUG
+    eprintln!("  [extract_fn] kind={}", node.kind());
+    
+    // Try to get the declarator child (function_definition has 'declarator' field)
+    if let Some(decl) = node.child_by_field_name("declarator") {
+        return extract_function_name_from_declarator(&decl, ctx);
+    }
+    // Fallback: try identifier or destructor_name directly on this node.
+    for child in node.named_children(&mut node.walk()) {
+        if child.kind() == "identifier" || child.kind() == "destructor_name"
+            || child.kind() == "qualified_identifier" {
+            return ctx.node_text(child);
+        }
+    }
+    String::new()
+}
+
+fn extract_function_name_from_declarator(node: &Node, ctx: &Ctx) -> String {
+    // Declarators can be identifier, field_declaration_list (for methods), etc.
+    if node.kind() == "identifier" || node.kind() == "destructor_name" {
+        return ctx.node_text(*node);
+    }
+    if let Some(field_name) = node.child_by_field_name("name") {
+        // For qualified_identifier, extract just the member name (last part)
+        if field_name.kind() == "qualified_identifier" && field_name.named_child_count() > 0 {
+            let last_child = field_name.named_children(&mut field_name.walk()).last();
+            return last_child.map(|cn| ctx.node_text(cn)).unwrap_or_default();
+        }
+        return ctx.node_text(field_name);
+    }
+    // Fallback: try to find any identifier or qualified_identifier child.
+    for child in node.named_children(&mut node.walk()) {
+        if child.kind() == "identifier" || child.kind() == "destructor_name"
+            || child.kind() == "qualified_identifier" {
+            return ctx.node_text(child);
+        }
+    }
+    String::new()
+}
+
+fn collect_return_type_evidence_for_fn(
+    func_node: &Node,
+    owner_id: &str, 
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    eprintln!("  [collect_ret] owner={}", owner_id);
+    let body = match func_node.child_by_field_name("body") {
+        Some(b) if b.kind() == "compound_statement" => b,
+        _ => return,
+    };
+
+    collect_return_type_evidence(&body, owner_id, ctx, results);
+}
+
+fn collect_variable_inferences_for_fn(
+    func_node: &Node, 
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    let body = match func_node.child_by_field_name("body") {
+        Some(b) if b.kind() == "compound_statement" => b,
+        _ => return,
+    };
+
+    // Walk compound statement for variable declarations and assignments.
+    collect_var_declarations(&body, owner_id, ctx, results);
+    collect_assignment_expressions(&body, owner_id, ctx, results);
+}
+
+fn collect_return_type_evidence(
+    body: &Node,
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    eprintln!("  [collect_ret_body] owner={}", owner_id);
+    collect_return_type_evidence_recursive(body, owner_id, ctx, results)
+}
+
+fn collect_return_type_evidence_recursive(
+    node: &Node,
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    // Stack-based traversal to avoid borrow conflicts with cursors.
+    let mut stack: Vec<Node> = vec![*node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "return_statement" {
+            eprintln!("  [ret_stmt] owner={}", owner_id);
+            // Collect expression text before creating any new borrows.
+            for child in current.named_children(&mut current.walk()) {
+                let expr_text: String = child.utf8_text(ctx.source.as_slice()).unwrap_or("").to_string();
+                if !expr_text.is_empty() && child.kind() != "return_keyword" {
+                    eprintln!("    kind={}, text={}, hint=?", child.kind(), expr_text.trim().chars().take(40).collect::<String>());
+                    let inferred_type_hint = extract_expression_hint(&child, ctx);
+                    if let Some(ref h) = inferred_type_hint {
+                        eprintln!("      -> HINT: {}", h);
+                    }
+                    results.entry(owner_id.to_string())
+                        .or_default()
+                        .push(TypeEvidence {
+                            expression_text: expr_text,
+                            inferred_type_hint,
+                            confidence: TypeInferenceConfidence::Partial,
+                        });
+                }
+            }
+        }
+        // Push children onto stack for further traversal.
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+
+
+
+fn collect_var_declarations(
+    body: &Node,
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    // Walk compound statement for variable declarations with initializers.
+    let mut stack = vec![*body];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "declaration" {
+            if let Some(init_node) = node.child_by_field_name("initializer") {
+                collect_init_type_hint(
+                    &init_node, owner_id, ctx, results,
+                );
+            }
+        }
+
+        // Recurse into children.
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn collect_assignment_expressions(
+    body: &Node,
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    let mut stack = vec![*body];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "expression_statement" {
+            if let Some(expr) = node.child(0) {
+                collect_assignment_hint(&expr, owner_id, ctx, results);
+            }
+        }
+
+        // Recurse into children.
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+pub(crate) fn extract_expression_hint(node: &Node, ctx: &Ctx) -> Option<String> {
+    let n = *node;
+    eprintln!("  [hint] kind={}, text={}", node.kind(), ctx.node_text(n).trim().chars().take(30).collect::<String>());
+
+    match node.kind() {
+        // `new Widget(...)` → "Widget*"
+        "new_expression" => {
+            let class_node = node.child_by_field_name("class");
+            class_node.map(|cn| format!("{}*", ctx.node_text(cn)))
+        }
+
+        // Template instantiation: e.g. `std::string(...)` → "std::string"
+        "template_argument" | "template_function" => {
+            extract_template_type(node, ctx)
+        }
+
+        // Function call: e.g. `some_func()` → look up return type from known_symbols
+        "call_expression" => {
+            let callee_node = node.child_by_field_name("function");
+            if let Some(callee) = callee_node {
+                let callee_text = ctx.node_text(callee);
+                // Try to find matching symbol and infer its return type.
+                known_return_type_from_caller(&callee_text, ctx)
+                    .or_else(|| extract_template_type(&node, ctx))
+            } else { None }
+        }
+
+        // Identifier — could be a variable with known type from declaration context.  
+        "identifier" => {
+            let ident = node.utf8_text(ctx.source.as_slice()).unwrap_or("");
+            // If this identifier matches a symbol name, try to infer.
+            if !ident.is_empty() && is_upper_snake_case(ident) {
+                Some("auto".to_string())  // unknown compile-time type
+            } else { None }
+        }
+
+        // String literal → "std::string"
+        "string_literal" => Some("std::string".to_string()),
+
+        // Integer/float literals
+        "integer_literal" | "false" | "true" => {
+            let n = *node;
+            let text = ctx.node_text(n);
+            if text.contains('.') || text.ends_with('f') || text.ends_with('F') {
+                Some("double".to_string())
+            } else { Some("int".to_string()) }
+        }
+
+        // Pointer dereference: `*ptr` — hint that result is the pointed-to type.
+        "dereference_expression" => node.child_by_field_name("argument")
+            .and_then(|arg| extract_expression_hint(&arg, ctx)),
+
+        // Field access / arrow operator: `obj->member`, `obj.member`
+        "field_access_expression" | "binary_expression" | "field_expression"
+            if { let n = *node; ctx.node_text(n).contains('>') || ctx.node_text(n).contains('.') } => {
+            match node.kind() {
+                // tree-sitter C++: `obj->member` is a field_access_expression with 'object' child
+                "field_access_expression" | "field_expression" => node.child_by_field_name("object")
+                    .and_then(|rec| extract_expression_hint(&rec, ctx)),
+                // For binary_expression (arrow operator), get left operand (first named child)
+                _ => {
+                    let mut cursor = node.walk();
+                    let first_child: Option<Node> = node.named_children(&mut cursor).next().map(|c| c);
+                    first_child.and_then(|rec| extract_expression_hint(&rec, ctx))
+                },
+            }
+        },
+
+        // `nullptr` / `NULL` → "void*"
+        "null" if node.utf8_text(ctx.source.as_slice()).unwrap_or("").contains("nullptr") || node.utf8_text(ctx.source.as_slice()).unwrap_or("") == "NULL" => {
+            Some("void *".to_string())
+        }
+
+        _ => None,
+    }
+}
+
+/// Try to find a known return type for a function call by matching against symbols.
+pub(crate) fn known_return_type_from_caller(callee_text: &str, ctx: &Ctx) -> Option<String>{
+    // Search in ctx.symbols for this callee and extract its signature/type info.
+    for sym in &ctx.symbols {
+        let name_match = sym.name == callee_text
+            || sym.qualified_name.ends_with(&format!("::{}", callee_text));
+        if !name_match { continue; }
+        if sym.symbol_type != "function" && sym.symbol_type != "method" { continue; }
+        
+        // Try to extract return type from signature.
+        if let Some(sig) = &sym.signature {
+            if let Some(ret_ty) = parse_signature_return_type(sig) {
+                return Some(ret_ty);
+            }
+        }
+    }
+    None
+}
+
+/// Extract template instantiation type hint (e.g., `vector<string>` → "std::vector<std::string>").
+pub fn extract_template_type(node: &Node, ctx: &Ctx) -> Option<String> {
+    // For call_expression with a 'template' child containing arguments.
+    let mut parts = Vec::new();
+
+    if node.kind() == "call_expression" {
+        if let Some(fn_node) = node.child_by_field_name("function") {
+            parts.push(ctx.node_text(fn_node));
+        }
+    } else {
+        // Try to get the function/template name.
+        let n = *node;
+        let text = ctx.node_text(n);
+        if !text.is_empty() && (text.contains('<') || text.starts_with("std::")) {
+            parts.push(text);
+        }
+    }
+
+    if let Some(args_node) = node.child_by_field_name("arguments") {
+        for arg in args_node.named_children(&mut node.walk()) {
+            if arg.kind() == "template_argument" || (arg.kind() == "type_identifier" && !parts.is_empty()) {
+                let arg_node = arg;
+                parts.push(ctx.node_text(arg_node));
+            }
+        }
+    }
+
+    if parts.len() > 1 { Some(parts.join("<") + ">") } else { None }
+}
+
+/// Collect type hints from an initializer expression.
+pub fn collect_init_type_hint(
+    init_node: &Node,
+    owner_id: &str, 
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    if let Some(inferred) = extract_expression_hint(init_node, ctx) {
+        // Store as evidence that the variable's actual type is `inferred`.
+        let init_n = *init_node;
+        let init_text = ctx.node_text(init_n);
+        results.entry(owner_id.to_string()).or_default().push(TypeEvidence {
+            expression_text: format!("var:{} -> {}", inferred, init_text),
+            inferred_type_hint: Some(inferred), 
+            confidence: TypeInferenceConfidence::High,
+        });
+    }
+}
+
+/// Collect type hints from assignment expressions (e.g., `x = func()`).
+pub fn collect_assignment_hint(
+    expr_node: &Node,
+    owner_id: &str,
+    ctx: &Ctx,
+    results: &mut HashMap<String, Vec<TypeEvidence>>,
+) {
+    if expr_node.kind() == "assignment_expression" {
+        // Right-hand side of assignment.
+        let rhs = match expr_node.child_by_field_name("value") {
+            Some(v) => v,
+            None => return,  
+        };
+        if let Some(inferred) = extract_expression_hint(&rhs, ctx) {
+            let rhs_text = ctx.node_text(rhs.clone());
+            results.entry(owner_id.to_string()).or_default().push(TypeEvidence {
+                expression_text: format!("assign:{} -> {}", inferred, rhs_text),
+                inferred_type_hint: Some(inferred), 
+                confidence: TypeInferenceConfidence::Partial,
+            });
+        }
+    }
+}
+
+/// Merge multiple type evidence items for one symbol into a single TypeInferenceResult.
+fn merge_type_evidence(symbol_id: &str, evidences: Vec<TypeEvidence>) -> TypeInferenceResult {
+    if evidences.is_empty() {
+        return TypeInferenceResult {
+            symbol_id: symbol_id.to_string(),
+            inferred_type: None,
+            confidence: TypeInferenceConfidence::Unresolved,
+            evidence_sources: Vec::new(),
+        };
+    }
+
+    // Collect all unique type hints.
+    let mut types_seen: HashSet<String> = HashSet::new();
+    for e in &evidences {
+        if let Some(ref hint) = e.inferred_type_hint {
+            types_seen.insert(hint.clone());
+        }
+    }
+
+    // Find the highest confidence among all evidence.
+    let best_confidence = evidences.iter()
+        .map(|e| &e.confidence)
+        .max_by_key(|c| match c { TypeInferenceConfidence::High => 2, TypeInferenceConfidence::Partial => 1, _ => 0 })
+        .cloned()
+        .unwrap_or(TypeInferenceConfidence::Unresolved);
+
+    let types_count = types_seen.len();
+    let types_vec: Vec<String> = types_seen.into_iter().collect();
+
+    TypeInferenceResult {
+        symbol_id: symbol_id.to_string(),
+        inferred_type: if types_count > 0 { Some(types_vec[0].clone()) } else { None },
+        confidence: best_confidence,
+        evidence_sources: evidences,
+    }
+}
+
+
+/// Parse return type from a function signature string.
+pub fn parse_signature_return_type(signature: &str) -> Option<String> {
+    // Common patterns:
+    //   "std::string foo(...)" → extract leading token(s) before the name.
+    //   "Widget* create()" → "Widget*"
+    let trimmed = signature.trim();
+    if trimmed.is_empty() { return None; }
+
+    // Find opening paren to separate return type from function name.
+    if let Some(paren_pos) = trimmed.find('(') {
+        let ret_part = &trimmed[..paren_pos];
+        // The last token(s) before the function name is the return type.
+        // Strip leading/trailing whitespace and take everything up to
+        // where we'd expect a simple identifier or qualified name.
+        let parts: Vec<&str> = ret_part.split_whitespace().collect();
+        if !parts.is_empty() {
+            Some(parts.join(" ").trim_end().to_string())
+        } else { None }
+    } else { None }
+}
+
+fn is_upper_snake_case(s: &str) -> bool {
+    s.chars().all(|c| c.is_alphanumeric() || c == '_') && !s.starts_with('_') 
+        && (s.len() > 1)
+        // At least one uppercase letter.
+        && s.chars().any(|c| c.is_ascii_uppercase())
 }
 
 #[cfg(test)]

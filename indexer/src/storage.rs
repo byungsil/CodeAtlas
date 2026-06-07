@@ -16,7 +16,7 @@ use crate::models::InheritanceEdge;
 use crate::constants::{ACTIVE_DB_POINTER_FILENAME, DB_FILENAME};
 use crate::resolver;
 
-const DB_SCHEMA_VERSION: i64 = 1;
+const DB_SCHEMA_VERSION: i64 = 2; // Phase 1-3 Enhanced Analysis Tables
 const INDEX_FORMAT_VERSION: u32 = 1;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
@@ -254,6 +254,69 @@ CREATE INDEX IF NOT EXISTS idx_include_deps_included ON include_dependencies(inc
 CREATE INDEX IF NOT EXISTS idx_include_deps_source_included ON include_dependencies(source_file, included_file);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(id, name, qualified_name, tokenize='trigram');
+
+-- Phase 1-3 Enhanced Analysis Tables
+CREATE TABLE IF NOT EXISTS symbol_type_inferences (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file     TEXT NOT NULL,
+    symbol_id       TEXT NOT NULL,
+    inferred_type   TEXT,
+    confidence      TEXT NOT NULL DEFAULT 'unresolved',  -- "high" | "partial" | "unresolved"
+    evidence_json   TEXT NOT NULL DEFAULT '[]'           -- JSON array of TypeEvidence objects
+);
+
+CREATE INDEX IF NOT EXISTS idx_inferences_symbol ON symbol_type_inferences(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_inferences_source_file ON symbol_type_inferences(source_file);
+
+-- Phase 2: Flow Tags (per-symbol source/sink annotations)
+CREATE TABLE IF NOT EXISTS symbol_flow_tags (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file     TEXT NOT NULL,
+    symbol_id       TEXT NOT NULL,
+    tag_kind        TEXT NOT NULL DEFAULT 'user_input', -- "user_input" | "config_value" | ...
+    label           TEXT,                               -- descriptive label like "stdin", "cin>>", etc.
+    confidence      TEXT NOT NULL DEFAULT 'partial'     -- "high" | "partial"
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_tags_symbol ON symbol_flow_tags(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_flow_tags_source_file ON symbol_flow_tags(source_file);
+
+-- Phase 2: Cross-Boundary Flow Paths (source -> hops chain)
+CREATE TABLE IF NOT EXISTS cross_boundary_flow_paths (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_symbol_id    TEXT NOT NULL,
+    target_symbol_id    TEXT NOT NULL,
+    hops_json           TEXT NOT NULL DEFAULT '[]',      -- JSON array of CrossBoundaryFlowHop objects  
+    semantic_tags_json  TEXT NOT NULL DEFAULT '[]'       -- JSON array of string tags like "user_input", "config_value"
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_path_source ON cross_boundary_flow_paths(source_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_flow_path_target ON cross_boundary_flow_paths(target_symbol_id);
+
+-- Phase 3: Analysis Rules (pattern definitions)  
+CREATE TABLE IF NOT EXISTS analysis_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id         TEXT NOT NULL UNIQUE,        -- unique identifier like "cpp-sql-injection"
+    ruleset_name    TEXT NOT NULL DEFAULT 'builtin', -- group name for the pattern set
+    language        TEXT,                        -- cpp | python | typescript (NULL = all)
+    category        TEXT NOT NULL DEFAULT 'code_smell', -- code_smell | security_risk | build_risk | design_pattern
+    severity        TEXT NOT NULL DEFAULT 'warning',   -- info | warning | error
+    description     TEXT                         -- human-readable pattern explanation
+);
+
+-- Phase 3: Analysis Results (detected violations)
+CREATE TABLE IF NOT EXISTS symbol_analysis_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id         TEXT NOT NULL DEFAULT 'unknown',   -- which analysis_rule triggered this
+    file_path       TEXT NOT NULL,                      -- source file where violation found  
+    line_start      INTEGER NOT NULL,                   -- start line of match
+    line_end        INTEGER NOT NULL,                   -- end line of match
+    symbol_id       TEXT,                               -- associated symbol if any
+    match_text      TEXT                                -- snippet/context text matched by pattern
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_results_file ON symbol_analysis_results(file_path);
+CREATE INDEX IF NOT EXISTS idx_analysis_rule_ruleset ON analysis_rules(ruleset_name);
 "#;
 
 pub struct Database {
@@ -723,6 +786,29 @@ impl Database {
         Ok(())
     }
 
+    // Phase 2: Write cross-boundary flow paths (source -> hops chain)
+    pub fn write_cross_boundary_flow_paths(
+        &self,
+        paths: &[(String, String, Vec<crate::models::CrossBoundaryFlowHop>, Vec<String>)],
+    ) -> SqlResult<()> {
+        if paths.is_empty() { return Ok(()); }
+        
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO cross_boundary_flow_paths (source_symbol_id, target_symbol_id, hops_json, semantic_tags_json) VALUES (?1, ?2, ?3, ?4)"
+        )?;
+
+        for (src, tgt, hops, tags) in paths {
+            stmt.execute(params![
+                src,
+                tgt,
+                serde_json::to_string(hops).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string()),
+            ])?;
+        }
+        Ok(())
+    }
+
+
     pub fn write_files(&self, files: &[FileRecord]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT OR REPLACE INTO files (path, content_hash, last_indexed, symbol_count, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -972,6 +1058,91 @@ impl Database {
         rows.collect()
     }
 
+    // Phase 1-3 Write Methods
+    pub fn write_type_inferences(&self, inferences: &[crate::models::TypeInferenceResult]) -> SqlResult<()> {
+        if inferences.is_empty() { return Ok(()); }
+        
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO symbol_type_inferences (source_file, symbol_id, inferred_type, confidence, evidence_json) VALUES (?1, ?2, ?3, ?4, ?5)"
+        )?;
+
+        for inf in inferences {
+            // Extract source file from symbol info if available
+            let source_file = "unknown";  // Will be populated by caller with actual file path
+            stmt.execute(params![
+                source_file,
+                &inf.symbol_id,
+                &inf.inferred_type,
+                format!("{:?}", inf.confidence),
+                serde_json::to_string(&inf.evidence_sources).unwrap_or_else(|_| "[]".to_string()),
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_symbol_flow_tags(&self, tags: &[crate::models::SymbolFlowTag]) -> SqlResult<()> {
+        if tags.is_empty() { return Ok(()); }
+        
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO symbol_flow_tags (source_file, symbol_id, tag_kind, label, confidence) VALUES (?1, ?2, ?3, ?4, ?5)"
+        )?;
+
+        for tag in tags {
+            let source_file = "";  // Will be populated by caller with actual file path from RawCallSite.file_path
+            stmt.execute(params![
+                source_file,
+                &tag.symbol_id,
+                format!("{:?}", tag.tag_kind),
+                &tag.label,
+                &tag.confidence,
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_analysis_rules(&self, rules: &[crate::models::AnalysisRule]) -> SqlResult<()> {
+        if rules.is_empty() { return Ok(()); }
+
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO analysis_rules (rule_id, ruleset_name, language, category, severity, description) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )?;
+
+        for rule in rules {
+            stmt.execute(params![
+                &rule.rule_id,
+                &rule.ruleset_name,
+                &rule.language,
+                format!("{:?}", rule.category),
+                format!("{:?}", rule.severity),
+                &rule.description,
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn write_symbol_analysis_results(
+        &self, results: &[crate::models::AnalysisResult],
+    ) -> SqlResult<()> {
+        if results.is_empty() { return Ok(()); }
+
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO symbol_analysis_results (rule_id, file_path, line_start, line_end, match_text, symbol_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )?;
+
+        for r in results {
+            stmt.execute(params![
+                &r.rule_id,
+                &r.file_path,
+                r.line_start as i64,
+                r.line_end as i64,
+                &r.match_text.as_deref(),
+                &r.symbol_id.as_deref(),
+            ])?;
+        }
+        Ok(())
+    }
+
+
     pub fn read_all_references(&self) -> SqlResult<Vec<NormalizedReference>> {
         let mut stmt = self.conn.prepare(
             "SELECT source_symbol_id, target_symbol_id, category, file_path, line, confidence
@@ -1171,6 +1342,32 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // Phase 1-3 Cleanup Methods for incremental indexing
+    pub fn delete_type_inferences_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM symbol_type_inferences WHERE source_file = ?1",
+            params![file_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_symbol_analysis_results_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM symbol_analysis_results WHERE file_path = ?1",
+            params![file_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_symbol_flow_tags_for_file(&self, file_path: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM symbol_flow_tags WHERE source_file = ?1",
+            params![file_path],
+        )?;
+        Ok(())
+    }
+
 
     pub fn read_callable_flow_summaries_for_ids(
         &self,
@@ -1534,6 +1731,33 @@ impl Database {
 
     pub fn rollback(&self) -> SqlResult<()> {
         self.conn.execute_batch("ROLLBACK;")
+    }
+
+    // Phase 2: Read all raw call sites without path filter
+    pub fn read_all_raw_call_sites(&self) -> SqlResult<Vec<RawCallSite>> {
+        let sql = "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, file_path, line FROM raw_calls ORDER BY file_path, line";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            let argument_texts_json: String = row.get(4)?;
+            let result_target_json: Option<String> = row.get(5)?;
+            Ok(RawCallSite {
+                caller_id: row.get(0)?,
+                called_name: row.get(1)?,
+                call_kind: raw_call_kind_from_key(&row.get::<_, String>(2)?),
+                argument_count: row.get(3)?,
+                argument_texts: serde_json::from_str(&argument_texts_json).unwrap_or_default(),
+                result_target: result_target_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok()),
+                receiver: row.get(6)?,
+                receiver_kind: row.get::<_, Option<String>>(7)?.as_deref().map(raw_receiver_kind_from_key),
+                qualifier: row.get(8)?,
+                qualifier_kind: row.get::<_, Option<String>>(9)?.as_deref().map(raw_qualifier_kind_from_key),
+                file_path: row.get(10)?,
+                line: row.get(11)?,
+            })
+        })?;
+        rows.collect()
     }
 }
 
@@ -2130,7 +2354,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(idx_count, 40);
+        assert_eq!(idx_count, 48);
     }
 
     #[test]

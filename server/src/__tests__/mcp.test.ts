@@ -11,9 +11,10 @@ describe("MCP payload contracts", () => {
     const responses = await mcpCall([INIT, INITIALIZED, { jsonrpc: "2.0", id: 2, method: "tools/list" }], DATA_DIR);
     const toolList = responses.find((r) => r.id === 2);
     expect(toolList).toBeDefined();
-    expect(toolList.result.tools).toHaveLength(21);
+    expect(toolList.result.tools).toHaveLength(25);
     const names = toolList.result.tools.map((t: any) => t.name).sort();
     expect(names).toEqual([
+      "analyze_file",
       "explain_symbol_propagation",
       "find_all_overloads",
       "find_base_methods",
@@ -22,9 +23,11 @@ describe("MCP payload contracts", () => {
       "find_overrides",
       "find_references",
       "get_callgraph",
+      "get_enhanced_symbol",
       "get_type_hierarchy",
       "impact_analysis",
       "investigate_workflow",
+      "list_analysis_rules",
       "list_class_members",
       "list_file_symbols",
       "list_namespace_symbols",
@@ -33,6 +36,7 @@ describe("MCP payload contracts", () => {
       "lookup_symbol",
       "search_symbols",
       "trace_call_path",
+      "trace_cross_function_flow",
       "trace_variable_flow",
       "workspace_summary",
     ]);

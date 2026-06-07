@@ -45,7 +45,7 @@ struct ActiveParseEntry {
 
 pub trait LanguageAdapter: Send + Sync {
     fn language(&self) -> SourceLanguage;
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String>;
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String>;
 }
 
 struct CppLanguageAdapter;
@@ -59,8 +59,8 @@ impl LanguageAdapter for CppLanguageAdapter {
         SourceLanguage::Cpp
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        parser::parse_cpp_file(file_path, source)
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
+        parser::parse_cpp_file(file_path, source, verbose)
     }
 }
 
@@ -69,7 +69,7 @@ impl LanguageAdapter for LuaLanguageAdapter {
         SourceLanguage::Lua
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
         lua_parser::parse_lua_file_dual(file_path, source)
     }
 }
@@ -79,7 +79,7 @@ impl LanguageAdapter for PythonLanguageAdapter {
         SourceLanguage::Python
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
         python_parser::parse_python_file_dual(file_path, source)
     }
 }
@@ -89,7 +89,7 @@ impl LanguageAdapter for TypeScriptLanguageAdapter {
         SourceLanguage::TypeScript
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
         typescript_parser::parse_typescript_file_dual(file_path, source)
     }
 }
@@ -99,7 +99,7 @@ impl LanguageAdapter for RustLanguageAdapter {
         SourceLanguage::Rust
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
         rust_parser::parse_rust_file_dual(file_path, source)
     }
 }
@@ -136,12 +136,13 @@ impl LanguageRegistry {
         language: SourceLanguage,
         file_path: &str,
         source: &str,
+        verbose: bool,
     ) -> Result<ParseResult, String> {
         let adapter = self
             .adapters
             .get(&language)
             .ok_or_else(|| format!("No language adapter registered for {}", language.display_name()))?;
-        adapter.parse_file(file_path, source)
+        adapter.parse_file(file_path, source, verbose)
     }
 }
 
@@ -336,6 +337,8 @@ fn empty_parse_result() -> ParseResult {
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: Vec::new(),
+        analysis_results: Vec::new(),
     }
 }
 
@@ -372,6 +375,8 @@ pub fn parse_files(
     Vec<crate::models::MacroDefinition>,
     Vec<crate::models::ConditionalBlock>,
     Vec<crate::models::ConditionalSymbol>,
+    Vec<crate::models::TypeInferenceResult>,
+    Vec<crate::models::AnalysisResult>,
     ParseMetrics,
 ) {
     let registry = default_language_registry();
@@ -402,6 +407,8 @@ pub fn parse_discovered_files(
     Vec<crate::models::MacroDefinition>,
     Vec<crate::models::ConditionalBlock>,
     Vec<crate::models::ConditionalSymbol>,
+    Vec<crate::models::TypeInferenceResult>,
+    Vec<crate::models::AnalysisResult>,
     ParseMetrics,
 ) {
     parse_discovered_files_with_progress(
@@ -434,6 +441,8 @@ pub fn parse_discovered_files_with_progress(
     Vec<crate::models::MacroDefinition>,
     Vec<crate::models::ConditionalBlock>,
     Vec<crate::models::ConditionalSymbol>,
+    Vec<crate::models::TypeInferenceResult>,
+    Vec<crate::models::AnalysisResult>,
     ParseMetrics,
 ) {
     let batch_total = discovered_files.len();
@@ -510,7 +519,7 @@ pub fn parse_discovered_files_with_progress(
                     }
                     return (rel_path, Ok(empty_parse_result()), hash, lossy);
                 }
-                let mut result = registry.parse_file(discovered.language, &rel_path, &content);
+                let mut result = registry.parse_file(discovered.language, &rel_path, &content, verbose);
                 let elapsed = {
                     let mut active = active_files.lock().expect("active parse tracker poisoned");
                     active
@@ -603,6 +612,8 @@ pub fn parse_discovered_files_with_progress(
     let mut macro_definitions = Vec::new();
     let mut conditional_blocks = Vec::new();
     let mut conditional_symbols = Vec::new();
+    let mut type_inferences: Vec<crate::models::TypeInferenceResult> = Vec::new();
+    let mut analysis_results: Vec<crate::models::AnalysisResult> = Vec::new();
     let mut file_records = Vec::new();
     let mut metrics = ParseMetrics::default();
 
@@ -652,10 +663,12 @@ pub fn parse_discovered_files_with_progress(
                 }
                 symbols.extend(enriched_symbols);
                 raw_calls.extend(pr.raw_calls);
+                type_inferences.extend(pr.type_inferences);
                 include_dependencies.extend(pr.include_dependencies);
                 macro_definitions.extend(pr.macro_definitions);
                 conditional_blocks.extend(pr.conditional_blocks);
                 conditional_symbols.extend(pr.conditional_symbols);
+                analysis_results.extend(pr.analysis_results);
             }
             Err(e) => {
                 if !verbose {
@@ -680,6 +693,8 @@ pub fn parse_discovered_files_with_progress(
         macro_definitions,
         conditional_blocks,
         conditional_symbols,
+        type_inferences,
+        analysis_results,
         metrics,
     )
 }
@@ -802,7 +817,7 @@ pub fn parse_discovered_file_strict(
     if skip_reason_before_parse(discovered.language, &content).is_some() {
         return Ok((empty_parse_result(), hash, lossy, true));
     }
-    let result = match registry.parse_file(discovered.language, &rel_path, &content) {
+    let result = match registry.parse_file(discovered.language, &rel_path, &content, false) {
         Ok(result) => result,
         Err(e) => {
             let message = format!("Parse error for {}: {}", rel_path, e);
@@ -832,6 +847,8 @@ pub fn parse_files_strict(
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
+    Vec<crate::models::TypeInferenceResult>,
+    Vec<crate::models::AnalysisResult>,
     ParseMetrics,
 ), String> {
     let registry = default_language_registry();
@@ -869,8 +886,12 @@ pub fn parse_discovered_files_strict(
     Vec<PropagationEvent>,
     Vec<CallableFlowSummary>,
     Vec<FileRecord>,
+    Vec<crate::models::TypeInferenceResult>,
+    Vec<crate::models::AnalysisResult>,
     ParseMetrics,
 ), String> {
+    let mut type_inferences: Vec<crate::models::TypeInferenceResult> = Vec::new();
+    let mut analysis_results: Vec<crate::models::AnalysisResult> = Vec::new();
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut relation_events = Vec::new();
@@ -948,6 +969,8 @@ pub fn parse_discovered_files_strict(
         metrics.graph_rule_compile_ms += result.metrics.graph_rule_compile_ms;
         metrics.graph_rule_execute_ms += result.metrics.graph_rule_execute_ms;
         metrics.reference_normalization_ms += result.metrics.reference_normalization_ms;
+        type_inferences.extend(result.type_inferences);
+        analysis_results.extend(result.analysis_results);
         symbols.extend(result.symbols);
         raw_calls.extend(result.raw_calls);
     }
@@ -959,6 +982,8 @@ pub fn parse_discovered_files_strict(
         propagation_events,
         callable_flow_summaries,
         file_records,
+        type_inferences,
+        analysis_results,
         metrics,
     ))
 }
@@ -1044,8 +1069,10 @@ mod tests {
                 include_dependencies: Vec::new(),
                 macro_definitions: Vec::new(),
                 conditional_blocks: Vec::new(),
-                dependency_metrics: crate::models::DependencyMetrics::default(),
+               dependency_metrics: crate::models::DependencyMetrics::default(),
                 conditional_symbols: Vec::new(),
+                type_inferences: Vec::new(),
+                analysis_results: Vec::new(),
             })
         }
     }
@@ -1064,7 +1091,7 @@ mod tests {
             language: SourceLanguage::Lua,
         }];
 
-        let (symbols, raw_calls, references, propagation, summaries, files, include_deps, macro_defs, cond_blocks, cond_symbols, metrics) =
+        let (symbols, raw_calls, references, propagation, summaries, files, include_deps, macro_defs, cond_blocks, cond_symbols, _type_inferences, _analysis_results, metrics) =
             parse_discovered_files(dir.path(), &discovered, false, None, &registry);
         assert!(include_deps.is_empty());
         assert!(macro_defs.is_empty());

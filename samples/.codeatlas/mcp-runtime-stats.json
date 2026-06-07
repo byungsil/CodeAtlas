@@ -1,116 +1,116 @@
 {
   "startedAt": "2026-06-05T17:04:17.183Z",
-  "uptimeSeconds": 2405.06,
-  "totalToolCalls": 96,
-  "totalErrors": 20,
-  "avgLatencyMs": 0.35,
+  "uptimeSeconds": 124752.92,
+  "totalToolCalls": 576,
+  "totalErrors": 120,
+  "avgLatencyMs": 0.89,
   "tools": [
     {
       "toolName": "lookup_symbol",
-      "count": 20,
-      "errorCount": 12,
-      "totalLatencyMs": 3,
-      "avgLatencyMs": 0.15,
-      "lastCalledAt": "2026-06-05T17:44:22.033Z",
-      "lastErrorAt": "2026-06-05T17:44:22.033Z"
+      "count": 120,
+      "errorCount": 72,
+      "totalLatencyMs": 82,
+      "avgLatencyMs": 0.68,
+      "lastCalledAt": "2026-06-07T03:43:29.899Z",
+      "lastErrorAt": "2026-06-07T03:43:29.899Z"
     },
     {
       "toolName": "get_callgraph",
-      "count": 12,
+      "count": 72,
       "errorCount": 0,
-      "totalLatencyMs": 6,
-      "avgLatencyMs": 0.5,
-      "lastCalledAt": "2026-06-05T17:44:22.183Z"
-    },
-    {
-      "toolName": "search_symbols",
-      "count": 8,
-      "errorCount": 0,
-      "totalLatencyMs": 6,
-      "avgLatencyMs": 0.75,
-      "lastCalledAt": "2026-06-05T17:44:22.124Z"
-    },
-    {
-      "toolName": "find_callers",
-      "count": 8,
-      "errorCount": 0,
-      "totalLatencyMs": 4,
-      "avgLatencyMs": 0.5,
-      "lastCalledAt": "2026-06-05T17:44:22.201Z"
-    },
-    {
-      "toolName": "list_file_symbols",
-      "count": 8,
-      "errorCount": 0,
-      "totalLatencyMs": 2,
-      "avgLatencyMs": 0.25,
-      "lastCalledAt": "2026-06-05T17:44:22.217Z"
+      "totalLatencyMs": 45,
+      "avgLatencyMs": 0.63,
+      "lastCalledAt": "2026-06-07T03:43:30.039Z"
     },
     {
       "toolName": "lookup_function",
-      "count": 8,
-      "errorCount": 4,
-      "totalLatencyMs": 2,
-      "avgLatencyMs": 0.25,
-      "lastCalledAt": "2026-06-05T17:44:22.240Z",
-      "lastErrorAt": "2026-06-05T17:44:22.240Z"
+      "count": 48,
+      "errorCount": 24,
+      "totalLatencyMs": 110,
+      "avgLatencyMs": 2.29,
+      "lastCalledAt": "2026-06-07T03:43:30.098Z",
+      "lastErrorAt": "2026-06-07T03:43:30.098Z"
+    },
+    {
+      "toolName": "search_symbols",
+      "count": 48,
+      "errorCount": 0,
+      "totalLatencyMs": 56,
+      "avgLatencyMs": 1.17,
+      "lastCalledAt": "2026-06-07T03:43:29.971Z"
+    },
+    {
+      "toolName": "find_callers",
+      "count": 48,
+      "errorCount": 0,
+      "totalLatencyMs": 35,
+      "avgLatencyMs": 0.73,
+      "lastCalledAt": "2026-06-07T03:43:30.057Z"
+    },
+    {
+      "toolName": "list_file_symbols",
+      "count": 48,
+      "errorCount": 0,
+      "totalLatencyMs": 18,
+      "avgLatencyMs": 0.38,
+      "lastCalledAt": "2026-06-07T03:43:30.075Z"
     },
     {
       "toolName": "list_class_members",
-      "count": 8,
+      "count": 48,
       "errorCount": 0,
-      "totalLatencyMs": 1,
-      "avgLatencyMs": 0.13,
-      "lastCalledAt": "2026-06-05T17:44:22.232Z"
+      "totalLatencyMs": 15,
+      "avgLatencyMs": 0.31,
+      "lastCalledAt": "2026-06-07T03:43:30.091Z"
     },
     {
       "toolName": "impact_analysis",
-      "count": 4,
+      "count": 24,
       "errorCount": 0,
-      "totalLatencyMs": 6,
-      "avgLatencyMs": 1.5,
-      "lastCalledAt": "2026-06-05T17:44:22.133Z"
+      "totalLatencyMs": 100,
+      "avgLatencyMs": 4.17,
+      "lastCalledAt": "2026-06-07T03:43:29.984Z"
     },
     {
       "toolName": "find_references",
-      "count": 4,
+      "count": 24,
       "errorCount": 0,
-      "totalLatencyMs": 2,
-      "avgLatencyMs": 0.5,
-      "lastCalledAt": "2026-06-05T17:44:22.103Z"
+      "totalLatencyMs": 31,
+      "avgLatencyMs": 1.29,
+      "lastCalledAt": "2026-06-07T03:43:29.954Z"
     },
     {
       "toolName": "lookup_class",
-      "count": 4,
+      "count": 24,
       "errorCount": 0,
-      "totalLatencyMs": 2,
-      "avgLatencyMs": 0.5,
-      "lastCalledAt": "2026-06-05T17:44:22.064Z"
-    },
-    {
-      "toolName": "find_all_overloads",
-      "count": 4,
-      "errorCount": 0,
-      "totalLatencyMs": 0,
-      "avgLatencyMs": 0,
-      "lastCalledAt": "2026-06-05T17:44:22.079Z"
+      "totalLatencyMs": 9,
+      "avgLatencyMs": 0.38,
+      "lastCalledAt": "2026-06-07T03:43:29.919Z"
     },
     {
       "toolName": "find_callers_recursive",
-      "count": 4,
+      "count": 24,
       "errorCount": 0,
-      "totalLatencyMs": 0,
-      "avgLatencyMs": 0,
-      "lastCalledAt": "2026-06-05T17:44:22.192Z"
+      "totalLatencyMs": 5,
+      "avgLatencyMs": 0.21,
+      "lastCalledAt": "2026-06-07T03:43:30.048Z"
     },
     {
       "toolName": "list_namespace_symbols",
-      "count": 4,
-      "errorCount": 4,
-      "totalLatencyMs": 0,
-      "avgLatencyMs": 0,
-      "lastCalledAt": "2026-06-05T17:44:22.159Z",
-      "lastErrorAt": "2026-06-05T17:44:22.159Z"
+      "count": 24,
+      "errorCount": 24,
+      "totalLatencyMs": 5,
+      "avgLatencyMs": 0.21,
+      "lastCalledAt": "2026-06-07T03:43:30.002Z",
+      "lastErrorAt": "2026-06-07T03:43:30.002Z"
+    },
+    {
+      "toolName": "find_all_overloads",
+      "count": 24,
+      "errorCount": 0,
+      "totalLatencyMs": 3,
+      "avgLatencyMs": 0.13,
+      "lastCalledAt": "2026-06-07T03:43:29.928Z"
     }
   ],
   "recentCalls": [
@@ -118,123 +118,123 @@
       "toolName": "lookup_function",
       "elapsedMs": 0,
       "ok": false,
-      "timestamp": "2026-06-05T17:44:22.240Z",
+      "timestamp": "2026-06-07T03:43:30.098Z",
       "errorMessage": "{\"error\":\"Symbol not found\",\"code\":\"NOT_FOUND\"}"
     },
     {
       "toolName": "list_class_members",
       "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.232Z"
+      "timestamp": "2026-06-07T03:43:30.091Z"
     },
     {
       "toolName": "list_file_symbols",
       "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.217Z"
+      "timestamp": "2026-06-07T03:43:30.075Z"
     },
     {
       "toolName": "list_file_symbols",
       "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.209Z"
+      "timestamp": "2026-06-07T03:43:30.065Z"
     },
     {
       "toolName": "find_callers",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.201Z"
+      "timestamp": "2026-06-07T03:43:30.057Z"
     },
     {
       "toolName": "find_callers_recursive",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.192Z"
-    },
-    {
-      "toolName": "get_callgraph",
-      "elapsedMs": 0,
-      "ok": true,
-      "timestamp": "2026-06-05T17:44:22.183Z"
+      "timestamp": "2026-06-07T03:43:30.048Z"
     },
     {
       "toolName": "get_callgraph",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.175Z"
+      "timestamp": "2026-06-07T03:43:30.039Z"
     },
     {
       "toolName": "get_callgraph",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.167Z"
+      "timestamp": "2026-06-07T03:43:30.029Z"
+    },
+    {
+      "toolName": "get_callgraph",
+      "elapsedMs": 1,
+      "ok": true,
+      "timestamp": "2026-06-07T03:43:30.020Z"
     },
     {
       "toolName": "list_namespace_symbols",
       "elapsedMs": 0,
       "ok": false,
-      "timestamp": "2026-06-05T17:44:22.159Z",
+      "timestamp": "2026-06-07T03:43:30.002Z",
       "errorMessage": "{\"error\":\"Symbol not found\",\"code\":\"NOT_FOUND\"}"
     },
     {
       "toolName": "list_class_members",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.149Z"
+      "timestamp": "2026-06-07T03:43:29.993Z"
     },
     {
       "toolName": "impact_analysis",
-      "elapsedMs": 2,
+      "elapsedMs": 5,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.133Z"
+      "timestamp": "2026-06-07T03:43:29.984Z"
     },
     {
       "toolName": "search_symbols",
-      "elapsedMs": 1,
+      "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.124Z"
+      "timestamp": "2026-06-07T03:43:29.971Z"
     },
     {
       "toolName": "find_callers",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.114Z"
+      "timestamp": "2026-06-07T03:43:29.963Z"
     },
     {
       "toolName": "find_references",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.103Z"
+      "timestamp": "2026-06-07T03:43:29.954Z"
     },
     {
       "toolName": "search_symbols",
-      "elapsedMs": 0,
+      "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.089Z"
+      "timestamp": "2026-06-07T03:43:29.944Z"
     },
     {
       "toolName": "find_all_overloads",
       "elapsedMs": 0,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.079Z"
+      "timestamp": "2026-06-07T03:43:29.928Z"
     },
     {
       "toolName": "lookup_class",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.064Z"
+      "timestamp": "2026-06-07T03:43:29.919Z"
     },
     {
       "toolName": "lookup_function",
       "elapsedMs": 1,
       "ok": true,
-      "timestamp": "2026-06-05T17:44:22.044Z"
+      "timestamp": "2026-06-07T03:43:29.909Z"
     },
     {
       "toolName": "lookup_symbol",
       "elapsedMs": 0,
       "ok": false,
-      "timestamp": "2026-06-05T17:44:22.033Z",
+      "timestamp": "2026-06-07T03:43:29.899Z",
       "errorMessage": "{\"error\":\"Symbol not found\",\"code\":\"NOT_FOUND\"}"
     }
   ]

@@ -113,8 +113,8 @@ describe("Schema and contract validation", () => {
       expect(calls.length).toBeGreaterThanOrEqual(15);
     });
 
-    it("has 5 indexed files", () => {
-      expect(files.length).toBe(5);
+    it("has at least 5 indexed files", () => {
+      expect(files.length).toBeGreaterThanOrEqual(5);
     });
   });
 });

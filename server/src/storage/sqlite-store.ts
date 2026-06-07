@@ -565,6 +565,85 @@ export class SqliteStore {
     const rows = this.db.prepare("SELECT key, value FROM db_metadata").all() as Array<{ key: string; value: string }>;
     return Object.fromEntries(rows.map((row) => [row.key, row.value]));
   }
+
+  // Phase 1: Type Inference Queries
+  readTypeInferencesForSymbol(symbolId: string): Array<{ inferred_type?: string; confidence: string }> {
+    if (!this.hasTable("symbol_type_inferences")) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT inferred_type, confidence FROM symbol_type_inferences WHERE symbol_id = ?"
+      ).all(symbolId) as Array<{ inferred_type?: string; confidence: string }>;
+      return rows;
+    } catch {
+      return [];
+    }
+  }
+
+  readAllTypeInferences(): Array<{ symbol_id: string; inferred_type?: string; confidence: string }> {
+    if (!this.hasTable("symbol_type_inferences")) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT symbol_id, inferred_type, confidence FROM symbol_type_inferences ORDER BY symbol_id"
+      ).all() as Array<{ symbol_id: string; inferred_type?: string; confidence: string }>;
+      return rows;
+    } catch {
+      return [];
+    }
+  }
+
+  // Phase 2: Flow Tag Queries
+  readFlowTagsForSymbol(symbolId: string): Array<{ tagKind: string; label?: string }> {
+    if (!this.hasTable("symbol_flow_tags")) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT tag_kind, label FROM symbol_flow_tags WHERE symbol_id = ?"
+      ).all(symbolId) as Array<{ tag_kind: string; label?: string }>;
+      return rows.map(r => ({ tagKind: r.tag_kind, label: r.label }));
+    } catch {
+      return [];
+    }
+  }
+
+  readFlowPathsFromSource(sourceSymbolId: string): Array<{ target_symbol_id: string; hops_json?: string; semantic_tags_json?: string }> {
+    if (!this.hasTable("cross_boundary_flow_paths")) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT target_symbol_id, hops_json, semantic_tags_json FROM cross_boundary_flow_paths WHERE source_symbol_id = ?"
+      ).all(sourceSymbolId) as Array<{ target_symbol_id: string; hops_json?: string; semantic_tags_json?: string }>;
+      return rows;
+    } catch {
+      return [];
+    }
+  }
+
+  // Phase 3: Analysis Rules & Results Queries
+  readAnalysisRules(category?: string | null, language?: string | null): Array<{ rule_id: string; ruleset_name: string; category: string; severity: string }> {
+    if (!this.hasTable("analysis_rules")) return [];
+    try {
+      let sql = "SELECT rule_id, ruleset_name, category, severity FROM analysis_rules WHERE 1=1";
+      const values: Array<string> = [];
+      if (category) { sql += " AND category = ?"; values.push(category); }
+      if (language) { sql += " AND (language IS NULL OR language = ?)"; values.push(language); }
+      sql += " ORDER BY CASE severity WHEN error THEN 1 WHEN warning THEN 2 ELSE 3 END";
+      const rows = this.db.prepare(sql).all(...values) as Array<{ rule_id: string; ruleset_name: string; category: string; severity: string }>;
+      return rows.map(r => ({ ...r }));
+    } catch {
+      return [];
+    }
+  }
+
+  readAnalysisResultsForFile(filePath: string): Array<{ rule_id: string; file_path: string; line_start: number; line_end: number; match_text?: string }> {
+    if (!this.hasTable("symbol_analysis_results")) return [];
+    try {
+      const rows = this.db.prepare(
+        "SELECT rule_id, file_path, line_start, line_end, match_text FROM symbol_analysis_results WHERE file_path = ? ORDER BY id"
+      ).all(filePath) as Array<{ rule_id: string; file_path: string; line_start: number; line_end: number; match_text?: string }>;
+      return rows.map(r => ({ ...r }));
+    } catch {
+      return [];
+    }
+  }
+
 }
 
 function openReadonlyStore(dbPath: string): { db: Database.Database; snapshotPath?: string } {

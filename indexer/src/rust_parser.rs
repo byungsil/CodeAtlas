@@ -6,7 +6,7 @@ use crate::graph_rules::RUST_CALL_RELATIONS;
 use crate::models::{
     FileRiskSignals, IncludeHeaviness, MacroSensitivity, NormalizedReference, ParseFragility,
     ParseMetrics, ParseResult, RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
-    RawReceiverKind, ReferenceCategory, Symbol,
+    RawReceiverKind, ReferenceCategory, Symbol, TypeEvidence, TypeInferenceConfidence,
 };
 use crate::parser::execute_graph_rules;
 
@@ -493,7 +493,120 @@ pub fn parse_rust_file(file_path: &str, source: &str) -> Result<ParseResult, Str
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: infer_rust_types_from_regex(source, file_path),
+        analysis_results: detect_rust_patterns(source, file_path),
     })
+}
+
+/// Infer types from Rust function signatures and variable bindings.
+pub(crate) fn infer_rust_types_from_regex(
+    source: &str,
+    file_path: &str,
+) -> Vec<crate::models::TypeInferenceResult> {
+    let mut by_symbol = HashMap::<String, Vec<TypeEvidence>>::new();
+
+    // 1. Extract return types from function signatures.
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("fn ") && !trimmed.starts_with("pub fn ") { continue; }
+        if let Some(paren_end) = trimmed.find(')') {
+            let after_paren = &trimmed[paren_end + 1..];
+            if let Some(arrow_pos) = after_paren.find("->") {
+                let ret_part: String = after_paren[arrow_pos + 2..]
+                    .chars().take_while(|c| !"{; ".contains(*c)).collect();
+                if !ret_part.is_empty() && !ret_part.starts_with('(') {
+                    by_symbol.entry(format!("{}::function@L{}", file_path, line_no + 1))
+                        .or_default()
+                        .push(TypeEvidence { expression_text: ret_part.clone(), inferred_type_hint: Some(ret_part), confidence: TypeInferenceConfidence::High });
+                }
+            }
+        }
+    }
+
+    // 2. Infer types from let bindings with explicit annotations.
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("let ") && !trimmed.starts_with("pub let ") { continue; }
+        if let Some(colon_pos) = trimmed.find(':') {
+            let after_colon = &trimmed[colon_pos + 1..];
+            let type_hint: String = after_colon.chars().take_while(|c| !"; ".contains(*c)).collect();
+            if !type_hint.is_empty() && !type_hint.starts_with('=') {
+                by_symbol.entry(format!("{}::variable@L{}", file_path, line_no + 1))
+                    .or_default()
+                    .push(TypeEvidence { expression_text: type_hint.clone(), inferred_type_hint: Some(type_hint), confidence: TypeInferenceConfidence::High });
+            }
+        }
+    }
+
+    // 3. Infer types from return/Ok/Err expressions.
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !(trimmed.starts_with("return ") || trimmed == "true" || trimmed == "false") { continue; }
+        let expr_text: String = if trimmed.starts_with("return ") {
+            match trimmed[7..].find('(') {
+                Some(p) => trimmed[p + 8..].trim().to_string(),
+                None => trimmed[7..].replace(';', ""),
+            }
+        } else { trimmed.to_string() };
+        if !expr_text.is_empty()
+            && !(expr_text.starts_with('"') || expr_text.contains("return ")) {
+            let inferred_type = infer_rust_expr_type(&expr_text);
+            by_symbol.entry(format!("{}::expression@L{}", file_path, line_no + 1))
+                .or_default()
+                .push(TypeEvidence { expression_text: expr_text, inferred_type_hint: Some(inferred_type), confidence: TypeInferenceConfidence::Partial });
+        }
+    }
+
+    by_symbol.into_iter().map(|(sym_id, evidences)| {
+        let best = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).next();
+        crate::models::TypeInferenceResult { symbol_id: sym_id, inferred_type: best,
+            confidence: if evidences.len() > 1 { TypeInferenceConfidence::Partial } else { TypeInferenceConfidence::High }, evidence_sources: evidences }
+    }).collect()
+}
+
+fn convert_rust_type_map_to_results(
+    by_symbol: HashMap<String, Vec<TypeEvidence>>,
+) -> Vec<crate::models::TypeInferenceResult> {
+    by_symbol.into_iter().map(|(sym_id, evidences)| {
+        let best = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).next();
+        crate::models::TypeInferenceResult { symbol_id: sym_id, inferred_type: best,
+            confidence: if evidences.len() > 1 { TypeInferenceConfidence::Partial } else { TypeInferenceConfidence::High }, evidence_sources: evidences }
+    }).collect()
+}
+
+fn infer_rust_expr_type(expr: &str) -> String {
+    let e = expr.trim();
+    if e.starts_with("Some(") { return "Option".into(); }
+    if e.starts_with("Ok(") || e.starts_with("Err(") { return "Result".into(); }
+    if e == "true" || e == "false" { return "bool".into(); }
+    if let Some(s) = e.strip_prefix('"') {
+        if !s.is_empty() && s.contains(|c: char| c != '"' && c != '\\') { return "String".into(); }
+    }
+    if let Some(first) = e.chars().next() {
+        if first.is_uppercase() {
+            let t: String = e.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '<' && c != '>' && c != ':').take(1).collect();
+            return if t.len() > 1 { t } else { "unknown".into() };
+        }
+    }
+    let ns: String = e.chars().take_while(|c| !c.is_alphabetic()).collect();
+    if !ns.trim().is_empty() { return "i32".into(); }
+    "unknown".into()
+}
+
+fn detect_rust_patterns(source: &str, file_path: &str) -> Vec<crate::models::AnalysisResult> {
+    let mut results = Vec::new();
+    let all_lines: Vec<&str> = source.lines().collect();
+    for (line_no, line) in all_lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.contains("vec![") || trimmed.starts_with('#') { continue; }
+        // Check context: is this inside a function?
+        let start = line_no.saturating_sub(20);
+        let preceding: Vec<&str> = all_lines[start..=line_no].iter().rev().copied().collect();
+        if preceding.iter().any(|l| l.trim().starts_with("fn ") || l.trim().starts_with("pub fn ")) {
+            results.push(crate::models::AnalysisResult { rule_id: "rust-mutable-default-arg".into(), file_path: file_path.into(), line_start: line_no + 1, line_end: line_no + 1, match_text: Some(trimmed.to_string()), symbol_id: None });
+        }
+    }
+    results
 }
 
 fn base_symbol(
@@ -689,6 +802,111 @@ fn imported_symbol_leaf(symbol_id: &str) -> &str {
     symbol_id.rsplit("::").next().unwrap_or(symbol_id)
 }
 
+/// Infer types from tree-sitter AST nodes (return annotations, let bindings).
+pub(crate) fn infer_rust_types_from_treesitter(
+    root: tree_sitter::Node<'_>,
+    symbols: &Vec<Symbol>,
+    source_bytes: &[u8],
+) -> Vec<crate::models::TypeInferenceResult> {
+    let mut by_symbol = HashMap::<String, Vec<TypeEvidence>>::new();
+
+    fn node_text(node: &tree_sitter::Node<'_>, src: &[u8]) -> String {
+        node.utf8_text(src).unwrap_or("").trim().to_string()
+    }
+   let mut sym_by_qualified: HashMap<String, String> = HashMap::new();
+    for s in symbols {
+        if (s.symbol_type == "function" || s.symbol_type == "method") && !s.id.is_empty() {
+            sym_by_qualified.insert(s.qualified_name.clone(), s.id.clone());
+        }
+    }
+
+    fn walk(
+        node: tree_sitter::Node<'_>,
+        src: &[u8],
+        sym_lookup: &HashMap<String, String>,
+        results: &mut HashMap<String, Vec<TypeEvidence>>,
+    ) {
+        match node.kind() {
+            "function_item" => {
+                let fn_name = extract_fn_name(&node, src);
+
+                if !fn_name.is_empty() {
+                    let sym_id = sym_lookup.get(&fn_name)
+                        .cloned()
+                        .or_else(|| {
+                            let target = format!("::{fn_name}");
+                            sym_lookup.iter().find(|(qn, _)| qn.ends_with(&target)).map(|(_, id)| id.clone())
+                        });
+
+                    if let Some(sym_id) = sym_id {
+                        collect_return_type_evidence(node, &sym_id, src, results);
+                    } else {
+                        fallback_inference(&fn_name, node, src, results);
+                    }
+                } else {
+                    fallback_inference("", node, src, results);
+                }
+            }
+            _ => {}
+        }
+
+        for child in node.children(&mut node.walk()) {
+            walk(child, src, sym_lookup, results);
+        }
+    }
+
+    fn extract_fn_name<'a>(node: &'a tree_sitter::Node<'_>, src: &[u8]) -> String {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            return name_node.utf8_text(src).unwrap_or("").trim().to_string();
+        }
+        for ch in node.named_children(&mut node.walk()) {
+            if ch.kind() == "identifier" || ch.kind() == "qualified_identifier" {
+                let text = ch.utf8_text(src).unwrap_or("").trim().to_string();
+                return text.strip_prefix("::").map(|s| s.to_string()).unwrap_or(text);
+            }
+        }
+        String::new()
+    }
+
+   fn collect_return_type_evidence(
+        func_node: tree_sitter::Node<'_>,
+        owner_id: &str,
+        src: &[u8],
+        results: &mut HashMap<String, Vec<TypeEvidence>>,
+    ) {
+        if let Some(ret_type) = find_return_annotation(&func_node) {
+            let ret_str = node_text(&ret_type, src);
+            if !ret_str.is_empty() && !(ret_str.starts_with('(') || ret_str.contains("fn") || ret_str == "Self" || ret_str == "()") {
+                results.entry(owner_id.to_string()).or_default().push(TypeEvidence { expression_text: ret_str.clone(), inferred_type_hint: Some(ret_str), confidence: TypeInferenceConfidence::High });
+            }
+        }
+    }
+
+
+    fn fallback_inference(fn_name: &str, node: tree_sitter::Node<'_>, src: &[u8], results: &mut HashMap<String, Vec<TypeEvidence>>,) {
+        if let Some(ret_type) = find_return_annotation(&node) {
+            let ret_str = node_text(&ret_type, src);
+            if !ret_str.is_empty() && !(ret_str.starts_with('(') || ret_str.contains("fn") || ret_str == "Self" || ret_str == "()") {
+                let line_no = count_newlines(src, node.byte_range().start) + 1;
+                results.entry(format!("{}::function@L{}", fn_name.replace('/', "_"), line_no))
+                    .or_default()
+                    .push(TypeEvidence { expression_text: ret_str.clone(), inferred_type_hint: Some(ret_str), confidence: TypeInferenceConfidence::High });
+            }
+        }
+    }
+
+    fn find_return_annotation<'a>(node: &'a tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'a>> {
+        node.child_by_field_name("return_type")
+    }
+
+    walk(root.clone(), source_bytes, &sym_by_qualified, &mut by_symbol);
+    convert_rust_type_map_to_results(by_symbol)
+}
+
+fn count_newlines(data: &[u8], pos: usize) -> usize {
+    data[..pos].iter().filter(|&&b| b == b'\n').count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,6 +1001,9 @@ pub fn parse_rust_file_treesitter(file_path: &str, source: &str) -> Result<Parse
         .parse(source, None)
         .ok_or_else(|| "Rust parse returned None".to_string())?;
 
+    // Clone root node early so it survives the rs_visit_node call which consumes the original.
+    let root_for_type_inference = tree.root_node();
+
     let source_bytes = source.as_bytes();
     let module_id = module_symbol_id(file_path);
     let module_name = module_leaf_name(&module_id);
@@ -830,6 +1051,8 @@ pub fn parse_rust_file_treesitter(file_path: &str, source: &str) -> Result<Parse
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
+    let type_inferences = infer_rust_types_from_treesitter(root_for_type_inference.clone(), &symbols, source.as_bytes());
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -848,6 +1071,8 @@ pub fn parse_rust_file_treesitter(file_path: &str, source: &str) -> Result<Parse
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences,
+        analysis_results: detect_rust_patterns(source, file_path),
     })
 }
 

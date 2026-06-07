@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tree_sitter::{Node, Parser};
 
 use crate::graph_rules::TYPESCRIPT_CALL_RELATIONS;
-use crate::models::{
+use crate::models::{TypeEvidence, TypeInferenceConfidence, AnalysisResult,
     FileRiskSignals, IncludeHeaviness, MacroSensitivity, NormalizedReference, ParseFragility,
     ParseMetrics, ParseResult, RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
     RawReceiverKind, ReferenceCategory, Symbol,
@@ -451,6 +451,12 @@ pub fn parse_typescript_file(file_path: &str, source: &str) -> Result<ParseResul
         brace_depth -= close_brace_delta(trimmed);
     }
 
+   // Phase 1: TypeScript type inference from signature fields
+    let ts_type_inferences = infer_typescript_types(&symbols, file_path);
+
+    // Phase 3: TypeScript pattern detection
+    let ts_patterns = detect_typescript_patterns(source, file_path);
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -468,7 +474,9 @@ pub fn parse_typescript_file(file_path: &str, source: &str) -> Result<ParseResul
         macro_definitions: Vec::new(),
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
+        type_inferences: ts_type_inferences,
         conditional_symbols: Vec::new(),
+        analysis_results: ts_patterns,
     })
 }
 
@@ -574,6 +582,44 @@ fn open_brace_delta(line: &str) -> i32 {
 
 fn close_brace_delta(line: &str) -> i32 {
     line.chars().filter(|ch| *ch == '}').count() as i32
+}
+
+fn detect_typescript_patterns(source: &str, file_path: &str) -> Vec<AnalysisResult> {
+    let mut results = Vec::new();
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+
+        // ts-any-type-overuse: explicit 'any' type annotation usage
+        if re_any_type_usage().is_match(trimmed) {
+            results.push(AnalysisResult {
+                rule_id: "ts-any-type-overuse".into(),
+                file_path: file_path.into(),
+                line_start: line_no + 1,
+                line_end: line_no + 1,
+                match_text: Some(trimmed.to_string()),
+                symbol_id: None,
+            });
+        }
+
+        // ts-unhandled-promise-rejection: .catch() without argument or empty catch
+        if trimmed.starts_with(".catch(()") || trimmed == ".catch()" {
+            results.push(AnalysisResult {
+                rule_id: "ts-unhandled-promise-rejection".into(),
+                file_path: file_path.into(),
+                line_start: line_no + 1,
+                line_end: line_no + 1,
+                match_text: Some(trimmed.to_string()),
+                symbol_id: None,
+            });
+        }
+    }
+
+    results
+}
+
+fn re_any_type_usage() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r":[ \t]*any[\s;,(>\]]").unwrap())
 }
 
 fn parameter_count(parameters: &str) -> usize {
@@ -714,6 +760,12 @@ pub fn parse_typescript_file_treesitter(file_path: &str, source: &str) -> Result
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
+   // Phase 1: TypeScript type inference from signature fields (ts_visit_node path)
+    let ts_type_inferences = infer_typescript_types(&symbols, file_path);
+
+    // Phase 3: TypeScript pattern detection
+    let ts_patterns = detect_typescript_patterns(source, file_path);
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -730,8 +782,10 @@ pub fn parse_typescript_file_treesitter(file_path: &str, source: &str) -> Result
         include_dependencies: Vec::new(),
         macro_definitions: Vec::new(),
         conditional_blocks: Vec::new(),
+        type_inferences: ts_type_inferences,
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        analysis_results: ts_patterns,
     })
 }
 
@@ -1350,4 +1404,43 @@ export class App {
             ts.symbols.len(), legacy.symbols.len()
         );
     }
+}
+
+// Phase 1: TypeScript Type Inference from signature fields
+// Extract inferred types from TS function/class signatures. Since TypeScript already has rich type info,
+// this extracts the return type and parameter types directly from symbol signatures.
+pub(crate) fn infer_typescript_types(symbols: &[Symbol], _file_path: &str) -> Vec<crate::models::TypeInferenceResult> {
+    let mut results = HashMap::<String, Vec<TypeEvidence>>::new();
+    for sym in symbols {
+        if (sym.symbol_type == "function" || sym.symbol_type == "method") && !sym.id.is_empty() 
+            && sym.signature.as_deref().unwrap_or("").contains(':') {
+            let sig = sym.signature.as_deref().unwrap_or("");
+            // Extract return type from signature like "foo(): string" or "(arg: T): ReturnType"
+            if let Some(ret_part) = sig.split(':').last() {
+                let ret_type = ret_part.trim();
+                if !ret_type.is_empty() && !ret_type.starts_with('(') {
+                    results.entry(sym.id.clone()).or_default().push(TypeEvidence {
+                        expression_text: "signature return type".to_string(),
+                        inferred_type_hint: Some(ret_type.to_string()),
+                        confidence: TypeInferenceConfidence::High,
+                    });
+                }
+            }
+        }
+    }
+    results.into_iter()
+        .map(|(sym_id, evidences)| {
+            let best_types: Vec<String> = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).collect();
+            crate::models::TypeInferenceResult {
+                symbol_id: sym_id,
+                inferred_type: if !best_types.is_empty() { Some(best_types[0].clone()) } else { None },
+                confidence: if evidences.iter().any(|e| e.confidence == TypeInferenceConfidence::High) {
+                    TypeInferenceConfidence::High
+                } else {
+                    TypeInferenceConfidence::Partial
+                },
+                evidence_sources: evidences,
+            }
+        })
+        .collect()
 }

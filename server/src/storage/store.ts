@@ -86,4 +86,11 @@ export interface Store {
   getOutgoingPropagation(symbolId: string, propagationKinds?: PropagationKind[], filePath?: string): PropagationEventRecord[];
   getWorkspaceLanguageSummary(): WorkspaceLanguageSummaryRecord[];
   getIndexDetails?(): IndexDetailsRecord;
+
+  // Phase 1-3: Enhanced Symbol Queries
+  readTypeInferencesForSymbol?(symbolId: string): Array<{ inferred_type?: string; confidence: string }>;
+  readFlowTagsForSymbol?(symbolId: string): Array<{ tagKind: string; label?: string }>;
+  readFlowPathsFromSource?(sourceSymbolId: string): Array<{ target_symbol_id: string; hops_json?: string; semantic_tags_json?: string }>;
+  readAnalysisRules?(category?: string | null, language?: string | null): Array<{ rule_id: string; ruleset_name: string; category: string; severity: string }>;
+  readAnalysisResultsForFile?(filePath: string): Array<{ rule_id: string; file_path: string; line_start: number; line_end: number; match_text?: string }>;
 }

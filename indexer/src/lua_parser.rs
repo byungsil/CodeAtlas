@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use regex::Regex;
 use tree_sitter::{Node, Parser};
 
@@ -5,7 +6,7 @@ use crate::graph_rules::LUA_CALL_RELATIONS;
 use crate::models::{
     FileRiskSignals, IncludeHeaviness, MacroSensitivity, NormalizedReference, ParseFragility,
     ParseMetrics, ParseResult, RawCallKind, RawCallSite, RawExtractionConfidence, RawQualifierKind,
-    ReferenceCategory, Symbol,
+    ReferenceCategory, Symbol, TypeEvidence, TypeInferenceConfidence,
 };
 use crate::parser::execute_graph_rules;
 
@@ -337,7 +338,76 @@ pub fn parse_lua_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: infer_lua_types_from_regex(source, file_path),
+        analysis_results: detect_lua_patterns(source, file_path),
     })
+}
+
+/// Infer types from Lua variable assignments and function returns.
+pub(crate) fn infer_lua_types_from_regex(
+    source: &str,
+    file_path: &str,
+) -> Vec<crate::models::TypeInferenceResult> {
+    let mut by_symbol = HashMap::<String, Vec<TypeEvidence>>::new();
+
+    // 1. Infer types from local variable assignments.
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("local ") { continue; }
+        let body = &trimmed[6..];
+        if let Some(eq_pos) = body.find('=') {
+            let var_name = body[..eq_pos].trim();
+            let expr = body[eq_pos + 1..].trim().trim_end_matches(';');
+            // Skip multiple assignments like `local a, b = ...`
+            if !var_name.contains(',') {
+                let inferred_type = infer_lua_literal_type(expr);
+                by_symbol.entry(format!("{}::variable@L{}", file_path, line_no + 1))
+                    .or_default()
+                    .push(TypeEvidence { expression_text: expr.to_string(), inferred_type_hint: Some(inferred_type), confidence: TypeInferenceConfidence::Partial });
+            }
+        }
+    }
+
+    // 2. Infer return types from function returns.
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("return ") { continue; }
+        let expr = &trimmed[7..].trim_end_matches(';');
+        if !expr.is_empty() && !expr.starts_with("end") {
+            let inferred_type = infer_lua_literal_type(expr);
+            by_symbol.entry(format!("{}::expression@L{}", file_path, line_no + 1))
+                .or_default()
+                .push(TypeEvidence { expression_text: expr.to_string(), inferred_type_hint: Some(inferred_type), confidence: TypeInferenceConfidence::Partial });
+        }
+    }
+
+    by_symbol.into_iter().map(|(sym_id, evidences)| {
+        let best = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).next();
+        crate::models::TypeInferenceResult { symbol_id: sym_id, inferred_type: best,
+            confidence: if evidences.len() > 1 { TypeInferenceConfidence::Partial } else { TypeInferenceConfidence::High }, evidence_sources: evidences }
+    }).collect()
+}
+
+fn infer_lua_literal_type(expr: &str) -> String {
+    let e = expr.trim();
+    if e.starts_with('"') || e.starts_with("'") { return "string".into(); }
+    if let Ok(_) = e.parse::<f64>() { return "number".into(); }
+    if e.contains("tonumber(") { return "number".into(); }
+    if e.starts_with('{') && !e.is_empty() { return "table".into(); }
+    if e == "nil" { return "nil".into(); }
+    if e == "true" || e == "false" { return "boolean".into(); }
+    "unknown".into()
+}
+
+fn detect_lua_patterns(source: &str, file_path: &str) -> Vec<crate::models::AnalysisResult> {
+    let mut results = Vec::new();
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.contains("loadstring(") || trimmed.contains("loadlib(") {
+            results.push(crate::models::AnalysisResult { rule_id: "lua-unsafe-load".into(), file_path: file_path.into(), line_start: line_no + 1, line_end: line_no + 1, match_text: Some(trimmed.to_string()), symbol_id: None });
+        }
+    }
+    results
 }
 
 fn strip_lua_comment(line: &str) -> &str {
@@ -547,7 +617,64 @@ pub fn parse_lua_file_treesitter(file_path: &str, source: &str) -> Result<ParseR
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
+        type_inferences: infer_lua_types_from_treesitter(&tree.root_node(), source.as_bytes()),
+        analysis_results: detect_lua_patterns(source, file_path),
     })
+}
+
+/// Infer types from Lua tree-sitter AST nodes.
+pub(crate) fn infer_lua_types_from_treesitter(
+    root: &Node<'_>,
+    source_bytes: &[u8],
+) -> Vec<crate::models::TypeInferenceResult> {
+    let mut by_symbol = HashMap::<String, Vec<TypeEvidence>>::new();
+
+    fn node_text(node: Node<'_>, src: &[u8]) -> String {
+        node.utf8_text(src).unwrap_or("").trim().to_string()
+    }
+
+    fn walk(node: Node<'_>, src: &[u8], results: &mut HashMap<String, Vec<TypeEvidence>>) {
+        match node.kind() {
+            "local_variable_declaration" => {
+                if let Some(value_node) = node.child_by_field_name("value") {
+                    let val_str = node_text(value_node, src);
+                    if !val_str.is_empty() && !val_str.contains(',') {
+                        // Get line number from position in source
+                        let pos_in_src = value_node.byte_range().start;
+                        let mut found_line = 0usize;
+                        for (i, ch) in src.iter().enumerate() {
+                            if i >= pos_in_src || *ch != b'\n' { continue; }
+                            found_line += 1;
+                        }
+                        // Simpler: count newlines before the node start position  
+                        let line_no = src[..pos_in_src].iter().filter(|&&b| b == b'\n').count() + 1;
+                        let inferred_type = infer_lua_literal_type(&val_str);
+                        results.entry(format!("{}::variable@L{}", "lua_file_placeholder", line_no))
+                            .or_default()
+                            .push(TypeEvidence { expression_text: val_str.clone(), inferred_type_hint: Some(inferred_type), confidence: TypeInferenceConfidence::Partial });
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        for child in node.children(&mut node.walk()) {
+            walk(child, src, results);
+        }
+    }
+
+    fn count_newlines(data: &[u8], pos: usize) -> usize {
+        data[..pos].iter().filter(|&&b| b == b'\n').count()
+    }
+
+    walk(root.clone(), source_bytes, &mut by_symbol);
+    
+    // Convert to TypeInferenceResult format
+    by_symbol.into_iter().map(|(sym_id, evidences)| {
+        let best = evidences.iter().filter_map(|e| e.inferred_type_hint.clone()).next();
+        crate::models::TypeInferenceResult { symbol_id: sym_id, inferred_type: best,
+            confidence: if evidences.len() > 1 { TypeInferenceConfidence::Partial } else { TypeInferenceConfidence::High }, evidence_sources: evidences }
+    }).collect()
 }
 
 fn lua_visit_node<'a>(
