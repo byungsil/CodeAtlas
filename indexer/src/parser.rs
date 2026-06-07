@@ -6554,19 +6554,20 @@ fn walk_functions_for_type_evidence(
     if node.kind() == "function_definition" {
         // DEBUG: log function definition details
         let fn_name = extract_function_name_from_node(&node, ctx);
-        eprintln!("[DEBUG] found function_definition name={} file={}", fn_name, ctx.file_path);
-        
-        if let Some(body) = node.child_by_field_name("body") {
-            eprintln!("  -> body kind={}, named_children={}", body.kind(), body.named_child_count());
-        } else {
-            eprintln!("  -> NO BODY FOUND!");
-        }
-
         let owner_id = find_function_owner_symbol(&node, ctx);
-        if let Some(ref oid) = owner_id {
-            eprintln!("  -> matched symbol id={}", oid);
-        } else {
-            eprintln!("  -> NO MATCH (ctx has {} symbols)", ctx.symbols.len());
+
+        if ctx.verbose {
+            eprintln!("[DEBUG] found function_definition name={} file={}", fn_name, ctx.file_path);
+            if let Some(body) = node.child_by_field_name("body") {
+                eprintln!("  -> body kind={}, named_children={}", body.kind(), body.named_child_count());
+            } else {
+                eprintln!("  -> NO BODY FOUND!");
+            }
+            if let Some(ref oid) = owner_id {
+                eprintln!("  -> matched symbol id={}", oid);
+            } else {
+                eprintln!("  -> NO MATCH (ctx has {} symbols)", ctx.symbols.len());
+            }
         }
         
         if let Some(owner_id) = owner_id {

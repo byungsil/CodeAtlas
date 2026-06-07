@@ -55,12 +55,12 @@ if ($Gui -or $LaunchGui) {
         }
     }
 
-    # Build TypeScript
+    # Build Setup Wizard
     Write-Host ""
     Write-Log "Building Setup Wizard..." "INFO"
     Push-Location $wizardDir
     try {
-        & npx tsc 2>&1 | Out-Null
+        & npm run build
         Write-Log "Setup wizard build complete" "INFO"
     } catch {
         Write-Log "Failed to build setup wizard: $_" "ERROR"
@@ -69,7 +69,7 @@ if ($Gui -or $LaunchGui) {
         Pop-Location
     }
 
-    if (-not (Test-Path (Join-Path $wizardDir "electron-main.js"))) {
+    if (-not (Test-Path (Join-Path $wizardDir "main/electron-main.js"))) {
         Write-Log "Build failed - electron-main.js not found" "ERROR"
         exit 1
     }
@@ -114,7 +114,7 @@ if ($answer -ne 'n' -and $answer -ne 'N') {
     Write-Log "Building Rust indexer..." "INFO"
     Push-Location (Join-Path $RepoRoot "indexer")
     try {
-        & cargo build --release 2>&1 | Out-Null
+        & cargo build --release
         Write-Log "Indexer built successfully" "INFO"
     } catch {
         Write-Log "Failed to build indexer: $_" "ERROR"
@@ -126,7 +126,7 @@ if ($answer -ne 'n' -and $answer -ne 'N') {
     Write-Log "Building TypeScript server..." "INFO"
     Push-Location (Join-Path $RepoRoot "server")
     try {
-        & npx tsc 2>&1 | Out-Null
+        & npx tsc
         Write-Log "Server built successfully" "INFO"
     } catch {
         Write-Log "Failed to build server: $_" "ERROR"

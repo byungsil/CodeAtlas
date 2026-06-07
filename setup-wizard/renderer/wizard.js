@@ -406,7 +406,7 @@ async function buildIndexer() {
     const indexerPath = await window.codeatlas.joinPaths(repoRoot, 'indexer');
     
     statusEl.className = 'status-message info';
-    statusEl.textContent = '🔨 Rust 인덱서를 빌드하고 있습니다... (최초 빌드는 5-10 분 소요)';
+    statusEl.textContent = '🔨 Rust 인덱서를 빌드하고 있습니다...';
 
     addLogEntry('INFO', 'BUILD', `Building in: ${indexerPath}`);
 
