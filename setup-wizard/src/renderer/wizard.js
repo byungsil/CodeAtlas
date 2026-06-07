@@ -389,6 +389,9 @@ async function buildIndexer() {
   btn.textContent = '빌드 중...';
   outputEl.textContent = '';
 
+  let timerInterval;
+  const startTime = Date.now();
+
   try {
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
@@ -406,9 +409,17 @@ async function buildIndexer() {
     const indexerPath = await window.codeatlas.joinPaths(repoRoot, 'indexer');
     
     statusEl.className = 'status-message info';
-    statusEl.textContent = '🔨 Rust 인덱서를 빌드하고 있습니다... (최초 빌드는 5-10 분 소요)';
-
+    const baseMessage = '🔨 Rust 인덱서를 빌드하고 있습니다...';
+    statusEl.textContent = baseMessage;
     addLogEntry('INFO', 'BUILD', `Building in: ${indexerPath}`);
+
+    timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+      statusEl.textContent = `${baseMessage} (${timeStr})`;
+    }, 1000);
 
     const result = await window.codeatlas.runCommand('cargo', ['build', '--release'], indexerPath);
 
@@ -429,6 +440,7 @@ async function buildIndexer() {
     statusEl.textContent = `❌ 오류: ${err.message}`;
     addLogEntry('ERROR', 'BUILD', `Build error: ${err.message}`);
   } finally {
+    if (timerInterval) clearInterval(timerInterval);
     btn.disabled = false;
     btn.textContent = '빌드 시작';
     isBuildingIndexer = false;
@@ -450,6 +462,9 @@ async function installServer() {
   btn.textContent = '설치 중...';
   outputEl.textContent = '';
 
+  let timerInterval;
+  const startTime = Date.now();
+
   try {
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
@@ -466,7 +481,16 @@ async function installServer() {
     const serverPath = await window.codeatlas.joinPaths(repoRoot, 'server');
 
     statusEl.className = 'status-message info';
-    statusEl.textContent = '📦 npm 의존성을 설치하고 있습니다...';
+    const baseMessage = '📦 npm 의존성을 설치하고 있습니다...';
+    statusEl.textContent = baseMessage;
+
+    timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+      statusEl.textContent = `${baseMessage} (${timeStr})`;
+    }, 1000);
 
     addLogEntry('INFO', 'SERVER', `Installing in: ${serverPath}`);
 
@@ -508,6 +532,7 @@ async function installServer() {
     statusEl.textContent = `❌ 오류: ${err.message}`;
     addLogEntry('ERROR', 'SERVER', `Server setup error: ${err.message}`);
   } finally {
+    if (timerInterval) clearInterval(timerInterval);
     btn.disabled = false;
     btn.textContent = '설치 시작';
     isInstallingServer = false;
@@ -631,6 +656,9 @@ async function runIndexing() {
   btn.textContent = '인덱싱 중...';
   outputEl.textContent = '';
 
+  let timerInterval;
+  const startTime = Date.now();
+
   try {
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
@@ -668,8 +696,17 @@ async function runIndexing() {
     }
 
     statusEl.className = 'status-message info';
-    statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`; 
+    const baseMessage = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`;
+    statusEl.textContent = baseMessage;
     addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}`);
+
+    timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+      statusEl.textContent = `${baseMessage} (${timeStr})`;
+    }, 1000);
 
     const result = await window.codeatlas.runCommand(
       binPath,
@@ -694,6 +731,7 @@ async function runIndexing() {
     statusEl.textContent = `❌ 오류: ${err.message}`;
     addLogEntry('ERROR', 'INDEXING', `Indexing error: ${err.message}`);
   } finally {
+    if (timerInterval) clearInterval(timerInterval);
     btn.disabled = false;
     btn.textContent = '인덱싱 재시작';
     isIndexing = false;
