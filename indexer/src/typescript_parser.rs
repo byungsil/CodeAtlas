@@ -451,11 +451,12 @@ pub fn parse_typescript_file(file_path: &str, source: &str) -> Result<ParseResul
         brace_depth -= close_brace_delta(trimmed);
     }
 
-   // Phase 1: TypeScript type inference from signature fields
-    let ts_type_inferences = infer_typescript_types(&symbols, file_path);
-
-    // Phase 3: TypeScript pattern detection
-    let ts_patterns = detect_typescript_patterns(source, file_path);
+    // MS20 type inference + pattern detection — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (ts_type_inferences, ts_patterns) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (infer_typescript_types(&symbols, file_path), detect_typescript_patterns(source, file_path))
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(ParseResult {
         symbols,
@@ -760,11 +761,12 @@ pub fn parse_typescript_file_treesitter(file_path: &str, source: &str) -> Result
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
-   // Phase 1: TypeScript type inference from signature fields (ts_visit_node path)
-    let ts_type_inferences = infer_typescript_types(&symbols, file_path);
-
-    // Phase 3: TypeScript pattern detection
-    let ts_patterns = detect_typescript_patterns(source, file_path);
+    // MS20 type inference + pattern detection (ts_visit_node path) — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (ts_type_inferences, ts_patterns) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (infer_typescript_types(&symbols, file_path), detect_typescript_patterns(source, file_path))
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(ParseResult {
         symbols,

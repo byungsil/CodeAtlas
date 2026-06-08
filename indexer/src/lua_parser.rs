@@ -320,6 +320,13 @@ pub fn parse_lua_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         }
     }
 
+    // MS20 type inference + pattern detection — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (type_inferences, analysis_results) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (infer_lua_types_from_regex(source, file_path), detect_lua_patterns(source, file_path))
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -338,8 +345,8 @@ pub fn parse_lua_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
-        type_inferences: infer_lua_types_from_regex(source, file_path),
-        analysis_results: detect_lua_patterns(source, file_path),
+        type_inferences,
+        analysis_results,
     })
 }
 
@@ -599,6 +606,16 @@ pub fn parse_lua_file_treesitter(file_path: &str, source: &str) -> Result<ParseR
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
+    // MS20 type inference + pattern detection — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (type_inferences, analysis_results) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (
+            infer_lua_types_from_treesitter(&tree.root_node(), source.as_bytes()),
+            detect_lua_patterns(source, file_path),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     Ok(ParseResult {
         symbols,
         file_risk_signals: FileRiskSignals {
@@ -617,8 +634,8 @@ pub fn parse_lua_file_treesitter(file_path: &str, source: &str) -> Result<ParseR
         conditional_blocks: Vec::new(),
         dependency_metrics: crate::models::DependencyMetrics::default(),
         conditional_symbols: Vec::new(),
-        type_inferences: infer_lua_types_from_treesitter(&tree.root_node(), source.as_bytes()),
-        analysis_results: detect_lua_patterns(source, file_path),
+        type_inferences,
+        analysis_results,
     })
 }
 

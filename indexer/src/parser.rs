@@ -196,6 +196,16 @@ fn local_propagation_enabled() -> bool {
     )
 }
 
+/// MS20 semantic enrichment (type inference + structural pattern analysis).
+/// Disabled by default — set CODEATLAS_ENABLE_MS20=1 to re-enable.
+/// Gated because MS20 parser-stage work significantly slows indexing.
+pub(crate) fn ms20_semantic_enrichment_enabled() -> bool {
+    matches!(
+        std::env::var("CODEATLAS_ENABLE_MS20").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 pub fn parse_cpp_file(file_path: &str, source: &str, verbose: bool) -> Result<ParseResult, String> {
     let mut parser = Parser::new();
     let lang = tree_sitter_cpp::LANGUAGE;
@@ -264,14 +274,19 @@ pub fn parse_cpp_file(file_path: &str, source: &str, verbose: bool) -> Result<Pa
         };
     let graph_relation_ms = graph_relation_start.elapsed().as_millis();
 
-    // Phase 6: Extract type inferences from function bodies
+    // Phase 6 (MS20): Extract type inferences from function bodies.
     // Must happen BEFORE raw_calls is moved out of ctx.
-    let root_node_for_type_inference = tree.root_node();
-    let type_inferences = extract_type_inferences(
-        root_node_for_type_inference,
-        &ctx,
-        &ctx.symbols,
-    );
+    // Gated by CODEATLAS_ENABLE_MS20 — disabled by default for indexing speed.
+    let type_inferences = if ms20_semantic_enrichment_enabled() {
+        let root_node_for_type_inference = tree.root_node();
+        extract_type_inferences(
+            root_node_for_type_inference,
+            &ctx,
+            &ctx.symbols,
+        )
+    } else {
+        Vec::new()
+    };
 
     let enum_value_references = extract_enum_value_references(tree.root_node(), &ctx, &ctx.symbols);
     let enum_value_relation_events = extract_enum_value_relation_events(tree.root_node(), &ctx);
@@ -358,12 +373,15 @@ pub fn parse_cpp_file(file_path: &str, source: &str, verbose: bool) -> Result<Pa
     let cond_symbols = extract_conditional_symbols(source, file_path, &cond_blocks);
     let conditional_symbol_ms = cond_sym_start.elapsed().as_millis();
 
-    // tree.root_node() was already consumed by extract_type_inferences above.
-
-    // Pattern-based structural analysis for this C++ file
-    let source_str = std::str::from_utf8(&ctx.source).unwrap_or("");
-    let symbols_for_patterns = ctx.symbols.clone();
-    let pattern_results = detect_analysis_patterns_for_cpp(source_str, &ctx.file_path, &symbols_for_patterns);
+    // Pattern-based structural analysis for this C++ file (MS20).
+    // Gated by CODEATLAS_ENABLE_MS20 — disabled by default for indexing speed.
+    let pattern_results = if ms20_semantic_enrichment_enabled() {
+        let source_str = std::str::from_utf8(&ctx.source).unwrap_or("");
+        let symbols_for_patterns = ctx.symbols.clone();
+        detect_analysis_patterns_for_cpp(source_str, &ctx.file_path, &symbols_for_patterns)
+    } else {
+        Vec::new()
+    };
 
     Ok(ParseResult {
         symbols: ctx.symbols,

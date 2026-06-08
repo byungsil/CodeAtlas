@@ -365,11 +365,12 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
         }
     }
 
-    // Python type inference from return statements and assignments
-    let python_type_inferences = infer_python_types(source, file_path);
-
-    // Python pattern detection
-    let py_patterns = detect_python_patterns(source, file_path);
+    // MS20 type inference + pattern detection — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (python_type_inferences, py_patterns) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (infer_python_types(source, file_path), detect_python_patterns(source, file_path))
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(ParseResult {
         symbols,
@@ -904,11 +905,12 @@ pub fn parse_python_file_treesitter(file_path: &str, source: &str) -> Result<Par
         .filter_map(|event| event.to_raw_call_site())
         .collect();
 
-    // Phase 1: Python type inference from return statements and assignments (py_visit_node path)
-    let python_type_inferences = infer_python_types(source, file_path);
-
-    // Phase 3: Python pattern detection
-    let py_patterns = detect_python_patterns(source, file_path);
+    // MS20 type inference + pattern detection (py_visit_node path) — gated by CODEATLAS_ENABLE_MS20 (off by default).
+    let (python_type_inferences, py_patterns) = if crate::parser::ms20_semantic_enrichment_enabled() {
+        (infer_python_types(source, file_path), detect_python_patterns(source, file_path))
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(ParseResult {
         symbols,
