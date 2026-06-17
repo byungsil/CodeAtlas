@@ -33,9 +33,16 @@ struct CompileCommandRecord {
 }
 
 pub fn load_build_metadata(workspace_root: &Path) -> Result<Option<BuildMetadataContext>, String> {
-    // Priority 1: Try .sln/.vcxproj (Visual Studio projects)
+    // Priority 1: Try .sln/.vcxproj (Visual Studio projects).
+    // Only use the vcxproj result when it actually found translation units;
+    // otherwise (e.g. the .sln is a sample/sub-project with no useful vcxproj
+    // entries) fall through to compile_commands.json.
     if let Some(vcx_ctx) = vcxproj::load_build_context(workspace_root) {
-        return Ok(Some(build_context_to_metadata(workspace_root, vcx_ctx)));
+        let meta = build_context_to_metadata(workspace_root, vcx_ctx);
+        if meta.translation_unit_count > 0 {
+            return Ok(Some(meta));
+        }
+        // vcxproj found a .sln but yielded 0 TUs — try compile_commands.json instead.
     }
 
     // Priority 2: Fall back to compile_commands.json
@@ -306,6 +313,46 @@ fn split_shell_words(command: &str) -> Vec<String> {
         args.push(current);
     }
     args
+}
+
+// ─── Build-config mtime helper ────────────────────────────────────────────────
+
+/// Return the last-modified time (seconds since Unix epoch) of the primary
+/// build configuration file in `workspace_root`.
+///
+/// Checks in order:
+/// 1. Any `.sln` file directly inside `workspace_root` (shallowest match first).
+/// 2. `compile_commands.json` at the workspace root or inside a `build/` sub-dir.
+///
+/// Returns `None` if no configuration file is found or the mtime cannot be read.
+pub fn find_build_config_mtime(workspace_root: &Path) -> Option<u64> {
+    // 1. Shallow scan for .sln files (max depth 1).
+    let sln_path = WalkDir::new(workspace_root)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_type().is_file()
+                && e.path()
+                    .extension()
+                    .map(|ext| ext.eq_ignore_ascii_case("sln"))
+                    .unwrap_or(false)
+        })
+        .map(|e| e.into_path())
+        .next();
+
+    let config_path = sln_path.or_else(|| find_compile_commands_path(workspace_root))?;
+
+    mtime_secs(&config_path)
+}
+
+/// Read the mtime of `path` as seconds since the Unix epoch.
+fn mtime_secs(path: &Path) -> Option<u64> {
+    path.metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
 }
 
 #[cfg(test)]

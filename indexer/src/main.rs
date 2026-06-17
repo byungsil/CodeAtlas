@@ -1,6 +1,7 @@
 mod build_metadata;
 mod constants;
 mod vcxproj;
+mod clang_parser;
 mod discovery;
 mod graph_rules;
 mod ignore;
@@ -167,6 +168,25 @@ fn main() {
     println!("Workspace name: {}", resolved_workspace_name);
 
     if watch_mode {
+        // Limit background indexing to 25 % of available CPU cores by default so
+        // that the foreground process (editor, build) is not starved.
+        // The user can override with CODEATLAS_BACKGROUND_THREADS=N.
+        if std::env::var(indexing::BACKGROUND_THREADS_ENV).is_err() {
+            let available = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let background_threads = (available / 4).max(1);
+            std::env::set_var(
+                indexing::BACKGROUND_THREADS_ENV,
+                background_threads.to_string(),
+            );
+            println!(
+                "Background indexing threads: {} (of {} available; override with {}=N)",
+                background_threads,
+                available,
+                indexing::BACKGROUND_THREADS_ENV,
+            );
+        }
         const MAX_WATCH_RESTARTS: u32 = 10;
         let mut restart_count = 0u32;
         loop {
@@ -1699,6 +1719,7 @@ mod tests {
             workspace_root: workspace_root.to_string_lossy().replace('\\', "/"),
             workspace_name: "Stored OpenCV".into(),
             extensions_csv: "cpp,h,hpp".into(),
+            build_config_mtime: None,
         }).unwrap();
 
         assert_eq!(

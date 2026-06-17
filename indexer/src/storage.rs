@@ -274,6 +274,10 @@ pub struct IndexMetadata {
     pub workspace_root: String,
     pub workspace_name: String,
     pub extensions_csv: String,
+    /// Last-modified timestamp (Unix seconds) of the primary build configuration
+    /// file (.sln or compile_commands.json) at the time of the last index run.
+    /// `None` if no config file was detected or the field was not stored yet.
+    pub build_config_mtime: Option<u64>,
 }
 
 impl IndexMetadata {
@@ -301,6 +305,17 @@ impl IndexMetadata {
                 "indexed extensions changed (db={}, current={})",
                 self.extensions_csv, expected.extensions_csv
             ));
+        }
+        // Both sides must have a mtime for this check to trigger a rebuild.
+        if let (Some(db_mtime), Some(current_mtime)) =
+            (self.build_config_mtime, expected.build_config_mtime)
+        {
+            if db_mtime != current_mtime {
+                return Some(format!(
+                    "build configuration file changed (indexed at {}, current {})",
+                    db_mtime, current_mtime
+                ));
+            }
         }
         None
     }
@@ -796,6 +811,9 @@ impl Database {
         ] {
             stmt.execute(params![key, value])?;
         }
+        if let Some(mtime) = metadata.build_config_mtime {
+            stmt.execute(params!["build_config_mtime", mtime.to_string()])?;
+        }
         Ok(())
     }
 
@@ -823,6 +841,10 @@ impl Database {
         let workspace_name = values.get("workspace_name").cloned();
         let extensions_csv = values.get("extensions_csv").cloned();
 
+        let build_config_mtime = values
+            .get("build_config_mtime")
+            .and_then(|v| v.parse::<u64>().ok());
+
         match (
             format_version,
             indexer_version,
@@ -842,6 +864,7 @@ impl Database {
                 workspace_root,
                 workspace_name,
                 extensions_csv,
+                build_config_mtime,
             })),
             _ => Ok(None),
         }
@@ -1742,12 +1765,17 @@ pub fn validate_existing_database(path: &Path) -> Result<(), String> {
 pub fn expected_index_metadata(workspace_root: &Path, workspace_name: &str) -> IndexMetadata {
     let mut extensions: Vec<String> = crate::constants::configured_extensions().into_iter().collect();
     extensions.sort();
+    // Detect the mtime of the primary build configuration file (.sln /
+    // compile_commands.json) so that configuration changes trigger a full
+    // rebuild rather than a silent stale-metadata state.
+    let build_config_mtime = crate::build_metadata::find_build_config_mtime(workspace_root);
     IndexMetadata {
         format_version: INDEX_FORMAT_VERSION,
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         workspace_root: normalized_workspace_root(workspace_root),
         workspace_name: workspace_name.trim().to_string(),
         extensions_csv: extensions.join(","),
+        build_config_mtime,
     }
 }
 
@@ -2740,6 +2768,7 @@ mod tests {
             workspace_root: "E:/Dev/project".into(),
             workspace_name: "project".into(),
             extensions_csv: "cpp,h,hpp".into(),
+            build_config_mtime: None,
         };
 
         db.write_index_metadata(&metadata).unwrap();
@@ -2759,6 +2788,7 @@ mod tests {
             workspace_root: "E:/Dev/project".into(),
             workspace_name: "project".into(),
             extensions_csv: "cpp,h,hpp".into(),
+            build_config_mtime: None,
         };
 
         let missing = existing_database_metadata_issue(&db_path, &expected).unwrap();

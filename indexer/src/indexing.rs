@@ -24,7 +24,7 @@ use crate::models::{
     ParseFragility, ParseMetrics, ParseResult, PropagationEvent, RawCallSite, RawRelationEvent,
     Symbol,
 };
-use crate::parser;
+// removed crate::parser; as it's not used directly anymore
 use std::collections::HashMap;
 
 const DEFAULT_INDEXER_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
@@ -36,6 +36,9 @@ const DEFAULT_CPP_SKIP_THRESHOLD_BYTES: usize = 2 * 1024 * 1024;
 const CPP_SKIP_CONTENT_SAMPLE_BYTES: usize = 64 * 1024;
 static INDEXER_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 const SKIP_CPP_LARGER_THAN_BYTES_ENV: &str = "CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES";
+/// When set to a positive integer, caps the indexing thread pool size.
+/// Used in watch/background mode to avoid starving the foreground process.
+pub const BACKGROUND_THREADS_ENV: &str = "CODEATLAS_BACKGROUND_THREADS";
 
 #[derive(Clone)]
 struct ActiveParseEntry {
@@ -45,7 +48,7 @@ struct ActiveParseEntry {
 
 pub trait LanguageAdapter: Send + Sync {
     fn language(&self) -> SourceLanguage;
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String>;
+    fn parse_file(&self, file_path: &str, source: &str, build_metadata: Option<&BuildMetadataContext>, workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String>;
 }
 
 struct CppLanguageAdapter;
@@ -59,8 +62,38 @@ impl LanguageAdapter for CppLanguageAdapter {
         SourceLanguage::Cpp
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
-        parser::parse_cpp_file(file_path, source)
+    fn parse_file(&self, file_path: &str, source: &str, build_metadata: Option<&BuildMetadataContext>, workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+        let mut args = Vec::new();
+        let has_file_entry = build_metadata
+            .and_then(|meta| meta.entry_for_file(file_path))
+            .is_some();
+
+        // Without compile_commands.json context, Clang must parse without
+        // proper include paths. For large projects this is both slow (Clang
+        // errors on every missing header) and lower quality than tree-sitter.
+        // Fall back to the tree-sitter C++ parser in that case.
+        if !has_file_entry {
+            return crate::parser::parse_cpp_file(file_path, source);
+        }
+
+        // Always add workspace_root as an include search path so that
+        // `#include "opencv2/..."` style relative-to-project-root includes
+        // resolve even without compile_commands.json.
+        if let Some(root) = workspace_root {
+            args.push(format!("-I{}", root.to_string_lossy()));
+        }
+
+        if let Some(meta) = build_metadata {
+            if let Some(entry) = meta.entry_for_file(file_path) {
+                for dir in &entry.include_dirs {
+                    args.push(format!("-I{}", dir));
+                }
+                for def in &entry.defines {
+                    args.push(format!("-D{}", def));
+                }
+            }
+        }
+        crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)
     }
 }
 
@@ -69,7 +102,7 @@ impl LanguageAdapter for LuaLanguageAdapter {
         SourceLanguage::Lua
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
         lua_parser::parse_lua_file_dual(file_path, source)
     }
 }
@@ -79,7 +112,7 @@ impl LanguageAdapter for PythonLanguageAdapter {
         SourceLanguage::Python
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
         python_parser::parse_python_file_dual(file_path, source)
     }
 }
@@ -89,7 +122,7 @@ impl LanguageAdapter for TypeScriptLanguageAdapter {
         SourceLanguage::TypeScript
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
         typescript_parser::parse_typescript_file_dual(file_path, source)
     }
 }
@@ -99,7 +132,7 @@ impl LanguageAdapter for RustLanguageAdapter {
         SourceLanguage::Rust
     }
 
-    fn parse_file(&self, file_path: &str, source: &str) -> Result<ParseResult, String> {
+    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
         rust_parser::parse_rust_file_dual(file_path, source)
     }
 }
@@ -136,12 +169,14 @@ impl LanguageRegistry {
         language: SourceLanguage,
         file_path: &str,
         source: &str,
+        build_metadata: Option<&BuildMetadataContext>,
+        workspace_root: Option<&std::path::Path>,
     ) -> Result<ParseResult, String> {
         let adapter = self
             .adapters
             .get(&language)
             .ok_or_else(|| format!("No language adapter registered for {}", language.display_name()))?;
-        adapter.parse_file(file_path, source)
+        adapter.parse_file(file_path, source, build_metadata, workspace_root)
     }
 }
 
@@ -157,12 +192,27 @@ pub fn default_language_registry() -> LanguageRegistry {
 
 fn indexing_thread_pool() -> &'static rayon::ThreadPool {
     INDEXER_THREAD_POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
+        let mut builder = rayon::ThreadPoolBuilder::new()
             .thread_name(|index| format!("codeatlas-index-{}", index))
-            .stack_size(configured_indexer_worker_stack_bytes())
+            .stack_size(configured_indexer_worker_stack_bytes());
+        // Apply background thread cap if set.
+        let thread_cap = configured_indexer_thread_count();
+        if thread_cap > 0 {
+            builder = builder.num_threads(thread_cap);
+        }
+        builder
             .build()
             .expect("Failed to build CodeAtlas indexing thread pool")
     })
+}
+
+/// Returns the thread count cap for the indexing pool.
+/// 0 means "use rayon's default" (all logical cores).
+fn configured_indexer_thread_count() -> usize {
+    match std::env::var(BACKGROUND_THREADS_ENV) {
+        Ok(val) => val.trim().parse::<usize>().unwrap_or(0),
+        Err(_) => 0,
+    }
 }
 
 fn configured_indexer_worker_stack_bytes() -> usize {
@@ -510,7 +560,7 @@ pub fn parse_discovered_files_with_progress(
                     }
                     return (rel_path, Ok(empty_parse_result()), hash, lossy);
                 }
-                let mut result = registry.parse_file(discovered.language, &rel_path, &content);
+                let mut result = registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root));
                 let elapsed = {
                     let mut active = active_files.lock().expect("active parse tracker poisoned");
                     active
@@ -802,7 +852,7 @@ pub fn parse_discovered_file_strict(
     if skip_reason_before_parse(discovered.language, &content).is_some() {
         return Ok((empty_parse_result(), hash, lossy, true));
     }
-    let result = match registry.parse_file(discovered.language, &rel_path, &content) {
+    let result = match registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root)) {
         Ok(result) => result,
         Err(e) => {
             let message = format!("Parse error for {}: {}", rel_path, e);
@@ -999,7 +1049,7 @@ mod tests {
             SourceLanguage::Lua
         }
 
-        fn parse_file(&self, file_path: &str, _source: &str) -> Result<ParseResult, String> {
+        fn parse_file(&self, file_path: &str, _source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
             Ok(ParseResult {
                 symbols: vec![Symbol {
                     id: "game.update".into(),

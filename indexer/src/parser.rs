@@ -475,7 +475,7 @@ fn enrich_graph_raw_calls_with_legacy_details(
 
 /// Extract #include dependencies from C/C++ source code.
 /// Scans line-by-line for #include directives and returns structured dependencies.
-fn extract_include_dependencies(source: &str, file_path: &str) -> Vec<crate::models::IncludeDependency> {
+pub fn extract_include_dependencies(source: &str, file_path: &str) -> Vec<crate::models::IncludeDependency> {
     let mut deps = Vec::new();
 
     for (line_idx, line) in source.lines().enumerate() {
