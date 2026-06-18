@@ -206,13 +206,27 @@ fn indexing_thread_pool() -> &'static rayon::ThreadPool {
     })
 }
 
-/// Returns the thread count cap for the indexing pool.
-/// 0 means "use rayon's default" (all logical cores).
+/// Returns the thread count for the indexing pool.
+///
+/// Priority:
+///   1. `CODEATLAS_BACKGROUND_THREADS` env var (explicit override; 0 = all cores)
+///   2. Default: half the available logical CPUs, clamped to [4, 16]
+///
+/// The default cap prevents each rayon worker from holding its own CXIndex
+/// (libclang parse context) from exhausting system memory on wide machines.
+/// Raise the cap with `CODEATLAS_BACKGROUND_THREADS=<n>` when you need more
+/// throughput and have sufficient RAM.
 fn configured_indexer_thread_count() -> usize {
-    match std::env::var(BACKGROUND_THREADS_ENV) {
-        Ok(val) => val.trim().parse::<usize>().unwrap_or(0),
-        Err(_) => 0,
+    if let Ok(val) = std::env::var(BACKGROUND_THREADS_ENV) {
+        // Explicit override: 0 means "all logical cores" (rayon default).
+        return val.trim().parse::<usize>().unwrap_or(0);
     }
+
+    // Default: half of available logical CPUs, clamped between 4 and 16.
+    let logical_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    (logical_cpus / 2).clamp(4, 16)
 }
 
 fn configured_indexer_worker_stack_bytes() -> usize {

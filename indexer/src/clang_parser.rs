@@ -1,5 +1,5 @@
 use std::time::Instant;
-use std::sync::Mutex;
+use std::sync::OnceLock;
 use crate::models::{
     ParseResult, ParseMetrics, Symbol, RawCallSite, RawCallKind, FileRiskSignals,
     ParseFragility, MacroSensitivity, IncludeHeaviness,
@@ -10,13 +10,31 @@ use crate::parser::{
 };
 use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 
-// ─── libclang serialization lock ─────────────────────────────────────────────
-// libclang allows only one `Clang` instance per process at a time.
-// All concurrent C++ parse calls are serialized through this mutex so that
-// each call can safely create and destroy its own `Clang` + `Index` pair.
-// This trades parallelism for correctness; the accuracy gain from real Clang
-// ASTs outweighs the parallelism loss for typical incremental workloads.
-static CLANG_LOCK: Mutex<()> = Mutex::new(());
+// ─── Global Clang instance ────────────────────────────────────────────────────
+// We keep exactly ONE `Clang` guard alive for the process lifetime, initialised
+// on first use via `OnceLock`.  After `Clang::new()` completes, the guard is
+// never mutated, so sharing `&'static Clang` across threads is safe.
+//
+// Each parse call creates its own `Index` (= `CXIndex` in libclang).
+// `clang_createIndex` and `clang_parseTranslationUnit` are thread-safe when
+// called on distinct TUs, so multiple rayon workers can parse in parallel
+// without any additional synchronisation.
+//
+// Safety: `Clang` wraps an `AtomicBool` that is set once on construction and
+// never touched again.  `Index::new(&Clang)` calls `clang_createIndex()` which
+// is documented as thread-safe in libclang.  No mutable aliasing occurs.
+struct GlobalClang(Clang);
+// SAFETY: see comment above.
+unsafe impl Sync for GlobalClang {}
+unsafe impl Send for GlobalClang {}
+
+static GLOBAL_CLANG: OnceLock<GlobalClang> = OnceLock::new();
+
+fn get_clang() -> &'static Clang {
+    &GLOBAL_CLANG
+        .get_or_init(|| GlobalClang(Clang::new().expect("Failed to initialise libclang")))
+        .0
+}
 
 // ─── System-path filter ───────────────────────────────────────────────────────
 
@@ -390,12 +408,10 @@ pub fn parse_cpp_file(
 ) -> Result<ParseResult, String> {
     let start = Instant::now();
 
-    // Acquire the process-wide lock so that only one `Clang` instance exists
-    // at a time (libclang constraint).
-    let _lock = CLANG_LOCK.lock().map_err(|_| "libclang lock poisoned".to_string())?;
-
-    let clang = Clang::new().map_err(|e| format!("Failed to load libclang: {}", e))?;
-    let index = Index::new(&clang, false, false);
+    // Each call borrows the global Clang guard and creates its own Index
+    // (CXIndex).  Multiple threads can do this concurrently — libclang is
+    // thread-safe at the CXIndex / TU level.
+    let index = Index::new(get_clang(), false, false);
 
     // When workspace_root is provided, use the absolute path for the Clang TU so
     // that `#include "..."` directives resolve relative to the file's real directory

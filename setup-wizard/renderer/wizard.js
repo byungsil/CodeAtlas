@@ -153,9 +153,8 @@ function updateFooter(stepIndex) {
     btnNext.onclick = nextStep;
     btnNext.disabled = false;
   } else if (stepIndex === 1) {
-    // Prereqs step - check if all tools are installed
-    const allInstalled = Object.values(setupData.tools).every(t => t.installed);
-    btnNext.textContent = allInstalled ? '다음 →' : '완료';
+    // Prereqs step
+    btnNext.textContent = '다음 →';
     btnNext.onclick = nextStep;
     btnNext.disabled = false;
   } else if (stepIndex === 2) {
@@ -684,27 +683,41 @@ function updateExtensionTags() {
 // ==================== Pre-Indexing: compile_commands.json Generation ====================
 
 /**
- * Before running the indexer, try to generate compile_commands.json so that
- * Clang AST parsing can be used for C++ files.  Strategy:
+ * Before running the indexer, generate a compile context so that Clang AST
+ * parsing can be used for C++ files.  Strategy:
  *   1. If compile_commands.json already exists in the workspace → skip.
- *   2. If CMakeLists.txt exists and cmake is available → cmake configure.
- *   3. If .sln files are present → use the indexer's generate-compile-commands
- *      subcommand (extracts include dirs from vcxproj).
+ *   2. If CMakeLists.txt exists and cmake is available → cmake configure
+ *      (generates compile_commands.json).
+ *   3. If .sln or .vcxproj files are present → use the indexer's
+ *      generate-cpp-context subcommand (fast, no MSBuild required,
+ *      generates cpp_context.json from vcxproj XML).
  */
 async function generateCompileCommandsIfNeeded(outputEl, statusEl, binPath, indexerPath) {
   const workspace = setupData.workspacePath;
+  const dataDir = document.getElementById('dataDirs').value.trim()
+    || await window.codeatlas.joinPaths(workspace, '.codeatlas');
 
-  // Check if compile_commands.json already exists
-  const candidates = [
-    await window.codeatlas.joinPaths(workspace, 'compile_commands.json'),
-    await window.codeatlas.joinPaths(workspace, 'build', 'compile_commands.json'),
-  ];
-  for (const candidate of candidates) {
-    if (await window.codeatlas.fileExists(candidate)) {
-      addLogEntry('INFO', 'PREP', 'compile_commands.json already exists: ' + candidate);
-      outputEl.textContent += '[PREP] compile_commands.json 존재함 - 생성 건너뜀.\n';
-      return;
+  // forceRegenContext checkbox: skip the "exists" guard if checked
+  const forceRegen = document.getElementById('forceRegenContext')?.checked ?? false;
+
+  // Check if a compile context already exists (compile_commands.json or cpp_context.json)
+  if (!forceRegen) {
+    const candidates = [
+      await window.codeatlas.joinPaths(workspace, 'compile_commands.json'),
+      await window.codeatlas.joinPaths(workspace, 'build', 'compile_commands.json'),
+      await window.codeatlas.joinPaths(dataDir, 'compile_commands.json'),
+      await window.codeatlas.joinPaths(dataDir, 'cpp_context.json'),
+    ];
+    for (const candidate of candidates) {
+      if (await window.codeatlas.fileExists(candidate)) {
+        addLogEntry('INFO', 'PREP', 'Compile context already exists: ' + candidate);
+        outputEl.textContent += '[PREP] 컴파일 컨텍스트 존재함 - 생성 건너뜀: ' + candidate + '\n';
+        return;
+      }
     }
+  } else {
+    addLogEntry('INFO', 'PREP', '컴파일 컨텍스트 재생성 요청 (forceRegen)');
+    outputEl.textContent += '[PREP] 컴파일 컨텍스트 재생성 중...\n';
   }
 
   // Strategy 1: CMake project
@@ -737,66 +750,111 @@ async function generateCompileCommandsIfNeeded(outputEl, statusEl, binPath, inde
     }
   }
 
-  // Strategy 2: .sln project → use indexer generate-compile-commands
+  // Strategy 2: .sln / .vcxproj project → generate cpp_context.json (fast, no MSBuild)
   // Check slnPath input first (explicit or auto-detected), then do recursive search
   const slnInput = document.getElementById('slnPath');
   const explicitSln = slnInput ? slnInput.value.trim() : '';
+  // .sln 이 있어야만 컴파일 컨텍스트를 생성한다.
+  // .sln 이 없으면 tree-sitter 만으로 인덱싱한다.
   const slnSearchResults = explicitSln ? [explicitSln] : await window.codeatlas.findFiles(workspace, '.sln', 5);
-  const hasSln = slnSearchResults.length > 0;
+  const hasVsProject = slnSearchResults.length > 0;
 
-  if (hasSln) {
-    addLogEntry('INFO', 'PREP', 'Visual Studio 솔루션 감지 - MSBuild로 compile_commands.json 생성');
-    outputEl.textContent += '[PREP] Visual Studio 프로젝트 감지됨. MSBuild로 compile_commands.json 생성 중...\n';
+  if (hasVsProject) {
+    const method = document.querySelector('input[name="cppContextMethod"]:checked')?.value ?? 'cpp_context';
+
     const prevStatus = statusEl.textContent;
     statusEl.className = 'status-message info';
-
-    // Start elapsed time ticker for compile commands generation
     const prepStartTime = Date.now();
-    const prepTimer = setInterval(() => {
-      const sec = Math.floor((Date.now() - prepStartTime) / 1000);
-      const mm = String(Math.floor(sec / 60)).padStart(2, '0');
-      const ss = String(sec % 60).padStart(2, '0');
-      statusEl.textContent = `⚙️ MSBuild로 compile_commands.json 생성 중... ${mm}:${ss}`;
-    }, 1000);
-    statusEl.textContent = '⚙️ MSBuild로 compile_commands.json 생성 중... 00:00';
 
-    // Store in .codeatlas folder so the indexer auto-detects it
-    const dataDir = document.getElementById('dataDirs').value.trim()
-      || await window.codeatlas.joinPaths(workspace, '.codeatlas');
-    const outputPath = await window.codeatlas.joinPaths(dataDir, 'compile_commands.json');
+    if (method === 'compile_commands') {
+      // --- MSBuild: generate-compile-commands → compile_commands.json ---
+      addLogEntry('INFO', 'PREP', 'Visual Studio 프로젝트 감지 - MSBuild로 compile_commands.json 생성');
+      outputEl.textContent += '[PREP] Visual Studio 프로젝트 감지됨. MSBuild로 compile_commands.json 생성 중...\n';
 
-    // Pass the best sln: explicit input > first auto-detected
-    const resolvedSln = explicitSln || slnSearchResults[0] || '';
-    const indexerArgs = ['generate-compile-commands', workspace, '--output', outputPath];
-    if (resolvedSln) {
-      indexerArgs.push('--sln', resolvedSln);
-    }
+      const prepTimer = setInterval(() => {
+        const sec = Math.floor((Date.now() - prepStartTime) / 1000);
+        const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+        const ss = String(sec % 60).padStart(2, '0');
+        statusEl.textContent = `⚙️ MSBuild로 compile_commands.json 생성 중... ${mm}:${ss}`;
+      }, 1000);
+      statusEl.textContent = '⚙️ MSBuild로 compile_commands.json 생성 중... 00:00';
 
-    let result;
-    try {
-      result = await window.codeatlas.runCommand(binPath, indexerArgs, indexerPath);
-    } finally {
-      clearInterval(prepTimer);
-    }
+      const outputPath = await window.codeatlas.joinPaths(dataDir, 'compile_commands.json');
+      const resolvedSln = explicitSln || slnSearchResults[0] || '';
+      const indexerArgs = ['generate-compile-commands', workspace, '--output', outputPath];
+      if (resolvedSln) {
+        indexerArgs.push('--sln', resolvedSln);
+      }
 
-    const prepSec = Math.floor((Date.now() - prepStartTime) / 1000);
-    const pmm = String(Math.floor(prepSec / 60)).padStart(2, '0');
-    const pss = String(prepSec % 60).padStart(2, '0');
+      let result;
+      try {
+        result = await window.codeatlas.runCommand(binPath, indexerArgs, indexerPath);
+      } finally {
+        clearInterval(prepTimer);
+      }
 
-    if (result.success) {
-      addLogEntry('INFO', 'PREP', `generate-compile-commands 성공 (${pmm}:${pss})`);
-      outputEl.textContent += `[PREP] compile_commands.json 생성 완료. (${pmm}:${pss})\n`;
+      const prepSec = Math.floor((Date.now() - prepStartTime) / 1000);
+      const pmm = String(Math.floor(prepSec / 60)).padStart(2, '0');
+      const pss = String(prepSec % 60).padStart(2, '0');
+
+      if (result.success) {
+        addLogEntry('INFO', 'PREP', `generate-compile-commands 성공 (${pmm}:${pss})`);
+        outputEl.textContent += `[PREP] compile_commands.json 생성 완료. (${pmm}:${pss})\n`;
+      } else {
+        addLogEntry('WARN', 'PREP', `MSBuild 실패 (${pmm}:${pss}) - vcxproj 직접 파싱으로 fallback`);
+        outputEl.textContent += `[PREP] MSBuild 실패 (${pmm}:${pss}). vcxproj 직접 파싱으로 전환 중...\n`;
+        // Fallback: generate-cpp-context
+        const ctxArgs = ['generate-cpp-context', workspace, '--data-dir', dataDir];
+        const ctxResult = await window.codeatlas.runCommand(binPath, ctxArgs, indexerPath);
+        if (ctxResult.success) {
+          addLogEntry('INFO', 'PREP', 'generate-cpp-context fallback 성공');
+          outputEl.textContent += '[PREP] cpp_context.json 생성 완료 (fallback).\n';
+        } else {
+          addLogEntry('WARN', 'PREP', 'compile context 생성 실패 - tree-sitter fallback');
+          outputEl.textContent += '[PREP] 컨텍스트 생성 실패 - tree-sitter로 계속 진행합니다.\n';
+        }
+      }
     } else {
-      addLogEntry('WARN', 'PREP', `generate-compile-commands 실패 - fallback 사용 (${pmm}:${pss})`);
-      outputEl.textContent += '[PREP] compile_commands.json 생성 실패 - fallback 사용.\n';
+      // --- vcxproj 직접 파싱: generate-cpp-context → cpp_context.json ---
+      addLogEntry('INFO', 'PREP', 'Visual Studio 프로젝트 감지 - vcxproj 직접 파싱으로 cpp_context.json 생성');
+      outputEl.textContent += '[PREP] Visual Studio 프로젝트 감지됨. vcxproj에서 컴파일 컨텍스트 생성 중...\n';
+
+      const prepTimer = setInterval(() => {
+        const sec = Math.floor((Date.now() - prepStartTime) / 1000);
+        const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+        const ss = String(sec % 60).padStart(2, '0');
+        statusEl.textContent = `⚙️ vcxproj 분석 중... ${mm}:${ss}`;
+      }, 1000);
+      statusEl.textContent = '⚙️ vcxproj 분석 중... 00:00';
+
+      const indexerArgs = ['generate-cpp-context', workspace, '--data-dir', dataDir];
+      let result;
+      try {
+        result = await window.codeatlas.runCommand(binPath, indexerArgs, indexerPath);
+      } finally {
+        clearInterval(prepTimer);
+      }
+
+      const prepSec = Math.floor((Date.now() - prepStartTime) / 1000);
+      const pmm = String(Math.floor(prepSec / 60)).padStart(2, '0');
+      const pss = String(prepSec % 60).padStart(2, '0');
+
+      if (result.success) {
+        addLogEntry('INFO', 'PREP', `generate-cpp-context 성공 (${pmm}:${pss})`);
+        outputEl.textContent += `[PREP] cpp_context.json 생성 완료. (${pmm}:${pss})\n`;
+      } else {
+        addLogEntry('WARN', 'PREP', `generate-cpp-context 실패 (${pmm}:${pss})`);
+        outputEl.textContent += '[PREP] cpp_context.json 생성 실패 - tree-sitter fallback으로 계속 진행합니다.\n';
+      }
     }
+
     statusEl.textContent = prevStatus;
     return;
   }
 
 
-  addLogEntry('INFO', 'PREP', 'CMake/SLN 없음 - compile_commands.json 생성 건너뜀');
-  outputEl.textContent += '[PREP] CMake/SLN 프로젝트 없음 - compile_commands.json 생성 건너뜀.\n';
+  addLogEntry('INFO', 'PREP', 'CMake/VS 프로젝트 없음 - compile context 생성 건너뜀');
+  outputEl.textContent += '[PREP] CMake/VS 프로젝트 없음 - compile context 생성 건너뜀.\n';
 }
 
 // ==================== Step 5: Run Indexing ====================
@@ -967,18 +1025,34 @@ async function selectWorkspace() {
       // Auto-detect .sln files recursively (up to depth 5)
       const slnGroup = document.getElementById('sln-path-group');
       const slnInput = document.getElementById('slnPath');
+      const ctxMethodGroup = document.getElementById('cpp-context-method-group');
+      const regenGroup = document.getElementById('regen-context-group');
       const slnFiles = await window.codeatlas.findFiles(selected, '.sln', 5);
       if (slnFiles.length === 1) {
         slnInput.value = slnFiles[0];
+        slnGroup.style.display = '';
         addLogEntry('INFO', 'WORKSPACE', `Auto-detected solution: ${slnFiles[0]}`);
+        ctxMethodGroup.style.display = '';
       } else if (slnFiles.length > 1) {
         slnInput.value = '';
         slnInput.placeholder = `감지된 .sln ${slnFiles.length}개 - 파일 선택 버튼으로 지정`;
-        addLogEntry('INFO', 'WORKSPACE', `Found ${slnFiles.length} .sln files, manual selection recommended`);
+        slnGroup.style.display = '';
+        addLogEntry('INFO', 'WORKSPACE', `Found ${slnFiles.length} .sln files, manual selection needed`);
+        // Do NOT show ctxMethodGroup until user explicitly picks a .sln
+        ctxMethodGroup.style.display = 'none';
       } else {
         slnInput.value = '';
         slnInput.placeholder = '자동 감지 (직접 지정하지 않으면 워크스페이스에서 검색)';
+        slnGroup.style.display = 'none';
+        ctxMethodGroup.style.display = 'none';
       }
+
+      // Check whether an existing compile context is stale vs the detected .sln
+      await checkContextStaleness(
+        await window.codeatlas.joinPaths(selected, '.codeatlas'),
+        slnFiles[0] ?? null,
+        regenGroup
+      );
       // Show directory listing preview
       statusEl.className = 'status-message info';
       statusEl.textContent = `📁 선택된 경로: ${selected}`;
@@ -1111,6 +1185,51 @@ async function applyInstructions(target) {
 
 window.applyInstructions = applyInstructions;
 
+async function applyMcpConfig(target) {
+  const btn = document.getElementById(`btn-apply-mcp-${target}`);
+  const statusEl = document.getElementById(`status-mcp-${target}`);
+  const errorEl = document.getElementById('mcp-error-msg');
+  if (btn) btn.disabled = true;
+  if (errorEl) errorEl.style.display = 'none';
+
+  try {
+    if (!setupData.workspacePath) {
+      addLogEntry('WARN', 'MCP', '워크스페이스 경로가 설정되지 않았습니다.');
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    let dataDir = document.getElementById('dataDirs')?.value?.trim() || '';
+    if (!dataDir) {
+      dataDir = await window.codeatlas.joinPaths(setupData.workspacePath, '.codeatlas');
+    }
+    const port = document.getElementById('serverPort')?.value?.trim() || '8090';
+
+    addLogEntry('INFO', 'MCP', `Applying MCP config (target=${target}) workspace=${setupData.workspacePath}`);
+    const result = await window.codeatlas.applyMcpConfig({
+      workspacePath: setupData.workspacePath,
+      dataDir,
+      port,
+    });
+
+    if (result.success) {
+      addLogEntry('INFO', 'MCP', `MCP config written to: ${result.dest}`);
+      if (btn) btn.textContent = '완료';
+      if (statusEl) statusEl.style.display = 'inline';
+    } else {
+      addLogEntry('ERROR', 'MCP', `Failed: ${result.error}`);
+      if (errorEl) { errorEl.textContent = result.error; errorEl.style.display = 'block'; }
+      if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
+    }
+  } catch (err) {
+    addLogEntry('ERROR', 'MCP', `Exception: ${err.message}`);
+    if (errorEl) { errorEl.textContent = err.message; errorEl.style.display = 'block'; }
+    if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
+  }
+}
+
+window.applyMcpConfig = applyMcpConfig;
+
 async function launchCodeAtlas() {
   try {
     addLogEntry('INFO', 'LAUNCH', 'Starting CodeAtlas...');
@@ -1190,6 +1309,54 @@ async function openReadme() {
   }
 }
 
+// ==================== Context Staleness Check ====================
+
+/**
+ * Compare mtime of existing compile context files against the .sln reference file.
+ * If any context file is older than the .sln, show the regenGroup checkbox with a
+ * human-readable explanation.
+ *
+ * @param {string} dataDir  - path to the .codeatlas data directory
+ * @param {string|null} slnPath - path to the reference .sln (or null if unknown)
+ * @param {HTMLElement} regenGroup - the regen-context-group div element
+ */
+async function checkContextStaleness(dataDir, slnPath, regenGroup) {
+  if (!regenGroup) return;
+
+  const ctxNames = ['compile_commands.json', 'cpp_context.json'];
+  const checkbox = document.getElementById('forceRegenContext');
+  const reasonEl = document.getElementById('regenContextReason');
+
+  // Reset state
+  regenGroup.style.display = 'none';
+  if (checkbox) checkbox.checked = false;
+
+  // We need a reference mtime to compare against
+  const refMtime = slnPath ? await window.codeatlas.getFileMtime(slnPath) : 0;
+
+  for (const name of ctxNames) {
+    const ctxPath = await window.codeatlas.joinPaths(dataDir, name);
+    const ctxMtime = await window.codeatlas.getFileMtime(ctxPath);
+    if (ctxMtime === 0) continue; // file does not exist
+
+    if (refMtime > ctxMtime) {
+      // Context file is older than the .sln → stale
+      const ctxDate = new Date(ctxMtime).toLocaleString();
+      const slnDate = new Date(refMtime).toLocaleString();
+      if (reasonEl) {
+        reasonEl.textContent =
+          `${name} (${ctxDate})이(가) 솔루션 파일 (${slnDate})보다 오래됨 — 재생성을 권장합니다.`;
+      }
+      regenGroup.style.display = '';
+      addLogEntry('WARN', 'WORKSPACE', `Context stale: ${name} (${ctxDate}) < sln (${slnDate})`);
+      return; // show once is enough
+    } else {
+      // Context is fresh; keep hidden
+      addLogEntry('INFO', 'WORKSPACE', `Context up to date: ${name}`);
+    }
+  }
+}
+
 // ==================== Utility Functions ====================
 
 function clearTerminal() {
@@ -1227,6 +1394,7 @@ async function selectSlnFile() {
     if (selected) {
       document.getElementById('slnPath').value = selected;
       document.getElementById('sln-path-group').style.display = '';
+      document.getElementById('cpp-context-method-group').style.display = '';
       addLogEntry('INFO', 'WORKSPACE', `SLN selected: ${selected}`);
     }
   } catch (err) {

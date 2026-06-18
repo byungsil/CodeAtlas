@@ -200,6 +200,43 @@
             </div>
           </div>
 
+          <div class="form-group" id="cpp-context-method-group" style="display:none;">
+            <label>🔧 C++ 컴파일 컨텍스트 생성 방식</label>
+            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 10px;">
+              <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+                <input type="radio" name="cppContextMethod" value="cpp_context" checked style="margin-top:3px; flex-shrink:0;">
+                <div>
+                  <div style="font-weight:600; font-size:13px;">vcxproj 직접 파싱 (cpp_context.json)</div>
+                  <div style="font-size:12px; color:#888; margin-top:2px;">
+                    .vcxproj에 <code style="color:#aaa">&lt;ClCompile&gt;</code>로 등록된 소스 파일 전체를 인덱싱 대상으로 삼습니다.<br>
+                    빌드 수행 없이 수 초 내 완료되며, MSBuild가 없는 환경에서도 동작합니다.
+                  </div>
+                </div>
+              </label>
+              <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+                <input type="radio" name="cppContextMethod" value="compile_commands" style="margin-top:3px; flex-shrink:0;">
+                <div>
+                  <div style="font-weight:600; font-size:13px;">MSBuild (compile_commands.json)</div>
+                  <div style="font-size:12px; color:#888; margin-top:2px;">
+                    MSBuild가 실제로 컴파일한 파일만 인덱싱 대상으로 삼습니다.<br>
+                    Unity build(.bbsource)에 포함된 개별 소스도 자동으로 확장해 커버합니다.<br>
+                    MSBuild 설치가 필요하며 생성에 수 분 소요됩니다. 실패 시 vcxproj 파싱 방식으로 자동 전환됩니다.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group" id="regen-context-group" style="display:none;">
+            <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+              <input type="checkbox" id="forceRegenContext" style="width:16px; height:16px; margin-top:2px; flex-shrink:0;">
+              <div>
+                <div style="font-weight:600; font-size:13px;">⚠️ 컴파일 컨텍스트 재생성</div>
+                <div style="font-size:12px; color:#e8a000; margin-top:2px;" id="regenContextReason">기존 파일이 프로젝트보다 오래되었습니다.</div>
+              </div>
+            </label>
+          </div>
+
           <div class="status-message info" id="workspaceStatus">
             코드베이스 경로를 선택하면 해당 디렉토리 내용을 미리볼 수 있습니다.
           </div>
@@ -299,10 +336,23 @@
           </div>
         </div>
 
+        <div class="instructions-section" style="margin:1.5rem 0; padding:1.2rem; background:var(--bg-secondary,#1e2130); border-radius:8px; border:1px solid var(--border-color,#2d3148)">
+          <h3 style="margin:0 0 0.5rem">🔌 MCP 서버 설정 <span style="font-size:0.8em;color:#888;font-weight:400">(선택사항)</span></h3>
+          <p style="margin:0 0 1rem;color:#aaa;font-size:0.9em">VS Code에서 CodeAtlas MCP 서버를 사용하려면 설정 파일을 적용하세요.</p>
+          <div style="display:flex;flex-direction:column;gap:0.6rem" id="mcpTargets">
+            <div class="instructions-option" style="display:flex;align-items:center;gap:0.8rem;padding:0.7rem 1rem;background:var(--bg-card,#252840);border-radius:6px;border:1px solid var(--border-color,#2d3148)">
+              <div style="flex:1">
+                <div style="font-weight:500">워크스페이스 MCP 설정</div>
+                <div style="font-size:0.8em;color:#888">&lt;워크스페이스&gt;/.vscode/mcp.json</div>
+              </div>
+              <button class="btn-secondary" id="btn-apply-mcp-workspace" onclick="applyMcpConfig('workspace')">적용</button>
+              <span class="instr-status" id="status-mcp-workspace" style="display:none;color:#4ade80">✅</span>
+            </div>
+          </div>
+          <div id="mcp-error-msg" style="display:none;margin-top:0.6rem;font-size:0.85em;color:#f87171;background:#2d1010;border:1px solid #7a2020;border-radius:4px;padding:0.4rem 0.6rem;white-space:pre-wrap;word-break:break-all"></div>
+        </div>
+
         <div class="action-buttons complete-actions">
-          <button class="btn-primary btn-large" onclick="launchCodeAtlas()">
-            🚀 CodeAtlas 시작하기
-          </button>
           <button class="btn-secondary btn-large" onclick="openReadme()">
             📖 문서 보기
           </button>

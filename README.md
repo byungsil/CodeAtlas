@@ -42,8 +42,9 @@ The wizard guides you through:
 1. **Environment check** — detects Node.js, npm, Rust, and LLVM; installs missing tools via winget; offers to add LLVM to the user PATH if installed but not on PATH
 2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback
 3. **Server setup** — installs npm dependencies and builds TypeScript
-4. **Workspace selection** — browse to your codebase and configure settings
-5. **Launch** — start CodeAtlas with one click
+4. **Workspace configuration** — browse to your codebase; auto-detects `.sln` files; choose compile context method (`cpp_context` from `.vcxproj` scan, or `compile_commands` via MSBuild)
+5. **Indexing configuration** — select languages and file extensions to index
+6. **Complete** — apply MCP server config to your VS Code workspace (`.vscode/mcp.json`) with one click
 
 ## Quick Start
 
@@ -72,9 +73,27 @@ Windows note:
 - If Build Tools are installed but `cl.exe` is not visible in the current shell, the script warns and continues.
 - If indexer build fails in that case, rerun from `Developer PowerShell for VS`.
 
-### 2. (Optional) Generate `compile_commands.json` for MSVC Projects
+### 2. (Optional) Compile Context for MSVC Projects
 
-For C++ projects built with Visual Studio, generate a `compile_commands.json` to enable libclang-powered precision analysis:
+For C++ projects built with Visual Studio, providing compile context enables libclang-powered precision analysis. Two methods are available:
+
+#### Method A — `cpp_context` (fast, no MSBuild required)
+
+Scans `.vcxproj` files in the solution to collect compile flags and file lists. Completes in seconds.
+
+```powershell
+# Generates <workspace-root>/.codeatlas/cpp_context.json
+.\indexer\target\release\codeatlas-indexer.exe generate-cpp-context <workspace-root> `
+    --sln <path-to>.sln
+```
+
+- No MSBuild needed — reads `.vcxproj` XML directly
+- Only files registered as `<ClCompile>` entries are included
+- Respects `.codeatlasignore` when filtering translation units
+
+#### Method B — `compile_commands` (precise, MSBuild-based)
+
+Invokes MSBuild to capture the actual flags used for each translation unit. More accurate for Unity builds.
 
 ```powershell
 # Generates <workspace-root>/.codeatlas/compile_commands.json
@@ -86,9 +105,11 @@ For C++ projects built with Visual Studio, generate a `compile_commands.json` to
 ```
 
 - Requires MSBuild in `PATH` (or auto-detected via `vswhere`)
-- The output path defaults to `<workspace-root>/.codeatlas/compile_commands.json`
-- Config/platform are auto-detected from the `.sln` if not specified; common values like `Release|x64` or `Development|x64` are preferred automatically
-- Once present, the indexer uses libclang for all files that have an entry in the file, and Tree-sitter for the rest
+- Config/platform are auto-detected from the `.sln` if not specified
+- Unity build (`.bbsource`) entries are automatically expanded to individual source files
+- Respects `.codeatlasignore` when filtering translation units
+
+Once either file is present, the indexer uses libclang for matching files and Tree-sitter for the rest.
 
 ### 3. Index a Workspace
 
@@ -134,7 +155,34 @@ Run one dashboard instance per workspace/data dir. The dashboard shows the store
 
 ## MCP Setup
 
-Example MCP registration:
+The setup wizard can write the MCP config automatically to `.vscode/mcp.json`. To configure manually:
+
+**VS Code** (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "codeatlas": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "<path-to>/server/node_modules/ts-node/dist/bin.js",
+        "<path-to>/server/src/mcp.ts",
+        "<workspace-root>/.codeatlas"
+      ],
+      "env": {
+        "CODEATLAS_WORKSPACE": "<workspace-root>",
+        "CODEATLAS_PORT": "8090",
+        "CODEATLAS_WATCHER": "true",
+        "CODEATLAS_INDEXER_PATH": "<path-to>/indexer/target/release/codeatlas-indexer",
+        "CODEATLAS_DASHBOARD_AUTOOPEN": "false"
+      }
+    }
+  }
+}
+```
+
+**Other MCP clients** (Claude, Cursor, etc.):
 
 ```json
 {
@@ -195,7 +243,7 @@ The file uses `applyTo: "**"` front matter so it is active for all files in the 
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory name |
 | `CODEATLAS_REFERENCE_QUERY_CAP` | `2000` | Max rows per reference query (safety cap) |
 | `CODEATLAS_DASHBOARD_AUTOOPEN` | `false` | Auto-open dashboard in browser when MCP server starts |
-| `CODEATLAS_BACKGROUND_THREADS` | all cores | Worker thread count for indexing |
+| `CODEATLAS_BACKGROUND_THREADS` | `(cpus / 2).clamp(4, 16)` | Worker thread count for indexing; `0` = use all logical CPUs |
 | `CODEATLAS_INDEXER_STACK_BYTES` | large default | Per-worker stack size (override for very deep ASTs) |
 | `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES` | `2097152` | Skip oversized C++ files; set to `0` to disable |
 
@@ -235,6 +283,7 @@ libclang advantages over Tree-sitter for C++:
 ## Workspace Hygiene
 
 - Create a `.codeatlasignore` file in the workspace root to exclude tests, docs, generated code, build output, or vendored trees.
+  - Patterns apply to **both** file scanning and build metadata (translation unit lists from `cpp_context.json` / `compile_commands.json`), so ignored paths are excluded end-to-end.
 - For best Windows stability, exclude `<workspace-root>/.codeatlas/` from aggressive background indexing or antivirus scanning if possible.
 - If an existing DB was built for a different workspace, extension set, or DB format, CodeAtlas will force a full rebuild automatically.
 

@@ -200,8 +200,8 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
                 if !value.is_empty() {
                     let dirs: Vec<String> = value
                         .split(';')
-                        .filter(|d| !d.is_empty())
-                        .map(|d| d.to_string())
+                        .map(|d| d.trim().trim_matches('"').to_string())
+                        .filter(|d| !d.is_empty() && !d.starts_with('%'))
                         .collect();
                     include_dirs.entry(config).or_default().extend(dirs);
                 }
@@ -217,8 +217,8 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
                 if !value.is_empty() {
                     let defs: Vec<String> = value
                         .split(';')
-                        .filter(|d| !d.is_empty())
-                        .map(|d| d.to_string())
+                        .map(|d| d.trim().trim_matches('"').to_string())
+                        .filter(|d| !d.is_empty() && !d.starts_with('%'))
                         .collect();
                     defines.entry(config).or_default().extend(defs);
                 }
@@ -498,6 +498,12 @@ pub fn load_build_context(workspace_root: &Path) -> Option<BuildContext> {
 
     // Fallback: try compile_commands.json (existing logic via build_metadata.rs)
     None
+}
+
+/// Parse a single vcxproj file. Public API so build_metadata.rs can supplement
+/// compile_commands.json coverage with entries from individual vcxproj projects.
+pub fn parse_vcxproj_file(path: &Path) -> Option<VcxProject> {
+    parse_vcxproj(path)
 }
 
 #[cfg(test)]

@@ -67,6 +67,7 @@ CODEATLAS_PORT=8090 npx ts-node src/index.ts <workspace-root>/.codeatlas
 | `CODEATLAS_REFERENCE_QUERY_CAP` | `2000` | Max rows per reference query |
 | `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS` | `60000000` | Per-file C++ parse timeout (microseconds) |
 | `CODEATLAS_INDEX_EXTENSIONS` | built-in | Extension allowlist |
+| `CODEATLAS_BACKGROUND_THREADS` | `cpus/2` clamped [4,16] | Indexing thread pool size (0 = all logical CPUs) |
 
 ## Indexing Gotchas
 

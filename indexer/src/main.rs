@@ -1,5 +1,6 @@
 mod build_metadata;
 mod compile_commands;
+mod cpp_context;
 mod constants;
 mod vcxproj;
 mod clang_parser;
@@ -104,6 +105,12 @@ fn main() {
     // Subcommand: generate compile_commands.json from vcxproj or cmake
     if args.get(1).map(|a| a.as_str()) == Some("generate-compile-commands") {
         cmd_generate_compile_commands(&args[2..]);
+        return;
+    }
+
+    // Subcommand: generate cpp_context.json from vcxproj files (fast, no MSBuild)
+    if args.get(1).map(|a| a.as_str()) == Some("generate-cpp-context") {
+        cmd_generate_cpp_context(&args[2..]);
         return;
     }
 
@@ -799,6 +806,71 @@ fn cmd_generate_compile_commands(args: &[String]) {
     );
 }
 
+// ==================== generate-cpp-context subcommand ====================
+
+/// Generate (or refresh) `cpp_context.json` in the `.codeatlas` data directory
+/// by scanning the workspace for `.vcxproj` files.  Unlike
+/// `generate-compile-commands`, this requires no MSBuild installation and
+/// completes in seconds even for large projects.
+fn cmd_generate_cpp_context(args: &[String]) {
+    let workspace_str = match args.first() {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "Usage: codeatlas-indexer generate-cpp-context <workspace> [--data-dir <path>]"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let workspace_root = PathBuf::from(workspace_str);
+    if !workspace_root.exists() {
+        eprintln!("Directory not found: {}", workspace_root.display());
+        std::process::exit(1);
+    }
+
+    // --data-dir: where to write cpp_context.json (default: <workspace>/.codeatlas)
+    let data_dir = args
+        .windows(2)
+        .find(|w| w[0] == "--data-dir")
+        .map(|w| PathBuf::from(&w[1]))
+        .unwrap_or_else(|| workspace_root.join(constants::DATA_DIR_NAME));
+
+    if let Err(e) = fs::create_dir_all(&data_dir) {
+        eprintln!("Failed to create data dir {}: {}", data_dir.display(), e);
+        std::process::exit(1);
+    }
+
+    eprintln!("[generate-cpp-context] workspace : {}", workspace_root.display());
+    eprintln!("[generate-cpp-context] data dir  : {}", data_dir.display());
+
+    // Force regeneration by removing any existing cached file so that
+    // load_or_generate always rebuilds.
+    let ctx_path = data_dir.join(cpp_context::CPP_CONTEXT_FILENAME);
+    if ctx_path.exists() {
+        let _ = fs::remove_file(&ctx_path);
+    }
+
+    match cpp_context::load_or_generate(&workspace_root, &data_dir) {
+        Some(ctx) => {
+            let total: usize = ctx.configurations.iter().map(|c| c.source_files.len()).sum();
+            println!(
+                "Generated {} configurations, {} source file entries -> {}",
+                ctx.configurations.len(),
+                total,
+                ctx_path.display(),
+            );
+        }
+        None => {
+            eprintln!(
+                "[generate-cpp-context] No vcxproj files with source files found; \
+                 cpp_context.json was not generated."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 fn print_help() {
     println!("CodeAtlas Indexer");
     println!();
@@ -815,7 +887,9 @@ fn print_help() {
     println!("  incremental  Re-index only changed files and remove deleted files");
     println!("  --full       Rebuild the entire index from scratch");
     println!("  watch        Monitor the workspace and re-index on file changes");
-    println!("  generate-compile-commands  Generate compile_commands.json from .sln/.vcxproj");
+    println!("  generate-compile-commands  Generate compile_commands.json from .sln/.vcxproj (requires MSBuild)");
+    println!("  generate-cpp-context       Generate cpp_context.json from .vcxproj files (fast, no MSBuild)");
+    println!("    Options: --data-dir <path>  Output directory (default: <workspace>/.codeatlas)");
     println!();
     println!("Options:");
     println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");

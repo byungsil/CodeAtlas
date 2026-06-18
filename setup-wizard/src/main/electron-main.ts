@@ -476,6 +476,65 @@ ipcMain.handle('copy-instructions', async (_event, dest: string, mode: string = 
   }
 });
 
+ipcMain.handle('apply-mcp-config', async (_event, opts: {
+  workspacePath: string;
+  dataDir: string;
+  port: string;
+}) => {
+  const fs = require('fs') as typeof import('fs');
+  const pathMod = require('path') as typeof import('path');
+  try {
+    const repoRoot = getRepoRoot();
+    const fwd = (p: string) => p.replace(/\\/g, '/');
+
+    // Locate ts-node binary inside the server's node_modules
+    const tsNodePath = pathMod.join(repoRoot, 'server', 'node_modules', 'ts-node', 'dist', 'bin.js');
+    const mcpTsPath  = pathMod.join(repoRoot, 'server', 'src', 'mcp.ts');
+    const indexerExe = pathMod.join(
+      repoRoot, 'indexer', 'target', 'release',
+      process.platform === 'win32' ? 'codeatlas-indexer.exe' : 'codeatlas-indexer'
+    );
+
+    const mcpEntry: Record<string, unknown> = {
+      type: 'stdio',
+      command: 'node',
+      args: [
+        fwd(tsNodePath),
+        fwd(mcpTsPath),
+        fwd(opts.dataDir),
+      ],
+      env: {
+        CODEATLAS_WORKSPACE:          fwd(opts.workspacePath),
+        CODEATLAS_PORT:               opts.port,
+        CODEATLAS_DASHBOARD_AUTOOPEN: 'false',
+        CODEATLAS_WATCHER:            'true',
+        CODEATLAS_INDEXER_PATH:       fwd(indexerExe),
+        CODEATLAS_INDEXER_STACK_BYTES:'134217728',
+      },
+    };
+
+    // Merge into <workspace>/.vscode/mcp.json
+    const vscodeDir  = pathMod.join(opts.workspacePath, '.vscode');
+    const mcpJsonPath = pathMod.join(vscodeDir, 'mcp.json');
+    if (!fs.existsSync(vscodeDir)) fs.mkdirSync(vscodeDir, { recursive: true });
+
+    let mcpConfig: { servers?: Record<string, unknown> } = { servers: {} };
+    if (fs.existsSync(mcpJsonPath)) {
+      try { mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8')); } catch {}
+    }
+    if (!mcpConfig.servers) mcpConfig.servers = {};
+    mcpConfig.servers['codeatlas'] = mcpEntry;
+
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2), 'utf8');
+    log(LogLevel.INFO, 'MCP', `MCP config written to: ${mcpJsonPath}`);
+    return { success: true, dest: mcpJsonPath };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(LogLevel.ERROR, 'MCP', `Failed to write MCP config: ${msg}`);
+    return { success: false, error: msg };
+  }
+});
+
 ipcMain.handle('check-command', async (event, name: string) => {
   const exists = checkCommand(name);
   let version = '';
@@ -603,6 +662,15 @@ ipcMain.handle('file-exists', async (event, filePath: string) => {
   const exists = fs.existsSync(filePath);
   emitLogToRenderer(event, { level: 'INFO', step: 'FS', message: `File ${exists ? 'found' : 'not found'}: ${filePath}` });
   return exists;
+});
+
+ipcMain.handle('file-mtime', async (_event, filePath: string) => {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.mtimeMs;
+  } catch {
+    return 0;
+  }
 });
 
 ipcMain.handle('spawn-process', async (event, command: string, args: string[], options?: any) => {

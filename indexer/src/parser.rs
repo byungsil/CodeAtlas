@@ -3227,13 +3227,23 @@ fn enter_namespace<'a>(node: Node<'a>, ctx: &mut Ctx, stack: &mut Vec<WalkItem<'
     let name_node = node.child_by_field_name("name");
     let body_node = node.child_by_field_name("body");
 
-    if let (Some(name), Some(body)) = (name_node, body_node) {
-        let ns_name = ctx.node_text(name);
-        let ns_id = ctx.qualify(&ns_name);
-        ctx.namespace_ids.insert(ns_id);
-        ctx.ns_stack.push(ns_name);
-        stack.push(WalkItem::ExitNamespace);
-        push_children(body, stack);
+    match (name_node, body_node) {
+        (Some(name), Some(body)) => {
+            // Named namespace: push name onto scope stack and traverse body
+            let ns_name = ctx.node_text(name);
+            let ns_id = ctx.qualify(&ns_name);
+            ctx.namespace_ids.insert(ns_id);
+            ctx.ns_stack.push(ns_name);
+            stack.push(WalkItem::ExitNamespace);
+            push_children(body, stack);
+        }
+        (None, Some(body)) => {
+            // Anonymous namespace (`namespace { ... }`): traverse body without
+            // pushing a scope frame so that contained symbols are attributed to
+            // the enclosing scope rather than silently dropped.
+            push_children(body, stack);
+        }
+        _ => {}
     }
 }
 

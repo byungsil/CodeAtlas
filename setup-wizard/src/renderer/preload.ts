@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('codeatlas', {
   getRepoRoot: () => ipcRenderer.invoke('get-repo-root'),
   joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', [...parts]),
   fileExists: (filePath: string) => ipcRenderer.invoke('file-exists', filePath),
+  getFileMtime: (filePath: string) => ipcRenderer.invoke('file-mtime', filePath),
+  applyMcpConfig: (opts: { workspacePath: string; dataDir: string; port: string }) =>
+    ipcRenderer.invoke('apply-mcp-config', opts),
 
   // Log operations
   getRecentLogs: (count?: number) => ipcRenderer.invoke('get-recent-logs', count || 100),
