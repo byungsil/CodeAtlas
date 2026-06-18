@@ -34,3 +34,7 @@ samples/.codeatlas/mcp-runtime-stats.json
 # Local tooling/cache
 .npm-cache/
 .tools/
+
+# Temporary local scripts and debug artifacts
+_parse_check.ps1
+indexer/stats
