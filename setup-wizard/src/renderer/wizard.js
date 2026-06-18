@@ -132,7 +132,7 @@ function updateFooter(stepIndex) {
   btnBack.classList.toggle('hidden', stepIndex === 0);
 
   // Skip button: visible for steps 1-5 (not welcome, not complete)
-  const skippableSteps = [1, 2, 3, 4, 5];
+  const skippableSteps = [1, 2, 3, 5];
   if (btnSkip) {
     btnSkip.classList.toggle('hidden', !skippableSteps.includes(stepIndex));
     // Label reflects current state
@@ -193,7 +193,7 @@ function updateFooter(stepIndex) {
 // ==================== Skip Step ====================
 
 function skipStep() {
-  const skippable = [1, 2, 3, 4, 5];
+  const skippable = [1, 2, 3, 5];
   if (!skippable.includes(currentStep)) return;
 
   const stepLabels = { 1: '환경 검사', 2: '인덱서 빌드', 3: '서버 설정', 4: '작업 공간', 5: '인덱싱 설정' };
@@ -474,6 +474,8 @@ async function buildIndexer() {
   outputEl.textContent = '';
 
   try {
+    // Remove any previous listeners before registering a new one
+    window.codeatlas.offCommandOutput();
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
       if (data.type === 'stdout' || data.type === 'stderr') {
@@ -535,6 +537,8 @@ async function installServer() {
   outputEl.textContent = '';
 
   try {
+    // Remove any previous listeners before registering a new one
+    window.codeatlas.offCommandOutput();
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
       if (data.type === 'stdout' || data.type === 'stderr') {
@@ -834,6 +838,8 @@ async function runIndexing() {
   outputEl.textContent = '';
 
   try {
+    // Remove any previous listeners before registering a new one
+    window.codeatlas.offCommandOutput();
     // Listen for command output
     window.codeatlas.onCommandOutput((data) => {
       if (data.type === 'stdout' || data.type === 'stderr') {
@@ -1053,6 +1059,7 @@ async function applyInstructions(target) {
 
   try {
     let dest;
+    let mode = 'copy';
     if (target === 'copilot-repo') {
       if (!setupData.workspacePath) {
         addLogEntry('WARN', 'INSTRUCTIONS', '워크스페이스 경로가 설정되지 않았습니다.');
@@ -1069,23 +1076,35 @@ async function applyInstructions(target) {
         if (btn) btn.disabled = false;
         return;
       }
-      dest = await window.codeatlas.joinPaths(setupData.workspacePath, 'CLAUDE.md');
+      // Claude: copy to .codeatlas/ and append @import ref to CLAUDE.md
+      dest = setupData.workspacePath;
+      mode = 'claude-ref';
     } else {
       return;
     }
 
-    addLogEntry('INFO', 'INSTRUCTIONS', `Copying instructions to: ${dest}`);
-    const result = await window.codeatlas.copyInstructions(dest);
+    addLogEntry('INFO', 'INSTRUCTIONS', `Applying instructions (mode=${mode}) to: ${dest}`);
+    const result = await window.codeatlas.copyInstructions(dest, mode);
     if (result.success) {
-      addLogEntry('INFO', 'INSTRUCTIONS', `✅ 지시문 적용 완료: ${dest}`);
+      const detail = mode === 'claude-ref'
+        ? `Instructions file copied to: ${result.instrDest}`
+        : dest;
+      addLogEntry('INFO', 'INSTRUCTIONS', `Instructions applied: ${detail}`);
+      if (result.claudeWarning) {
+        addLogEntry('WARN', 'INSTRUCTIONS', `${result.claudeWarning}`);
+        const warnEl = document.getElementById('claude-warning-msg');
+        if (warnEl) { warnEl.textContent = result.claudeWarning; warnEl.style.display = 'block'; }
+        if (btn) btn.textContent = '완료 (경고)';
+      } else {
+        if (btn) btn.textContent = '완료';
+      }
       if (statusEl) statusEl.style.display = 'inline';
-      if (btn) btn.textContent = '완료';
     } else {
-      addLogEntry('ERROR', 'INSTRUCTIONS', `❌ 적용 실패: ${result.error}`);
+      addLogEntry('ERROR', 'INSTRUCTIONS', `Failed to apply instructions: ${result.error}`);
       if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
     }
   } catch (err) {
-    addLogEntry('ERROR', 'INSTRUCTIONS', `예외 발생: ${err.message}`);
+    addLogEntry('ERROR', 'INSTRUCTIONS', `Exception: ${err.message}`);
     if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
   }
 }

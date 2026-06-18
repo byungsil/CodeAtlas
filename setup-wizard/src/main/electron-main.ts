@@ -12,6 +12,9 @@ import { initLogger, log, LogLevel, getRecentLogs, readLogFile, clearLogFile } f
 
 let mainWindow: BrowserWindow | null = null;
 
+// Track all spawned child processes so they can be killed on quit
+const activeChildren = new Set<cp.ChildProcess>();
+
 // Initialize logger on app start
 const logPath = initLogger();
 log(LogLevel.INFO, 'APP', `Setup Wizard started. Log file: ${logPath}`);
@@ -64,6 +67,7 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<{ su
       shell: true,
       env: spawnEnv
     }) as cp.ChildProcessWithoutNullStreams;
+    activeChildren.add(child);
 
     let stdout = '';
     let stderr = '';
@@ -85,6 +89,7 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<{ su
     });
 
     child.on('close', (code: number) => {
+      activeChildren.delete(child);
       const success = code === 0;
       log(success ? LogLevel.INFO : LogLevel.ERROR, 'COMMAND', 
         `Command finished with code ${code}`, 
@@ -93,6 +98,7 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<{ su
     });
 
     child.on('error', (err: Error) => {
+      activeChildren.delete(child);
       log(LogLevel.ERROR, 'COMMAND', `Command error: ${err.message}`, `${command} ${args.join(' ')}`);
       resolve({ success: false, stdout, stderr: err.message });
     });
@@ -124,6 +130,7 @@ function runCommandWithEnv(
       shell: true,
       env: mergedEnv
     }) as cp.ChildProcessWithoutNullStreams;
+    activeChildren.add(child);
 
     let stdout = '';
     let stderr = '';
@@ -145,6 +152,7 @@ function runCommandWithEnv(
     });
 
     child.on('close', (code: number) => {
+      activeChildren.delete(child);
       const success = code === 0;
       log(success ? LogLevel.INFO : LogLevel.ERROR, 'COMMAND',
         `Command (with env) finished with code ${code}`,
@@ -153,6 +161,7 @@ function runCommandWithEnv(
     });
 
     child.on('error', (err: Error) => {
+      activeChildren.delete(child);
       log(LogLevel.ERROR, 'COMMAND', `Command (with env) error: ${err.message}`, `${command} ${args.join(' ')}`);
       resolve({ success: false, stdout, stderr: err.message });
     });
@@ -241,6 +250,7 @@ function installWithWinget(packageId: string, displayName: string): Promise<{ su
       ['install', '--exact', '--id', packageId, '--accept-source-agreements', '--accept-package-agreements'],
       { shell: true }
     ) as cp.ChildProcessWithoutNullStreams;
+    activeChildren.add(child);
 
     let output = '';
 
@@ -261,6 +271,7 @@ function installWithWinget(packageId: string, displayName: string): Promise<{ su
     });
 
     child.on('close', (code: number) => {
+      activeChildren.delete(child);
       const success = code === 0;
       log(success ? LogLevel.INFO : LogLevel.ERROR, 'INSTALL', 
         `${displayName} installation ${success ? 'succeeded' : 'failed'} (exit code: ${code})`);
@@ -268,6 +279,7 @@ function installWithWinget(packageId: string, displayName: string): Promise<{ su
     });
 
     child.on('error', (err: Error) => {
+      activeChildren.delete(child);
       log(LogLevel.ERROR, 'INSTALL', `Winget error for ${displayName}: ${err.message}`);
       resolve({ success: false, output: err.message });
     });
@@ -408,7 +420,7 @@ function emitLogToRenderer(event: any, logEntry: { level: string; step?: string;
   }
 }
 
-ipcMain.handle('copy-instructions', async (_event, dest: string) => {
+ipcMain.handle('copy-instructions', async (_event, dest: string, mode: string = 'copy') => {
   const fs = require('fs') as typeof import('fs');
   const pathMod = require('path') as typeof import('path');
   try {
@@ -416,6 +428,40 @@ ipcMain.handle('copy-instructions', async (_event, dest: string) => {
     if (!fs.existsSync(src)) {
       return { success: false, error: 'Source file not found: ' + src };
     }
+
+    if (mode === 'claude-ref') {
+      // dest = workspaceRoot
+      // 1) Copy instructions file into <workspace>/.codeatlas/codeatlas_instructions.md
+      const instrDest = pathMod.join(dest, '.codeatlas', 'codeatlas_instructions.md');
+      const instrDestDir = pathMod.dirname(instrDest);
+      if (!fs.existsSync(instrDestDir)) {
+        fs.mkdirSync(instrDestDir, { recursive: true });
+      }
+      fs.copyFileSync(src, instrDest);
+      log(LogLevel.INFO, 'INSTRUCTIONS', `Copied instructions to: ${instrDest}`);
+
+      // 2) Append @import line to CLAUDE.md (create if absent, skip if ref already present)
+      const claudeMd = pathMod.join(dest, 'CLAUDE.md');
+      const refLine = '@.codeatlas/codeatlas_instructions.md';
+      let claudeWarning: string | undefined;
+      try {
+        const existing = fs.existsSync(claudeMd) ? fs.readFileSync(claudeMd, 'utf8') : '';
+        if (!existing.includes(refLine)) {
+          const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+          fs.appendFileSync(claudeMd, `${separator}\n${refLine}\n`, 'utf8');
+          log(LogLevel.INFO, 'INSTRUCTIONS', `Appended import ref to CLAUDE.md: ${claudeMd}`);
+        } else {
+          log(LogLevel.INFO, 'INSTRUCTIONS', `CLAUDE.md already contains the import ref`);
+        }
+      } catch (claudeErr) {
+        const msg = claudeErr instanceof Error ? claudeErr.message : String(claudeErr);
+        claudeWarning = `Failed to write CLAUDE.md (file may be locked by another process): ${msg}\nPlease add the following line to CLAUDE.md manually: ${refLine}`;
+        log(LogLevel.WARN, 'INSTRUCTIONS', claudeWarning);
+      }
+      return { success: true, claudeMd, instrDest, claudeWarning };
+    }
+
+    // Default: plain copy
     const destDir = pathMod.dirname(dest);
     if (!fs.existsSync(destDir)) {
       fs.mkdirSync(destDir, { recursive: true });
@@ -696,6 +742,14 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+app.on('before-quit', () => {
+  // Kill all tracked child processes so Electron can exit cleanly
+  for (const child of activeChildren) {
+    try { child.kill(); } catch (_) { /* ignore */ }
+  }
+  activeChildren.clear();
 });
 
 app.on('window-all-closed', () => {

@@ -69,5 +69,5 @@ contextBridge.exposeInMainWorld('codeatlas', {
   createDirectory: (dirPath: string) => ipcRenderer.invoke('create-directory', dirPath),
 
   // Agent instructions
-  copyInstructions: (dest: string) => ipcRenderer.invoke('copy-instructions', dest)
+  copyInstructions: (dest: string, mode?: string) => ipcRenderer.invoke('copy-instructions', dest, mode ?? 'copy')
 });

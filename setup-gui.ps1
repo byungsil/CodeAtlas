@@ -37,5 +37,11 @@ if (-not (Test-Path $ElectronBin)) {
 Write-Host ""
 Write-Host "Starting CodeAtlas Setup Wizard..." -ForegroundColor Green
 Push-Location $WizardDir
-& $ElectronBin .
+if ($ElectronBin -like "*.cmd") {
+    # .cmd shims can detach from PowerShell; run via cmd.exe explicitly and wait
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$ElectronBin`" ." -WorkingDirectory $WizardDir -PassThru -NoNewWindow
+} else {
+    $proc = Start-Process -FilePath $ElectronBin -ArgumentList "." -WorkingDirectory $WizardDir -PassThru
+}
+$proc.WaitForExit()
 Pop-Location
