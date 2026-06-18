@@ -255,7 +255,8 @@ async function runPrereqCheck() {
   const prereqs = [
     { name: 'node', wingetId: 'OpenJS.NodeJS.LTS', displayName: 'Node.js LTS' },
     { name: 'npm', wingetId: 'OpenJS.NodeJS.LTS', displayName: 'npm (included with Node.js)' },
-    { name: 'cargo', wingetId: 'Rustlang.Rustup', displayName: 'Rust toolchain' }
+    { name: 'cargo', wingetId: 'Rustlang.Rustup', displayName: 'Rust toolchain' },
+    { name: 'clang', wingetId: 'LLVM.LLVM', displayName: 'LLVM/Clang (C++ AST 분석 향상)', optional: true }
   ];
 
   for (const prereq of prereqs) {
@@ -276,18 +277,71 @@ async function runPrereqCheck() {
     }
   }
 
-  // Check if any need installation
-  const needsInstall = prereqs.some(p => !setupData.tools[p.name].exists);
+  // Check LLVM user PATH status on Windows
+  if (window.codeatlas.platform === 'win32') {
+    try {
+      const llvmBin = 'C:\\Program Files\\LLVM\\bin';
+      const pathResult = await window.codeatlas.checkUserPath(llvmBin);
+      setupData.llvmInUserPath = pathResult.inPath;
+      const addPathBtn = document.getElementById('add-path-clang');
+      if (addPathBtn && setupData.tools['clang']?.exists && !pathResult.inPath) {
+        addPathBtn.classList.remove('hidden');
+        addLogEntry('INFO', 'PATH', `LLVM 설치됨, 그러나 사용자 PATH에 없음: ${llvmBin}`);
+      }
+    } catch (err) {
+      addLogEntry('WARN', 'PATH', `사용자 PATH 확인 실패: ${err.message}`);
+    }
+  }
+
+  // Check if any need installation (optional tools don't block progress)
+  const needsInstall = prereqs.some(p => !p.optional && !setupData.tools[p.name]?.exists);
+  const clangMissing = !setupData.tools['clang']?.exists;
   
   const statusEl = document.getElementById('prereqStatus');
   if (needsInstall) {
     statusEl.className = 'status-message info';
     statusEl.textContent = '일부 도구가 필요합니다. 각 도구 옆의 "설치하기" 버튼을 클릭하세요.';
     addLogEntry('INFO', 'PREREQS', 'Some tools need installation');
+  } else if (clangMissing) {
+    statusEl.className = 'status-message info';
+    statusEl.textContent = '✅ 필수 도구가 설치되어 있습니다. LLVM/Clang 없이도 진행 가능하지만, C++ AST 분석 품질이 낮아집니다.';
+    addLogEntry('INFO', 'PREREQS', 'All required prereqs installed; LLVM optional');
   } else {
     statusEl.className = 'status-message success';
     statusEl.textContent = '✅ 모든 필수 도구가 설치되어 있습니다!';
     addLogEntry('INFO', 'PREREQS', 'All prerequisites are installed');
+  }
+}
+
+async function addLlvmToPath() {
+  const llvmBin = 'C:\\Program Files\\LLVM\\bin';
+  const btn = document.getElementById('add-path-clang');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '추가 중...';
+  try {
+    const result = await window.codeatlas.addToUserPath(llvmBin);
+    if (result.success) {
+      btn.classList.add('hidden');
+      setupData.llvmInUserPath = true;
+      addLogEntry('INFO', 'PATH', result.alreadyPresent
+        ? `LLVM이 이미 사용자 PATH에 있습니다: ${llvmBin}`
+        : `LLVM을 사용자 PATH에 추가했습니다: ${llvmBin}`);
+      const statusEl = document.getElementById('prereqStatus');
+      statusEl.className = 'status-message success';
+      statusEl.textContent = '✅ LLVM/Clang이 사용자 PATH에 추가되었습니다. (새 터미널에서 적용됩니다)';
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'PATH에 추가';
+      addLogEntry('ERROR', 'PATH', `PATH 추가 실패: ${result.message}`);
+      const statusEl = document.getElementById('prereqStatus');
+      statusEl.className = 'status-message error';
+      statusEl.textContent = `❌ PATH 추가 실패: ${result.message}`;
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'PATH에 추가';
+    addLogEntry('ERROR', 'PATH', `PATH 추가 오류: ${err.message}`);
   }
 }
 
@@ -317,7 +371,8 @@ async function installTool(toolName) {
   const toolMap = {
     node: { wingetId: 'OpenJS.NodeJS.LTS', displayName: 'Node.js LTS' },
     npm: { wingetId: 'OpenJS.NodeJS.LTS', displayName: 'npm (included with Node.js)' },
-    cargo: { wingetId: 'Rustlang.Rustup', displayName: 'Rust toolchain' }
+    cargo: { wingetId: 'Rustlang.Rustup', displayName: 'Rust toolchain' },
+    clang: { wingetId: 'LLVM.LLVM', displayName: 'LLVM/Clang' }
   };
 
   const config = toolMap[toolName];
@@ -593,6 +648,124 @@ function updateExtensionTags() {
   }
 }
 
+// ==================== Pre-Indexing: compile_commands.json Generation ====================
+
+/**
+ * Before running the indexer, try to generate compile_commands.json so that
+ * Clang AST parsing can be used for C++ files.  Strategy:
+ *   1. If compile_commands.json already exists in the workspace → skip.
+ *   2. If CMakeLists.txt exists and cmake is available → cmake configure.
+ *   3. If .sln files are present → use the indexer's generate-compile-commands
+ *      subcommand (extracts include dirs from vcxproj).
+ */
+async function generateCompileCommandsIfNeeded(outputEl, statusEl, binPath, indexerPath) {
+  const workspace = setupData.workspacePath;
+
+  // Check if compile_commands.json already exists
+  const candidates = [
+    await window.codeatlas.joinPaths(workspace, 'compile_commands.json'),
+    await window.codeatlas.joinPaths(workspace, 'build', 'compile_commands.json'),
+  ];
+  for (const candidate of candidates) {
+    if (await window.codeatlas.fileExists(candidate)) {
+      addLogEntry('INFO', 'PREP', 'compile_commands.json already exists: ' + candidate);
+      outputEl.textContent += '[PREP] compile_commands.json 존재함 - 생성 건너뜀.\n';
+      return;
+    }
+  }
+
+  // Strategy 1: CMake project
+  const cmakeLists = await window.codeatlas.joinPaths(workspace, 'CMakeLists.txt');
+  if (await window.codeatlas.fileExists(cmakeLists)) {
+    const cmakeCheck = await window.codeatlas.checkCommand('cmake');
+    if (cmakeCheck.exists) {
+      addLogEntry('INFO', 'PREP', 'CMake 프로젝트 감지 - cmake configure 실행');
+      outputEl.textContent += '[PREP] CMake 프로젝트 감지됨. compile_commands.json 생성 중...\n';
+      const prevStatus = statusEl.textContent;
+      statusEl.className = 'status-message info';
+      statusEl.textContent = '⚙️ cmake configure 실행 중... (compile_commands.json 생성)';
+
+      const buildDir = await window.codeatlas.joinPaths(workspace, 'build');
+      const result = await window.codeatlas.runCommand(
+        'cmake',
+        ['-S', workspace, '-B', buildDir, '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', '--no-warn-unused-cli'],
+        workspace
+      );
+
+      if (result.success) {
+        addLogEntry('INFO', 'PREP', 'cmake configure 성공 - compile_commands.json 생성됨');
+        outputEl.textContent += '[PREP] compile_commands.json 생성 완료.\n';
+      } else {
+        addLogEntry('WARN', 'PREP', 'cmake configure 실패 - compile_commands.json 없이 계속 진행');
+        outputEl.textContent += '[PREP] cmake configure 실패 - compile_commands.json 없이 인덱싱합니다.\n';
+      }
+      statusEl.textContent = prevStatus;
+      return;
+    }
+  }
+
+  // Strategy 2: .sln project → use indexer generate-compile-commands
+  // Check slnPath input first (explicit or auto-detected), then do recursive search
+  const slnInput = document.getElementById('slnPath');
+  const explicitSln = slnInput ? slnInput.value.trim() : '';
+  const slnSearchResults = explicitSln ? [explicitSln] : await window.codeatlas.findFiles(workspace, '.sln', 5);
+  const hasSln = slnSearchResults.length > 0;
+
+  if (hasSln) {
+    addLogEntry('INFO', 'PREP', 'Visual Studio 솔루션 감지 - MSBuild로 compile_commands.json 생성');
+    outputEl.textContent += '[PREP] Visual Studio 프로젝트 감지됨. MSBuild로 compile_commands.json 생성 중...\n';
+    const prevStatus = statusEl.textContent;
+    statusEl.className = 'status-message info';
+
+    // Start elapsed time ticker for compile commands generation
+    const prepStartTime = Date.now();
+    const prepTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - prepStartTime) / 1000);
+      const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+      const ss = String(sec % 60).padStart(2, '0');
+      statusEl.textContent = `⚙️ MSBuild로 compile_commands.json 생성 중... ${mm}:${ss}`;
+    }, 1000);
+    statusEl.textContent = '⚙️ MSBuild로 compile_commands.json 생성 중... 00:00';
+
+    // Store in .codeatlas folder so the indexer auto-detects it
+    const dataDir = document.getElementById('dataDirs').value.trim()
+      || await window.codeatlas.joinPaths(workspace, '.codeatlas');
+    const outputPath = await window.codeatlas.joinPaths(dataDir, 'compile_commands.json');
+
+    // Pass the best sln: explicit input > first auto-detected
+    const resolvedSln = explicitSln || slnSearchResults[0] || '';
+    const indexerArgs = ['generate-compile-commands', workspace, '--output', outputPath];
+    if (resolvedSln) {
+      indexerArgs.push('--sln', resolvedSln);
+    }
+
+    let result;
+    try {
+      result = await window.codeatlas.runCommand(binPath, indexerArgs, indexerPath);
+    } finally {
+      clearInterval(prepTimer);
+    }
+
+    const prepSec = Math.floor((Date.now() - prepStartTime) / 1000);
+    const pmm = String(Math.floor(prepSec / 60)).padStart(2, '0');
+    const pss = String(prepSec % 60).padStart(2, '0');
+
+    if (result.success) {
+      addLogEntry('INFO', 'PREP', `generate-compile-commands 성공 (${pmm}:${pss})`);
+      outputEl.textContent += `[PREP] compile_commands.json 생성 완료. (${pmm}:${pss})\n`;
+    } else {
+      addLogEntry('WARN', 'PREP', `generate-compile-commands 실패 - fallback 사용 (${pmm}:${pss})`);
+      outputEl.textContent += '[PREP] compile_commands.json 생성 실패 - fallback 사용.\n';
+    }
+    statusEl.textContent = prevStatus;
+    return;
+  }
+
+
+  addLogEntry('INFO', 'PREP', 'CMake/SLN 없음 - compile_commands.json 생성 건너뜀');
+  outputEl.textContent += '[PREP] CMake/SLN 프로젝트 없음 - compile_commands.json 생성 건너뜀.\n';
+}
+
 // ==================== Step 5: Run Indexing ====================
 
 async function runIndexing() {
@@ -671,23 +844,59 @@ async function runIndexing() {
     statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`; 
     addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}`);
 
-    const result = await window.codeatlas.runCommand(
-      binPath,
-      [setupData.workspacePath, '--extensions', allExts.join(',')],
-      indexerPath
-    );
+    // For C/C++: generate compile_commands.json first so Clang AST parsing works
+    if (setupData.selectedLangs.has('cpp')) {
+      outputEl.textContent += '--- 전처리: compile_commands.json 확인/생성 ---\n';
+      await generateCompileCommandsIfNeeded(outputEl, statusEl, binPath, indexerPath);
+      outputEl.textContent += '--- 인덱싱 시작 ---\n';
+    }
+
+    // Determine Clang env vars (LIBCLANG_PATH needed on Windows for libclang.dll)
+    const clangInfo = setupData.tools['clang'];
+    const indexerEnv = {};
+    if (clangInfo && clangInfo.exists && window.codeatlas.platform === 'win32') {
+      // Default LLVM install path; user override via PATH takes precedence
+      indexerEnv['LIBCLANG_PATH'] = 'C:\\Program Files\\LLVM\\bin';
+      addLogEntry('INFO', 'INDEXING', 'LIBCLANG_PATH set for Clang AST parsing');
+    }
+
+    const indexerArgs = [setupData.workspacePath, '--extensions', allExts.join(',')];
+
+    // Start elapsed time ticker
+    const indexingStartTime = Date.now();
+    const elapsedTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - indexingStartTime) / 1000);
+      const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+      const ss = String(sec % 60).padStart(2, '0');
+      statusEl.textContent = `⏳ 인덱싱 중... ${mm}:${ss}`;
+    }, 1000);
+    statusEl.className = 'status-message info';
+    statusEl.textContent = '⏳ 인덱싱 중... 00:00';
+
+    let result;
+    try {
+      result = Object.keys(indexerEnv).length > 0
+        ? await window.codeatlas.runCommandWithEnv(binPath, indexerArgs, indexerPath, indexerEnv)
+        : await window.codeatlas.runCommand(binPath, indexerArgs, indexerPath);
+    } finally {
+      clearInterval(elapsedTimer);
+    }
+
+    const totalSec = Math.floor((Date.now() - indexingStartTime) / 1000);
+    const tmm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+    const tss = String(totalSec % 60).padStart(2, '0');
 
     if (result.success) {
       setupData.indexingDone = true;
       statusEl.className = 'status-message success';
-      statusEl.textContent = '✅ 인덱싱 완료!\n\n인덱싱 결과가 .codeatlas 디렉토리에 저장되었습니다.';
+      statusEl.textContent = `✅ 인덱싱 완료! (소요 시간: ${tmm}:${tss})\n\n인덱싱 결과가 .codeatlas 디렉토리에 저장되었습니다.`;
       outputEl.textContent += '\n\n✅ 인덱싱 성공!\n';
-      addLogEntry('INFO', 'INDEXING', 'Indexing completed successfully');
+      addLogEntry('INFO', 'INDEXING', `Indexing completed successfully in ${tmm}:${tss}`);
     } else {
       statusEl.className = 'status-message error';
-      statusEl.textContent = `❌ 인덱싱 실패: ${result.stderr || result.stdout}`;
+      statusEl.textContent = `❌ 인덱싱 실패 (${tmm}:${tss}): ${result.stderr || result.stdout}`;
       outputEl.textContent += `\n\n❌ 인덱싱 실패\n${result.stdout}\n${result.stderr}`;
-      addLogEntry('ERROR', 'INDEXING', `Indexing failed: ${result.stderr || result.stdout}`);
+      addLogEntry('ERROR', 'INDEXING', `Indexing failed after ${tmm}:${tss}: ${result.stderr || result.stdout}`);
     }
   } catch (err) {
     statusEl.className = 'status-message error';
@@ -720,6 +929,21 @@ async function selectWorkspace() {
       const dataDirsInput = document.getElementById('dataDirs');
       dataDirsInput.value = await window.codeatlas.joinPaths(selected, '.codeatlas');
 
+      // Auto-detect .sln files recursively (up to depth 5)
+      const slnGroup = document.getElementById('sln-path-group');
+      const slnInput = document.getElementById('slnPath');
+      const slnFiles = await window.codeatlas.findFiles(selected, '.sln', 5);
+      if (slnFiles.length === 1) {
+        slnInput.value = slnFiles[0];
+        addLogEntry('INFO', 'WORKSPACE', `Auto-detected solution: ${slnFiles[0]}`);
+      } else if (slnFiles.length > 1) {
+        slnInput.value = '';
+        slnInput.placeholder = `감지된 .sln ${slnFiles.length}개 - 파일 선택 버튼으로 지정`;
+        addLogEntry('INFO', 'WORKSPACE', `Found ${slnFiles.length} .sln files, manual selection recommended`);
+      } else {
+        slnInput.value = '';
+        slnInput.placeholder = '자동 감지 (직접 지정하지 않으면 워크스페이스에서 검색)';
+      }
       // Show directory listing preview
       statusEl.className = 'status-message info';
       statusEl.textContent = `📁 선택된 경로: ${selected}`;
@@ -896,6 +1120,22 @@ window._installTool = installTool;
 window.nextStep = nextStep;
 window.goToStep = goToStep;
 window.selectWorkspace = selectWorkspace;
+async function selectSlnFile() {
+  try {
+    const selected = await window.codeatlas.selectFile([
+      { name: 'Visual Studio Solution', extensions: ['sln'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]);
+    if (selected) {
+      document.getElementById('slnPath').value = selected;
+      document.getElementById('sln-path-group').style.display = '';
+      addLogEntry('INFO', 'WORKSPACE', `SLN selected: ${selected}`);
+    }
+  } catch (err) {
+    addLogEntry('ERROR', 'WORKSPACE', `Failed to select .sln file: ${err.message}`);
+  }
+}
+window.selectSlnFile = selectSlnFile;
 window.clearTerminal = clearTerminal;
 window.launchCodeAtlas = launchCodeAtlas;
 window.openReadme = openReadme;

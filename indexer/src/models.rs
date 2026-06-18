@@ -513,6 +513,7 @@ pub struct DependencyMetrics {
     pub longest_chain: Option<Vec<String>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncludeChain {
@@ -560,6 +561,7 @@ pub struct ParseResult {
     pub include_dependencies: Vec<IncludeDependency>,
     pub macro_definitions: Vec<MacroDefinition>,
     pub conditional_blocks: Vec<ConditionalBlock>,
+    #[allow(dead_code)]
     pub dependency_metrics: DependencyMetrics,
     pub conditional_symbols: Vec<ConditionalSymbol>,
 }

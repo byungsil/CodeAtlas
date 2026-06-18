@@ -10,10 +10,16 @@ contextBridge.exposeInMainWorld('codeatlas', {
   checkCommand: (name: string) => ipcRenderer.invoke('check-command', name),
   installWinget: (packageId: string, displayName: string) => ipcRenderer.invoke('install-winget', packageId, displayName),
   runCommand: (command: string, args: string[], cwd?: string) => ipcRenderer.invoke('run-command', command, args, cwd),
+  runCommandWithEnv: (command: string, args: string[], cwd?: string, env?: Record<string, string>) =>
+    ipcRenderer.invoke('run-command-with-env', command, args, cwd, env || {}),
   
   // File operations
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  selectFile: (filters?: Array<{name: string; extensions: string[]}>) =>
+    ipcRenderer.invoke('select-file', filters),
   listDirectory: (dirPath: string) => ipcRenderer.invoke('list-directory', dirPath),
+  findFiles: (rootDir: string, ext: string, maxDepth?: number) =>
+    ipcRenderer.invoke('find-files', rootDir, ext, maxDepth ?? 5),
   writeConfig: (configPath: string, data: any) => ipcRenderer.invoke('write-config', configPath, data),
   readConfig: (configPath: string) => ipcRenderer.invoke('read-config', configPath),
   
@@ -41,6 +47,13 @@ contextBridge.exposeInMainWorld('codeatlas', {
     ipcRenderer.on('log-entry', (_event, data) => callback(data));
   },
   
+  // Platform info (process object not available in renderer)
+  platform: process.platform,
+
+  // PATH management (Windows user PATH in registry)
+  checkUserPath: (dirToCheck: string) => ipcRenderer.invoke('check-user-path', dirToCheck),
+  addToUserPath: (dirToAdd: string) => ipcRenderer.invoke('add-to-user-path', dirToAdd),
+
   offLogEntry: () => {
     ipcRenderer.removeAllListeners('log-entry');
   },

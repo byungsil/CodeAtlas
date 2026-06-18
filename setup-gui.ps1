@@ -17,20 +17,25 @@ if (-not (Test-Path (Join-Path $WizardDir "node_modules"))) {
     Pop-Location
 }
 
-# Build TypeScript
+# Build TypeScript + copy assets
 Write-Host "Building Setup Wizard..." -ForegroundColor Cyan
 Push-Location $WizardDir
-& npx tsc 2>&1 | Out-Null
+& npm run build 2>&1 | Out-Null
 Pop-Location
 
-if (-not (Test-Path (Join-Path $WizardDir "electron-main.js"))) {
+if (-not (Test-Path (Join-Path $WizardDir "main\electron-main.js"))) {
     Write-Host "Error: Build failed. Check TypeScript compilation." -ForegroundColor Red
     exit 1
 }
 
-# Launch Electron
+# Launch Electron (use local binary to avoid npx download prompt)
+$ElectronBin = Join-Path $WizardDir "node_modules\electron\dist\electron.exe"
+if (-not (Test-Path $ElectronBin)) {
+    $ElectronBin = Join-Path $WizardDir "node_modules\.bin\electron.cmd"
+}
+
 Write-Host ""
 Write-Host "Starting CodeAtlas Setup Wizard..." -ForegroundColor Green
 Push-Location $WizardDir
-& npx electron .
+& $ElectronBin .
 Pop-Location

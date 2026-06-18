@@ -1,6 +1,6 @@
 [package]
 name = "codeatlas-indexer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "CodeAtlas Rust indexer - Tree-sitter based C++ code structure extraction"
 

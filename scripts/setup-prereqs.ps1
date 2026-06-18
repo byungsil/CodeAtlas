@@ -15,7 +15,7 @@ function Write-Log {
     
     switch ($Level) {
         "ERROR" { Write-Host $logEntry -ForegroundColor Red }
-        "WARN"  { Write- Host $logEntry -ForegroundColor Yellow }
+        "WARN"  { Write-Host $logEntry -ForegroundColor Yellow }
         default { Write-Host $logEntry -ForegroundColor White }
     }
 }
@@ -37,15 +37,23 @@ function Install-WithWinget {
 
     Write-Host "Installing $DisplayName with winget..." -ForegroundColor Cyan
     & winget install --exact --id $PackageId --accept-source-agreements --accept-package-agreements
+    $ec = $LASTEXITCODE
+    # winget returns 1 when the package is already installed and no upgrade is available.
+    # -1978335189 (0x8A150011) means "already installed" on some winget versions.
+    if ($ec -ne 0 -and $ec -ne -1978335189) {
+        Write-Log "winget exited with code $ec for $DisplayName" "WARN"
+    }
 }
 
 function Ensure-Tool {
     param(
         [string]$CommandName,
         [string]$DisplayName,
-        [string]$WingetId
+        [string]$WingetId,
+        [string[]]$FallbackPaths = @()
     )
 
+    # Check PATH first
     if (Test-CommandAvailable $CommandName) {
         $version = try { & $CommandName --version 2>$null | Select-Object -First 1 } catch { $null }
         if ($version) {
@@ -56,10 +64,23 @@ function Ensure-Tool {
         return
     }
 
+    # Check fallback absolute paths (e.g. LLVM not in PATH but installed)
+    foreach ($fb in $FallbackPaths) {
+        if (Test-Path $fb) {
+            Write-Log "$DisplayName found at $fb (not in PATH)." "INFO"
+            return
+        }
+    }
+
     Install-WithWinget -PackageId $WingetId -DisplayName $DisplayName
 
     if (-not (Test-CommandAvailable $CommandName)) {
-        Write-Warning "$DisplayName was installed, but the current shell may not see it yet. Open a new shell if follow-up commands fail."
+        $foundViaFallback = $FallbackPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($foundViaFallback) {
+            Write-Log "$DisplayName installed at $foundViaFallback (not in PATH - open a new shell if needed)." "WARN"
+        } else {
+            Write-Warning "$DisplayName was installed, but the current shell may not see it yet. Open a new shell if follow-up commands fail."
+        }
     }
 }
 
@@ -73,7 +94,7 @@ Write-Host " CodeAtlas Prerequisite Setup" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. 필수 도구 설치
+# 1. Node.js & npm
 try {
     Ensure-Tool -CommandName "node" -DisplayName "Node.js LTS" -WingetId "OpenJS.NodeJS.LTS"
 } catch {
@@ -95,7 +116,16 @@ try {
     throw
 }
 
-# 2. 서버 의존성 설치
+# LLVM/Clang (optional) - enhances C++ AST analysis quality.
+# If unavailable, the indexer falls back to tree-sitter-only parsing.
+try {
+    $llvmFallbacks = @("C:\Program Files\LLVM\bin\clang.exe", "C:\Program Files (x86)\LLVM\bin\clang.exe")
+    Ensure-Tool -CommandName "clang" -DisplayName "LLVM/Clang (C++ AST - optional)" -WingetId "LLVM.LLVM" -FallbackPaths $llvmFallbacks
+} catch {
+    Write-Log "LLVM/Clang not available - C++ will use tree-sitter fallback: $_" "WARN"
+}
+
+# 2. Server Dependencies (optional)
 if (-not $SkipServerDeps) {
     if (Test-Path (Join-Path $ServerRoot "package-lock.json")) {
         Write-Host ""
@@ -113,7 +143,7 @@ if (-not $SkipServerDeps) {
     }
 }
 
-# 3. GUI 마법사 실행 (선택사항)
+# 3. GUI Setup Wizard (optional)
 if ($Gui -or $LaunchGui) {
     Write-Host ""
     Write-Log "Launching GUI Setup Wizard..." "INFO"
@@ -133,23 +163,27 @@ if ($Gui -or $LaunchGui) {
         }
     }
 
-    # Build TypeScript
+    # Build TypeScript + copy assets
     Push-Location $WizardDir
     try {
-        & npx tsc 2>&1 | Out-Null
+        & npm run build 2>&1 | Out-Null
     } finally {
         Pop-Location
     }
 
-    if (-not (Test-Path (Join-Path $WizardDir "electron-main.js"))) {
-        Write-Log "Build failed - electron-main.js not found" "ERROR"
+    if (-not (Test-Path (Join-Path $WizardDir "main\electron-main.js"))) {
+        Write-Log "Build failed - main/electron-main.js not found" "ERROR"
         exit 1
     }
 
-    # Launch Electron
+    # Launch Electron (use local binary)
+    $ElectronBin = Join-Path $WizardDir "node_modules\electron\dist\electron.exe"
+    if (-not (Test-Path $ElectronBin)) {
+        $ElectronBin = Join-Path $WizardDir "node_modules\.bin\electron.cmd"
+    }
     Push-Location $WizardDir
     try {
-        & npx electron .
+        & $ElectronBin .
     } finally {
         Pop-Location
     }
@@ -157,17 +191,15 @@ if ($Gui -or $LaunchGui) {
     exit 0
 }
 
-# ==================== 완료 메시지 ====================
+# ==================== Done ====================
 
 Write-Host ""
 Write-Log "Prerequisite setup complete!" "INFO"
 Write-Host ""
 Write-Log "Next steps:" "INFO"
-Write-Host "  ${WHITE}1. Build indexer: cd indexer && cargo build --release${NC}" -ForegroundColor White
-Write-Host "  ${WHITE}2. Start server:   cd server && npm run build${NC}" -ForegroundColor White
+Write-Host "  1. Build indexer:  cd indexer; cargo build --release" -ForegroundColor White
+Write-Host "  2. Start server:   cd server; npm run build" -ForegroundColor White
+Write-Host ""
+Write-Host "  Run GUI wizard:   powershell setup-gui.ps1" -ForegroundColor Gray
 Write-Host ""
 
-# GUI 옵션 안내
-Write-Host "${GRAY}GUI Setup Wizard를 사용하려면:${NC}" -ForegroundColor Gray
-Write-Host "${GRAY}  powershell scripts/setup-all.ps1 -Gui${NC}" -ForegroundColor Gray
-Write-Host ""

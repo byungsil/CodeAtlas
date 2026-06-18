@@ -617,6 +617,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn write_include_chains(&self, chains: &[IncludeChain]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
             "INSERT INTO include_chains (source_file, chain, depth) VALUES (?1, ?2, ?3)",
@@ -761,6 +762,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn write_all(
         &self,
         raw_symbols: &[Symbol],
@@ -1463,6 +1465,7 @@ impl Database {
         self.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
     }
 
+    #[allow(dead_code)]
     pub fn find_included_files_for_source(&self, source_file: &str) -> SqlResult<Vec<String>> {
         let sql = "SELECT DISTINCT included_file FROM include_dependencies WHERE source_file = ?1";
         let mut stmt = self.conn.prepare(sql)?;
@@ -1470,6 +1473,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn find_sources_including_target(&self, target_file: &str) -> SqlResult<Vec<String>> {
         let sql = "SELECT DISTINCT source_file FROM include_dependencies WHERE included_file = ?1";
         let mut stmt = self.conn.prepare(sql)?;
@@ -1477,6 +1481,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn find_conditional_symbols_by_macro(&self, macro_name: &str) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
         let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols WHERE gating_macro = ?1";
         let mut stmt = self.conn.prepare(sql)?;
@@ -1492,6 +1497,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn find_conditional_symbols_by_file(&self, file_path: &str) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
         let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols WHERE file_path = ?1";
         let mut stmt = self.conn.prepare(sql)?;
@@ -1507,6 +1513,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn find_all_conditional_symbols(&self) -> SqlResult<Vec<crate::models::ConditionalSymbol>> {
         let sql = "SELECT file_path, symbol_name, line, gating_macro, is_negated FROM conditional_symbols";
         let mut stmt = self.conn.prepare(sql)?;
@@ -1540,6 +1547,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn list_all_symbols(&self) -> SqlResult<Vec<Symbol>> {
         let sql = format!("SELECT {} FROM symbols", SYMBOL_SELECT_COLUMNS);
         let mut stmt = self.conn.prepare(&sql)?;

@@ -406,35 +406,7 @@ fn extend_non_call_relation_events(
     );
 }
 
-pub fn parse_files(
-    workspace_root: &Path,
-    relative_paths: &[String],
-    verbose: bool,
-    build_metadata: Option<&BuildMetadataContext>,
-) -> (
-    Vec<Symbol>,
-    Vec<RawCallSite>,
-    Vec<RawRelationEvent>,
-    Vec<PropagationEvent>,
-    Vec<CallableFlowSummary>,
-    Vec<FileRecord>,
-    Vec<IncludeDependency>,
-    Vec<crate::models::MacroDefinition>,
-    Vec<crate::models::ConditionalBlock>,
-    Vec<crate::models::ConditionalSymbol>,
-    ParseMetrics,
-) {
-    let registry = default_language_registry();
-    let discovered_files: Vec<_> = relative_paths
-        .iter()
-        .map(|rel_path| DiscoveredSourceFile {
-            path: workspace_root.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)),
-            language: SourceLanguage::Cpp,
-        })
-        .collect();
-    parse_discovered_files(workspace_root, &discovered_files, verbose, build_metadata, &registry)
-}
-
+#[allow(dead_code)]
 pub fn parse_discovered_files(
     workspace_root: &Path,
     discovered_files: &[DiscoveredSourceFile],

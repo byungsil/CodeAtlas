@@ -82,11 +82,11 @@ struct ResolutionContext<'a> {
     caller_namespace: Option<&'a str>,
     caller_bases: &'a [&'a str],
     caller_file: Option<&'a str>,
-    callee_files_len: usize,
     file_relationship: FileRelationshipScore,
     macro_context: MacroContextSignals,
 }
 
+#[allow(dead_code)]
 pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call> {
     let by_name = build_callable_index(symbols);
     let parent_of = build_parent_index(symbols);
@@ -107,7 +107,6 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
             caller_namespace: namespace_scope(raw.caller_id.as_str(), parent_of.get(raw.caller_id.as_str()).copied()),
             caller_bases: &[],
             caller_file: Some(caller_file),
-            callee_files_len: callee_files.len(),
             file_relationship,
             macro_context: macro_signals,
         };
@@ -1002,7 +1001,6 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
             caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
             caller_bases: caller_base_ids.as_slice(),
             caller_file: Some(raw.file_path.as_str()),
-            callee_files_len: callee_files.len(),
             file_relationship,
             macro_context: macro_signals,
         };

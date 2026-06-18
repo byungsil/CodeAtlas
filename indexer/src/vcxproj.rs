@@ -13,6 +13,7 @@ pub struct Solution {
 
 /// A single project entry found in a .sln file.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProjectEntry {
     /// Project name (e.g., "Core").
     pub name: String,
@@ -32,6 +33,7 @@ pub enum ProjectType {
 
 /// Represents a parsed .vcxproj file (Visual Studio C++ Project).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct VcxProject {
     /// Path to the vcxproj file itself.
     pub path: PathBuf,

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::vcxproj;
 
 use std::collections::{HashMap, HashSet};
@@ -150,6 +151,7 @@ fn find_compile_commands_path(workspace_root: &Path) -> Option<PathBuf> {
     let direct_candidates = [
         workspace_root.join("compile_commands.json"),
         workspace_root.join("build").join("compile_commands.json"),
+        workspace_root.join(constants::DATA_DIR_NAME).join("compile_commands.json"),
     ];
     for candidate in direct_candidates {
         if candidate.is_file() {

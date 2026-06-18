@@ -6,9 +6,12 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
 
 ## What You Get
 
-- Rust indexer for full, incremental, and watch-mode indexing
+- **Hybrid Rust indexer**: Tree-sitter (syntax parsing for all languages) + libclang (precise C++ analysis with compile flags) — automatically selects the best engine per file
+- Full, incremental, and watch-mode indexing
 - SQLite generations at `<workspace-root>/.codeatlas/index-<timestamp>.db`
 - Active DB pointer at `<workspace-root>/.codeatlas/current-db.json`
+- `generate-compile-commands` subcommand: generates `compile_commands.json` from a Visual Studio `.sln`/`.vcxproj` for large MSVC projects
+- Watch mode with vcxproj-change detection: automatically patches `compile_commands.json` when project files change
 - Node.js server for MCP tools, HTTP API, and dashboard
 - Support for C/C++, Lua, Python, TypeScript, and Rust source files
 
@@ -21,6 +24,10 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
   - Windows: Visual Studio Build Tools (MSVC + Windows SDK)
   - Linux: GCC/G++ (for example `build-essential`)
   - macOS: Xcode Command Line Tools (`clang`)
+- **LLVM** (optional, for libclang-powered C++ precision analysis)
+  - Windows: [LLVM releases](https://github.com/llvm/llvm-project/releases) — install to `C:\Program Files\LLVM`
+  - `libclang.dll` must be in `PATH` at indexing time
+  - Without LLVM, CodeAtlas falls back to Tree-sitter for all C++ files
 
 ## GUI Setup (Recommended for First-Time Users)
 
@@ -32,8 +39,8 @@ powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
 ```
 
 The wizard guides you through:
-1. **Environment check** — detects Node.js, npm, Rust and installs missing tools via winget
-2. **Indexer build** — compiles the Rust tree-sitter engine with progress feedback
+1. **Environment check** — detects Node.js, npm, Rust, and LLVM; installs missing tools via winget; offers to add LLVM to the user PATH if installed but not on PATH
+2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback
 3. **Server setup** — installs npm dependencies and builds TypeScript
 4. **Workspace selection** — browse to your codebase and configure settings
 5. **Launch** — start CodeAtlas with one click
@@ -65,29 +72,52 @@ Windows note:
 - If Build Tools are installed but `cl.exe` is not visible in the current shell, the script warns and continues.
 - If indexer build fails in that case, rerun from `Developer PowerShell for VS`.
 
-### 2. Index a Workspace
+### 2. (Optional) Generate `compile_commands.json` for MSVC Projects
+
+For C++ projects built with Visual Studio, generate a `compile_commands.json` to enable libclang-powered precision analysis:
+
+```powershell
+# Generates <workspace-root>/.codeatlas/compile_commands.json
+.\indexer\target\release\codeatlas-indexer.exe generate-compile-commands <workspace-root> `
+    --sln <path-to>.sln `
+    [--output <path>] `
+    [--config Release] `
+    [--platform x64]
+```
+
+- Requires MSBuild in `PATH` (or auto-detected via `vswhere`)
+- The output path defaults to `<workspace-root>/.codeatlas/compile_commands.json`
+- Config/platform are auto-detected from the `.sln` if not specified; common values like `Release|x64` or `Development|x64` are preferred automatically
+- Once present, the indexer uses libclang for all files that have an entry in the file, and Tree-sitter for the rest
+
+### 3. Index a Workspace
 
 ```bash
 # full rebuild
 ./indexer/target/release/codeatlas-indexer <workspace-root> --full --workspace-name <display-name>
 
-# incremental update
+# incremental update (re-indexes only changed files)
 ./indexer/target/release/codeatlas-indexer <workspace-root>
 
-# watch mode
+# watch mode (monitors for file changes and re-indexes automatically)
 ./indexer/target/release/codeatlas-indexer watch <workspace-root> --workspace-name <display-name>
 ```
 
 Common optional flags:
 
 ```bash
-./indexer/target/release/codeatlas-indexer <workspace-root> --workspace-name opencv
+./indexer/target/release/codeatlas-indexer <workspace-root> --workspace-name myproject
 ./indexer/target/release/codeatlas-indexer <workspace-root> --extensions cpp,h,hpp,py
 ./indexer/target/release/codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
 ./indexer/target/release/codeatlas-indexer <workspace-root> --verbose
 ```
 
-### 3. Start the Server
+Watch mode notes:
+- On startup, runs an incremental catch-up pass before entering watch mode
+- Detects `.vcxproj` changes and automatically patches `compile_commands.json`
+- File change → re-index is significantly faster than running standalone incremental
+
+### 4. Start the Server
 
 ```bash
 cd server
@@ -126,6 +156,32 @@ Example MCP registration:
 If `CODEATLAS_WATCHER=true`, the MCP server launches the Rust watcher automatically.
 `CODEATLAS_WATCHER` defaults to `true`, so live index refresh is on unless you explicitly disable it.
 
+## Agent Custom Instructions
+
+`instructions/codeatlas_instructions.md` contains a ready-made custom instruction file for GitHub Copilot (and compatible agents). It teaches the agent when and how to use CodeAtlas MCP tools — symbol lookup, call hierarchy, references, impact analysis, propagation tracing, and so on.
+
+To activate it, copy or symlink the file to your agent's custom instructions folder:
+
+**GitHub Copilot (VS Code)**
+
+```text
+# Repository-scoped (recommended — version-controlled with the project)
+.github/copilot-instructions.md
+
+# Or place it in VS Code's user prompts folder for user-scoped activation
+# Windows: %APPDATA%\Code\User\prompts\
+# macOS/Linux: ~/.config/Code/User/prompts/
+```
+
+**Claude (claude.ai / Claude Code)**
+
+```text
+# Place in the project root or your Claude custom instructions directory
+CLAUDE.md
+```
+
+The file uses `applyTo: "**"` front matter so it is active for all files in the workspace once placed in the correct location.
+
 ## Common Configuration
 
 | Variable | Default | Purpose |
@@ -138,6 +194,10 @@ If `CODEATLAS_WATCHER=true`, the MCP server launches the Rust watcher automatica
 | `CODEATLAS_CPP_PARSE_TIMEOUT_MICROS` | `60000000` | Default C/C++ parse timeout |
 | `CODEATLAS_DATA` | `.codeatlas` | Data directory name |
 | `CODEATLAS_REFERENCE_QUERY_CAP` | `2000` | Max rows per reference query (safety cap) |
+| `CODEATLAS_DASHBOARD_AUTOOPEN` | `false` | Auto-open dashboard in browser when MCP server starts |
+| `CODEATLAS_BACKGROUND_THREADS` | all cores | Worker thread count for indexing |
+| `CODEATLAS_INDEXER_STACK_BYTES` | large default | Per-worker stack size (override for very deep ASTs) |
+| `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES` | `2097152` | Skip oversized C++ files; set to `0` to disable |
 
 ## Supported Indexer Commands
 
@@ -150,6 +210,7 @@ codeatlas-indexer <workspace-root> --workspace-name <display-name>
 codeatlas-indexer <workspace-root> --extensions cpp,h,hpp
 codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
 codeatlas-indexer watch <workspace-root> --workspace-name <display-name>
+codeatlas-indexer generate-compile-commands <workspace-root> --sln <path>
 ```
 
 Supported extensions by default:
@@ -157,6 +218,19 @@ Supported extensions by default:
 ```text
 .c, .cpp, .h, .hpp, .cc, .cxx, .inl, .inc, .lua, .py, .ts, .tsx, .rs
 ```
+
+## Parsing Engine: Tree-sitter vs libclang
+
+| Condition | Engine used |
+|-----------|-------------|
+| File has entry in `compile_commands.json` + LLVM in PATH | libclang (precise, macro-aware) |
+| No compile_commands entry, or LLVM not available | Tree-sitter (fast, always available) |
+| All non-C++ languages | Tree-sitter |
+
+libclang advantages over Tree-sitter for C++:
+- Resolves macros with actual compile-time define flags
+- Discovers ~17% more call edges on large MSVC projects (measured on a ~19k-file codebase)
+- Correct include path resolution without guessing
 
 ## Workspace Hygiene
 

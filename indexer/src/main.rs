@@ -1,4 +1,5 @@
 mod build_metadata;
+mod compile_commands;
 mod constants;
 mod vcxproj;
 mod clang_parser;
@@ -97,6 +98,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_help();
+        return;
+    }
+
+    // Subcommand: generate compile_commands.json from vcxproj or cmake
+    if args.get(1).map(|a| a.as_str()) == Some("generate-compile-commands") {
+        cmd_generate_compile_commands(&args[2..]);
         return;
     }
 
@@ -518,6 +525,280 @@ fn print_parse_breakdown(label: &str, metrics: &ParseMetrics) {
     );
 }
 
+// ==================== generate-compile-commands subcommand ====================
+
+fn find_msbuild() -> Option<PathBuf> {
+    compile_commands::find_msbuild()
+}
+
+/// Pick the best configuration and platform from available vcxproj data.
+/// `sln_path` is the resolved solution file; `workspace_root` is used for
+/// relative-path resolution inside parse_solution.
+fn detect_config_platform_from_sln(sln_path: &Path, workspace_root: &Path) -> (String, String) {
+    // First try: parse via vcxproj module
+    if let Some(ctx) = vcxproj::parse_solution(workspace_root, sln_path) {
+        let preferred_configs = ["Development", "Release", "RelWithDebInfo", "Debug"];
+        let preferred_platforms = ["x64", "Win64", "x86", "Win32"];
+
+        let config = preferred_configs
+            .iter()
+            .find(|&&c| {
+                ctx.projects
+                    .iter()
+                    .any(|p| p.configurations.iter().any(|pc| pc.as_str() == c))
+            })
+            .map(|&s| s.to_string())
+            .unwrap_or_else(|| {
+                ctx.projects
+                    .first()
+                    .and_then(|p| p.configurations.first())
+                    .cloned()
+                    .unwrap_or_default()
+            });
+
+        let platform = preferred_platforms
+            .iter()
+            .find(|&&pl| {
+                ctx.projects
+                    .iter()
+                    .any(|p| p.platforms.iter().any(|pp| pp.as_str() == pl))
+            })
+            .map(|&s| s.to_string())
+            .unwrap_or_else(|| {
+                ctx.projects
+                    .first()
+                    .and_then(|p| p.platforms.first())
+                    .cloned()
+                    .unwrap_or_default()
+            });
+
+        if !config.is_empty() && !platform.is_empty() {
+            return (config, platform);
+        }
+    }
+
+    // Fallback: scan .sln for "GlobalSection(SolutionConfigurationPlatforms)"
+    // Lines look like:  \t\tpc64-vc-release|x64 = pc64-vc-release|x64
+    if let Ok(content) = fs::read_to_string(sln_path) {
+        let preferred_configs = ["Development", "Release", "RelWithDebInfo", "Debug"];
+        let preferred_platforms = ["x64", "Win64", "x86", "Win32"];
+
+        let mut found: Vec<(String, String)> = Vec::new();
+        let mut in_section = false;
+        for line in content.lines() {
+            let t = line.trim();
+            if t.contains("SolutionConfigurationPlatforms") && t.contains("preSolution") {
+                in_section = true;
+                continue;
+            }
+            if in_section && t == "EndGlobalSection" {
+                break;
+            }
+            if in_section {
+                // "Config|Platform = Config|Platform"
+                if let Some(lhs) = t.split('=').next() {
+                    let pair = lhs.trim();
+                    let mut parts = pair.splitn(2, '|');
+                    if let (Some(c), Some(p)) = (parts.next(), parts.next()) {
+                        found.push((c.trim().to_string(), p.trim().to_string()));
+                    }
+                }
+            }
+        }
+
+        // Pick preferred, or first
+        let config = preferred_configs
+            .iter()
+            .find(|&&pc| found.iter().any(|(c, _)| c == pc))
+            .map(|&s| s.to_string())
+            .unwrap_or_else(|| found.first().map(|(c, _)| c.clone()).unwrap_or_else(|| "Release".to_string()));
+
+        let platform = preferred_platforms
+            .iter()
+            .find(|&&pp| found.iter().any(|(_, p)| p == pp))
+            .map(|&s| s.to_string())
+            .unwrap_or_else(|| found.first().map(|(_, p)| p.clone()).unwrap_or_else(|| "x64".to_string()));
+
+        return (config, platform);
+    }
+
+    ("Release".to_string(), "x64".to_string())
+}
+
+fn cmd_generate_compile_commands(args: &[String]) {
+    let workspace_str = match args.first() {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "Usage: codeatlas-indexer generate-compile-commands <workspace> \
+                 [--sln <path>] [--output <path>] [--config <cfg>] [--platform <plat>]"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let workspace_root = PathBuf::from(workspace_str);
+    if !workspace_root.exists() {
+        eprintln!("Directory not found: {}", workspace_root.display());
+        std::process::exit(1);
+    }
+
+    // --output: default to <workspace>/.codeatlas/compile_commands.json
+    let output_path = args
+        .windows(2)
+        .find(|w| w[0] == "--output")
+        .map(|w| PathBuf::from(&w[1]))
+        .unwrap_or_else(|| {
+            workspace_root
+                .join(constants::DATA_DIR_NAME)
+                .join("compile_commands.json")
+        });
+
+    // --sln: explicit solution file override
+    let cli_sln = args
+        .windows(2)
+        .find(|w| w[0] == "--sln")
+        .map(|w| PathBuf::from(&w[1]));
+
+    let cli_config = args.windows(2).find(|w| w[0] == "--config").map(|w| w[1].clone());
+    let cli_platform = args.windows(2).find(|w| w[0] == "--platform").map(|w| w[1].clone());
+
+    // Locate MSBuild
+    let msbuild = match find_msbuild() {
+        Some(p) => {
+            println!("MSBuild: {}", p.display());
+            p
+        }
+        None => {
+            eprintln!(
+                "MSBuild not found. \
+                 Install Visual Studio 2017/2022 with C++ Build Tools, \
+                 or add MSBuild to PATH."
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // Find the solution file
+    let sln_path: PathBuf = if let Some(explicit) = cli_sln {
+        if !explicit.exists() {
+            eprintln!("Specified --sln not found: {}", explicit.display());
+            std::process::exit(1);
+        }
+        println!("Solution (explicit): {}", explicit.display());
+        explicit
+    } else {
+        let solutions = vcxproj::find_solution_files(&workspace_root);
+        match solutions.into_iter().next() {
+            Some(p) => {
+                println!("Solution (auto): {}", p.display());
+                p
+            }
+            None => {
+                eprintln!("No .sln files found in: {}", workspace_root.display());
+                eprintln!("Tip: use --sln <path> to specify the solution file explicitly.");
+                std::process::exit(1);
+            }
+        }
+    };
+
+    // Determine configuration / platform
+    let (auto_config, auto_platform) = detect_config_platform_from_sln(&sln_path, &workspace_root);
+    let config = cli_config.as_deref().unwrap_or(auto_config.as_str()).to_string();
+    let platform = cli_platform.as_deref().unwrap_or(auto_platform.as_str()).to_string();
+    println!("Configuration: {}|{}", config, platform);
+
+    // Collect vcxproj paths from the solution
+    let vcxproj_paths: Vec<PathBuf> = {
+        let sln_dir = sln_path.parent().unwrap_or(&workspace_root);
+        let raw_content = fs::read_to_string(&sln_path).unwrap_or_default();
+        let mut paths = Vec::new();
+        // Parse Project lines:
+        //   Project("{type-guid}") = "Name", "path\to\project.vcxproj", "{proj-guid}"
+        // Split by '"' gives tokens at indices:
+        //   0: Project(   1: type-guid   2: ) =    3: Name   4: ,    5: path   6: ,   7: proj-guid
+        for line in raw_content.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("Project(") {
+                continue;
+            }
+            let tokens: Vec<&str> = trimmed.split('"').collect();
+            if let Some(&rel) = tokens.get(5) {
+                if rel.to_lowercase().ends_with(".vcxproj") {
+                    // sln stores backslash-separated relative paths (possibly with ..)
+                    // canonicalize resolves ".." and verifies the file exists
+                    let raw = sln_dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                    if let Ok(full) = std::fs::canonicalize(&raw) {
+                        paths.push(full);
+                    }
+                }
+            }
+        }
+        paths
+    };
+
+    if vcxproj_paths.is_empty() {
+        eprintln!("No .vcxproj files found in solution: {}", sln_path.display());
+        std::process::exit(1);
+    }
+    println!("Found {} C++ project(s)", vcxproj_paths.len());
+
+    // Write the temporary targets file
+    let targets_path = match compile_commands::write_temp_targets_file() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+    };
+
+    // Ensure output directory exists
+    if let Some(parent) = output_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("Failed to create output directory: {}", e);
+            let _ = fs::remove_file(&targets_path);
+            std::process::exit(1);
+        }
+    }
+
+    // Run MSBuild on each vcxproj individually, collect all CODEATLAS_CC lines
+    println!("Running MSBuild on {} project(s) to extract compile items...", vcxproj_paths.len());
+    let mut all_entries = Vec::new();
+
+    for (i, vcxproj) in vcxproj_paths.iter().enumerate() {
+        let proj_name = vcxproj.file_name().unwrap_or_default().to_string_lossy();
+        println!("[{}/{}] {}", i + 1, vcxproj_paths.len(), proj_name);
+        let new_entries = compile_commands::extract_entries_for_vcxproj(
+            &msbuild, &vcxproj, &config, &platform, &targets_path, &workspace_root,
+        );
+        if !new_entries.is_empty() {
+            println!("  -> {} compile items", new_entries.len());
+            all_entries.extend(new_entries);
+        }
+    }
+
+    let _ = fs::remove_file(&targets_path);
+
+    if all_entries.is_empty() {
+        eprintln!(
+            "No compile items extracted. \
+             Verify that the solution has C++ projects with source files \
+             and that the configuration '{}|{}' exists.",
+            config, platform
+        );
+        std::process::exit(1);
+    }
+
+    let json = serde_json::to_string_pretty(&all_entries).expect("Failed to serialize");
+    if let Err(e) = fs::write(&output_path, &json) {
+        eprintln!("Failed to write {}: {}", output_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!(
+        "Generated {} compile_commands entries -> {}",
+        all_entries.len(),
+        output_path.display()
+    );
+}
+
 fn print_help() {
     println!("CodeAtlas Indexer");
     println!();
@@ -534,6 +815,7 @@ fn print_help() {
     println!("  incremental  Re-index only changed files and remove deleted files");
     println!("  --full       Rebuild the entire index from scratch");
     println!("  watch        Monitor the workspace and re-index on file changes");
+    println!("  generate-compile-commands  Generate compile_commands.json from .sln/.vcxproj");
     println!();
     println!("Options:");
     println!("  --verbose    Show discovery spinner, per-file progress, and lossy-read warnings");

@@ -53,9 +53,16 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<{ su
 
     log(LogLevel.INFO, 'COMMAND', `Starting command: ${command} ${args.join(' ')}`, `cwd=${fullCwd}`);
 
+    // Ensure LLVM (libclang.dll) and common tool paths are resolvable at runtime.
+    const llvmBin = 'C:\\Program Files\\LLVM\\bin';
+    const currentPath: string = (process.env['PATH'] || process.env['Path'] || '');
+    const augmentedPath = currentPath.includes(llvmBin) ? currentPath : `${currentPath};${llvmBin}`;
+    const spawnEnv = { ...process.env, PATH: augmentedPath };
+
     const child = cp.spawn(command, args, {
       cwd: fullCwd,
-      shell: true
+      shell: true,
+      env: spawnEnv
     }) as cp.ChildProcessWithoutNullStreams;
 
     let stdout = '';
@@ -87,6 +94,66 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<{ su
 
     child.on('error', (err: Error) => {
       log(LogLevel.ERROR, 'COMMAND', `Command error: ${err.message}`, `${command} ${args.join(' ')}`);
+      resolve({ success: false, stdout, stderr: err.message });
+    });
+  });
+}
+
+/** Run a shell command with extra environment variables, streaming output to renderer */
+function runCommandWithEnv(
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  extraEnv: Record<string, string>
+): Promise<{ success: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const fullCwd = cwd || process.cwd();
+
+    if (!fs.existsSync(fullCwd)) {
+      log(LogLevel.ERROR, 'COMMAND', `Directory not found: ${fullCwd}`);
+      resolve({ success: false, stdout: '', stderr: `Directory not found: ${fullCwd}` });
+      return;
+    }
+
+    const mergedEnv = { ...process.env, ...extraEnv };
+    log(LogLevel.INFO, 'COMMAND', `Starting command (with env): ${command} ${args.join(' ')}`,
+      `cwd=${fullCwd}, extraEnv=${JSON.stringify(extraEnv)}`);
+
+    const child = cp.spawn(command, args, {
+      cwd: fullCwd,
+      shell: true,
+      env: mergedEnv
+    }) as cp.ChildProcessWithoutNullStreams;
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stdout += text;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('command-output', { type: 'stdout', text });
+      }
+    });
+
+    child.stderr.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stderr += text;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('command-output', { type: 'stderr', text });
+      }
+    });
+
+    child.on('close', (code: number) => {
+      const success = code === 0;
+      log(success ? LogLevel.INFO : LogLevel.ERROR, 'COMMAND',
+        `Command (with env) finished with code ${code}`,
+        `${command} ${args.join(' ')}\nstdout: ${stdout.substring(0, 500)}\nstderr: ${stderr.substring(0, 500)}`);
+      resolve({ success, stdout, stderr });
+    });
+
+    child.on('error', (err: Error) => {
+      log(LogLevel.ERROR, 'COMMAND', `Command (with env) error: ${err.message}`, `${command} ${args.join(' ')}`);
       resolve({ success: false, stdout, stderr: err.message });
     });
   });
@@ -167,6 +234,35 @@ function installWithWinget(packageId: string, displayName: string): Promise<{ su
       log(LogLevel.ERROR, 'INSTALL', `Winget error for ${displayName}: ${err.message}`);
       resolve({ success: false, output: err.message });
     });
+  });
+}
+
+/** Select a file via dialog with optional type filters */
+function selectFile(filters?: Array<{ name: string; extensions: string[] }>): Promise<string> {
+  return new Promise((resolve) => {
+    if (!mainWindow) {
+      log(LogLevel.WARN, 'DIALOG', 'No main window available for file selection');
+      resolve('');
+      return;
+    }
+    try {
+      const result = dialog.showOpenDialogSync(mainWindow, {
+        properties: ['openFile'],
+        title: 'Select File',
+        filters: filters || [{ name: 'All Files', extensions: ['*'] }]
+      });
+      if (result && result.length > 0) {
+        log(LogLevel.INFO, 'DIALOG', `Selected file: ${result[0]}`);
+        resolve(result[0]);
+      } else {
+        log(LogLevel.DEBUG, 'DIALOG', 'File selection cancelled by user');
+        resolve('');
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log(LogLevel.ERROR, 'DIALOG', `Failed to show file dialog: ${errorMsg}`);
+      resolve('');
+    }
   });
 }
 
@@ -307,6 +403,26 @@ ipcMain.handle('run-command', async (event, command: string, args: string[], cwd
   return result;
 });
 
+ipcMain.handle('run-command-with-env', async (event, command: string, args: string[], cwd: string | undefined, env: Record<string, string>) => {
+  emitLogToRenderer(event, { level: 'INFO', step: 'COMMAND', message: `Running with env: ${command} ${args.join(' ')}` });
+  const result = await runCommandWithEnv(command, args, cwd, env || {});
+  emitLogToRenderer(event, {
+    level: result.success ? 'INFO' : 'ERROR',
+    step: 'COMMAND',
+    message: `Command finished with code ${result.success ? '0 (success)' : 'non-zero'}`
+  });
+  return result;
+});
+
+ipcMain.handle('select-file', async (event, filters?: Array<{ name: string; extensions: string[] }>) => {
+  emitLogToRenderer(event, { level: 'INFO', step: 'DIALOG', message: 'Opening file selector...' });
+  const result = await selectFile(filters);
+  if (result) {
+    emitLogToRenderer(event, { level: 'INFO', step: 'DIALOG', message: `Selected: ${result}` });
+  }
+  return result;
+});
+
 ipcMain.handle('select-directory', async (event) => {
   emitLogToRenderer(event, { level: 'INFO', step: 'DIALOG', message: 'Opening directory selector...' });
   const result = await selectDirectory();
@@ -320,6 +436,33 @@ ipcMain.handle('list-directory', async (event, dirPath: string) => {
   const entries = await listDirectory(dirPath);
   emitLogToRenderer(event, { level: 'INFO', step: 'FS', message: `Listed ${entries.length} items in ${dirPath}` });
   return entries;
+});
+
+ipcMain.handle('find-files', async (event, rootDir: string, ext: string, maxDepth: number) => {
+  const depth = typeof maxDepth === 'number' ? maxDepth : 5;
+  const results: string[] = [];
+  const extLower = ext.toLowerCase();
+
+  function walk(dir: string, currentDepth: number) {
+    if (currentDepth > depth) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(extLower)) {
+        results.push(path.join(dir, entry.name));
+      } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        walk(path.join(dir, entry.name), currentDepth + 1);
+      }
+    }
+  }
+
+  walk(rootDir, 0);
+  log(LogLevel.INFO, 'FS', `find-files: found ${results.length} *${ext} files under ${rootDir} (maxDepth=${depth})`);
+  return results;
 });
 
 ipcMain.handle('write-config', async (event, configPath: string, data: any) => {
@@ -443,6 +586,45 @@ ipcMain.handle('clear-log-file', async () => {
     emitLogToRenderer({ webContents: { send: () => {} } }, { level: 'INFO', step: 'LOG', message: 'Log file cleared' });
   }
   return result;
+});
+
+ipcMain.handle('check-user-path', async (event, dirToCheck: string) => {
+  if (process.platform !== 'win32') return { inPath: false, platform: process.platform };
+  try {
+    const script = `[Environment]::GetEnvironmentVariable('PATH', 'User')`;
+    const userPath = cp.execSync(`powershell -NoProfile -NonInteractive -Command "${script}"`, { encoding: 'utf8' }).trim();
+    const inPath = userPath.split(';').some((p: string) => p.toLowerCase() === dirToCheck.toLowerCase());
+    emitLogToRenderer(event, { level: 'INFO', step: 'PATH', message: `check-user-path "${dirToCheck}": ${inPath ? 'found' : 'not found'}` });
+    return { inPath };
+  } catch (err: any) {
+    log(LogLevel.WARN, 'PATH', `check-user-path failed: ${err.message}`);
+    return { inPath: false, error: err.message };
+  }
+});
+
+ipcMain.handle('add-to-user-path', async (event, dirToAdd: string) => {
+  if (process.platform !== 'win32') return { success: false, message: 'Windows only' };
+  try {
+    const getScript = `[Environment]::GetEnvironmentVariable('PATH', 'User')`;
+    const userPath = cp.execSync(`powershell -NoProfile -NonInteractive -Command "${getScript}"`, { encoding: 'utf8' }).trim();
+    const entries = userPath ? userPath.split(';') : [];
+    if (entries.some((p: string) => p.toLowerCase() === dirToAdd.toLowerCase())) {
+      emitLogToRenderer(event, { level: 'INFO', step: 'PATH', message: `Already in user PATH: ${dirToAdd}` });
+      return { success: true, alreadyPresent: true };
+    }
+    const newPath = userPath ? `${userPath};${dirToAdd}` : dirToAdd;
+    // Use -EncodedCommand to safely pass the path without injection risk
+    const psScript = `[Environment]::SetEnvironmentVariable('PATH', '${newPath.replace(/'/g, "''")}', 'User')`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    cp.execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { encoding: 'utf8' });
+    log(LogLevel.INFO, 'PATH', `Added to user PATH: ${dirToAdd}`);
+    emitLogToRenderer(event, { level: 'INFO', step: 'PATH', message: `Added to user PATH: ${dirToAdd}` });
+    return { success: true, alreadyPresent: false };
+  } catch (err: any) {
+    log(LogLevel.ERROR, 'PATH', `add-to-user-path failed: ${err.message}`);
+    emitLogToRenderer(event, { level: 'ERROR', step: 'PATH', message: `Failed to add to PATH: ${err.message}` });
+    return { success: false, message: err.message };
+  }
 });
 
 // ==================== App Lifecycle ====================

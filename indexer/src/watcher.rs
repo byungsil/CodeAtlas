@@ -9,6 +9,7 @@ use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::build_metadata;
+use crate::compile_commands;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
 use crate::discovery;
 use crate::indexing::{default_language_registry, make_relative, parse_discovered_files_with_progress, parse_file_strict, parse_files_strict};
@@ -68,6 +69,7 @@ struct WatchRunState {
     pending: HashSet<PathBuf>,
     in_flight: HashSet<PathBuf>,
     dirty_during_run: HashSet<PathBuf>,
+    pending_vcxproj: HashSet<PathBuf>,
     last_event: Option<Instant>,
     immediate_follow_up: bool,
 }
@@ -141,9 +143,22 @@ impl WatchRunState {
             &mut self.pending
         };
         for path in paths {
-            target.insert(path);
+            if is_vcxproj(&path) {
+                self.pending_vcxproj.insert(path);
+            } else {
+                target.insert(path);
+            }
         }
         self.last_event = Some(Instant::now());
+    }
+
+    fn take_ready_vcxproj_batch(&mut self, debounce: Duration) -> Option<Vec<PathBuf>> {
+        if self.pending_vcxproj.is_empty() || !self.is_ready(debounce) {
+            return None;
+        }
+        let mut batch: Vec<PathBuf> = self.pending_vcxproj.drain().collect();
+        batch.sort();
+        Some(batch)
     }
 
     fn take_ready_batch(&mut self, debounce: Duration) -> Option<Vec<PathBuf>> {
@@ -183,6 +198,52 @@ fn is_tracked(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(is_indexed_extension)
         .unwrap_or(false)
+}
+
+fn is_vcxproj(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("vcxproj"))
+        .unwrap_or(false)
+}
+
+/// Best-effort config/platform detection for vcxproj compile extraction.
+/// Reads the first .sln found in workspace_root, falls back to "Release|x64".
+fn detect_vcxproj_config_platform(workspace_root: &Path) -> (String, String) {
+    use crate::vcxproj;
+    let preferred_configs = ["Development", "Release", "RelWithDebInfo", "Debug"];
+    let preferred_platforms = ["x64", "Win64", "x86", "Win32"];
+
+    // Try to find an .sln in the workspace root
+    let sln_path = std::fs::read_dir(workspace_root)
+        .ok()
+        .and_then(|mut d| {
+            d.find(|entry| {
+                entry.as_ref().ok()
+                    .and_then(|e| e.path().extension().and_then(|x| x.to_str().map(|s| s.eq_ignore_ascii_case("sln"))))
+                    .unwrap_or(false)
+            })
+        })
+        .and_then(|e| e.ok())
+        .map(|e| e.path());
+
+    if let Some(sln) = sln_path {
+        if let Some(ctx) = vcxproj::parse_solution(workspace_root, &sln) {
+            let config = preferred_configs.iter()
+                .find(|&&c| ctx.projects.iter().any(|p| p.configurations.iter().any(|pc| pc.as_str() == c)))
+                .map(|&s| s.to_string())
+                .unwrap_or_else(|| ctx.projects.first()
+                    .and_then(|p| p.configurations.first()).cloned().unwrap_or_default());
+            let platform = preferred_platforms.iter()
+                .find(|&&pl| ctx.projects.iter().any(|p| p.platforms.iter().any(|pp| pp.as_str() == pl)))
+                .map(|&s| s.to_string())
+                .unwrap_or_else(|| ctx.projects.first()
+                    .and_then(|p| p.platforms.first()).cloned().unwrap_or_default());
+            return (config, platform);
+        }
+    }
+
+    ("Release".to_string(), "x64".to_string())
 }
 
 fn is_in_workspace(path: &Path, workspace_root: &Path) -> bool {
@@ -261,7 +322,10 @@ fn normalize_event_path(
     }
 
     let normalized = normalize_editor_temp_path(path);
-    if is_ignored_path(&normalized, workspace_root, ignore_rules) || !is_tracked(&normalized) {
+    if is_ignored_path(&normalized, workspace_root, ignore_rules) {
+        return None;
+    }
+    if !is_tracked(&normalized) && !is_vcxproj(&normalized) {
         return None;
     }
 
@@ -409,6 +473,64 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("file watcher channel disconnected unexpectedly".to_string());
             }
+        }
+
+        if let Some(vcxproj_batch) = state.take_ready_vcxproj_batch(debounce) {
+            let cc_path = workspace_root.join(DATA_DIR_NAME).join("compile_commands.json");
+            if cc_path.exists() {
+                if let Some(msbuild) = compile_commands::find_msbuild() {
+                    let (config, platform) = detect_vcxproj_config_platform(&workspace_root);
+                    match compile_commands::write_temp_targets_file() {
+                        Ok(targets_path) => {
+                            let mut all_new_entries: Vec<serde_json::Value> = Vec::new();
+                            for vcxproj in &vcxproj_batch {
+                                let proj_name = vcxproj.file_name().unwrap_or_default().to_string_lossy();
+                                println!(
+                                    "[{}] vcxproj changed: {}, re-extracting compile items...",
+                                    chrono::Utc::now().format("%H:%M:%S"),
+                                    proj_name
+                                );
+                                let entries = compile_commands::extract_entries_for_vcxproj(
+                                    &msbuild, vcxproj, &config, &platform,
+                                    &targets_path, &workspace_root,
+                                );
+                                if !entries.is_empty() {
+                                    println!("  -> {} compile items", entries.len());
+                                    all_new_entries.extend(entries);
+                                }
+                            }
+                            let _ = std::fs::remove_file(&targets_path);
+                            if !all_new_entries.is_empty() {
+                                match compile_commands::patch_compile_commands(&cc_path, &all_new_entries) {
+                                    Ok(affected) => {
+                                        println!(
+                                            "  compile_commands.json patched, {} file(s) affected",
+                                            affected.len()
+                                        );
+                                        // Queue affected source files for re-index
+                                        let affected_paths: Vec<PathBuf> = affected
+                                            .into_iter()
+                                            .map(PathBuf::from)
+                                            .filter(|p| is_tracked(p))
+                                            .collect();
+                                        if !affected_paths.is_empty() {
+                                            let indexing_active = !state.in_flight.is_empty();
+                                            state.record_paths(affected_paths, indexing_active);
+                                        }
+                                    }
+                                    Err(e) => eprintln!("  Failed to patch compile_commands.json: {}", e),
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("  Failed to write temp targets file: {}", e),
+                    }
+                } else {
+                    eprintln!(
+                        "[WARN] vcxproj changed but MSBuild not found — compile_commands.json not updated"
+                    );
+                }
+            }
+            // else: no compile_commands.json yet, ignore vcxproj events
         }
 
         if let Some(changed) = state.take_ready_batch(debounce) {
