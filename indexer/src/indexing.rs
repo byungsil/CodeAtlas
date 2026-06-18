@@ -907,6 +907,29 @@ pub fn parse_discovered_files_strict(
     Vec<FileRecord>,
     ParseMetrics,
 ), String> {
+    let total = discovered_files.len();
+
+    // Parse in parallel using the shared indexing thread pool.
+    // Each worker produces its result independently; errors are collected and
+    // checked during the sequential aggregation pass below.
+    let raw_results: Vec<(String, Result<(ParseResult, String, bool, bool), String>)> =
+        indexing_thread_pool().install(|| {
+            discovered_files
+                .par_iter()
+                .map(|discovered| {
+                    let rel_path = make_relative(workspace_root, &discovered.path);
+                    let result = parse_discovered_file_strict(
+                        workspace_root,
+                        discovered,
+                        build_metadata,
+                        registry,
+                    );
+                    (rel_path, result)
+                })
+                .collect()
+        });
+
+    // Sequential aggregation — fast, preserves deterministic output order.
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut relation_events = Vec::new();
@@ -914,12 +937,9 @@ pub fn parse_discovered_files_strict(
     let mut callable_flow_summaries = Vec::new();
     let mut file_records = Vec::new();
     let mut metrics = ParseMetrics::default();
-    let total = discovered_files.len();
 
-    for (index, discovered) in discovered_files.iter().enumerate() {
-        let rel_path = make_relative(workspace_root, &discovered.path);
-        let (mut result, hash, lossy, skipped) =
-            parse_discovered_file_strict(workspace_root, discovered, build_metadata, registry)?;
+    for (index, (rel_path, parse_result)) in raw_results.into_iter().enumerate() {
+        let (mut result, hash, lossy, skipped) = parse_result?;
         if verbose {
             if skipped {
                 println!(
