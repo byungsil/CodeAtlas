@@ -159,14 +159,34 @@ function runCommandWithEnv(
   });
 }
 
-/** Check if a command exists */
+/** Check if a command exists, with fallback to known Windows install paths */
 function checkCommand(name: string): boolean {
   try {
     log(LogLevel.DEBUG, 'CHECK', `Checking for command: ${name}`);
     const result = cp.spawnSync(`where ${name}`, [], { shell: true });
     const found = result.status === 0 && (result.stdout as Buffer).toString().trim().length > 0;
-    log(LogLevel.INFO, 'CHECK', `${name} is ${found ? 'available' : 'not found'}`);
-    return found;
+    if (found) {
+      log(LogLevel.INFO, 'CHECK', `${name} is available`);
+      return true;
+    }
+    // Fallback: check known installation paths on Windows
+    if (process.platform === 'win32') {
+      const knownPaths: Record<string, string[]> = {
+        clang: [
+          'C:\\Program Files\\LLVM\\bin\\clang.exe',
+          'C:\\Program Files (x86)\\LLVM\\bin\\clang.exe',
+        ],
+      };
+      const fallbacks = knownPaths[name] ?? [];
+      for (const p of fallbacks) {
+        if (require('fs').existsSync(p)) {
+          log(LogLevel.INFO, 'CHECK', `${name} found at known path: ${p}`);
+          return true;
+        }
+      }
+    }
+    log(LogLevel.INFO, 'CHECK', `${name} not found`);
+    return false;
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     log(LogLevel.ERROR, 'CHECK', `Error checking ${name}: ${errorMsg}`);
@@ -174,10 +194,27 @@ function checkCommand(name: string): boolean {
   }
 }
 
-/** Get version of a command */
+/** Get version of a command, falling back to known install paths on Windows */
 function getVersion(name: string): Promise<string> {
+  // Resolve the executable: prefer PATH, fall back to known paths on Windows
+  const knownPaths: Record<string, string[]> = {
+    clang: [
+      'C:\\Program Files\\LLVM\\bin\\clang.exe',
+      'C:\\Program Files (x86)\\LLVM\\bin\\clang.exe',
+    ],
+  };
+  let exe = name;
+  if (process.platform === 'win32') {
+    const fallbacks = knownPaths[name] ?? [];
+    for (const p of fallbacks) {
+      if (require('fs').existsSync(p)) {
+        exe = `"${p}"`;
+        break;
+      }
+    }
+  }
   return new Promise((resolve) => {
-    cp.exec(`${name} --version`, (error, stdout) => {
+    cp.exec(`${exe} --version`, (error, stdout) => {
       if (error) {
         log(LogLevel.WARN, 'CHECK', `Failed to get version for ${name}`);
         resolve('');
