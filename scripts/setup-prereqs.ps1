@@ -145,49 +145,20 @@ if (-not $SkipServerDeps) {
 
 # 3. GUI Setup Wizard (optional)
 if ($Gui -or $LaunchGui) {
+    $guiLauncher = Join-Path $RepoRoot "setup-gui.ps1"
+
+    if (-not (Test-Path $guiLauncher)) {
+        Write-Log "GUI launcher not found: $guiLauncher" "ERROR"
+        exit 1
+    }
+
     Write-Host ""
-    Write-Log "Launching GUI Setup Wizard..." "INFO"
-    
-    if (-not (Test-Path $WizardDir)) {
-        Write-Log "Setup wizard directory not found: $WizardDir" "ERROR"
+    Write-Log "Delegating GUI setup to setup-gui.ps1..." "INFO"
+    & $guiLauncher
+    if (-not $?) {
         exit 1
     }
 
-    # Install setup-wizard dependencies
-    if (-not (Test-Path (Join-Path $WizardDir "node_modules"))) {
-        Push-Location $WizardDir
-        try {
-            & npm install 2>&1 | Out-Null
-        } finally {
-            Pop-Location
-        }
-    }
-
-    # Build TypeScript + copy assets
-    Push-Location $WizardDir
-    try {
-        & npm run build 2>&1 | Out-Null
-    } finally {
-        Pop-Location
-    }
-
-    if (-not (Test-Path (Join-Path $WizardDir "main\electron-main.js"))) {
-        Write-Log "Build failed - main/electron-main.js not found" "ERROR"
-        exit 1
-    }
-
-    # Launch Electron (use local binary)
-    $ElectronBin = Join-Path $WizardDir "node_modules\electron\dist\electron.exe"
-    if (-not (Test-Path $ElectronBin)) {
-        $ElectronBin = Join-Path $WizardDir "node_modules\.bin\electron.cmd"
-    }
-    Push-Location $WizardDir
-    try {
-        & $ElectronBin .
-    } finally {
-        Pop-Location
-    }
-    
     exit 0
 }
 
@@ -198,8 +169,8 @@ Write-Log "Prerequisite setup complete!" "INFO"
 Write-Host ""
 Write-Log "Next steps:" "INFO"
 Write-Host "  1. Build indexer:  cd indexer; cargo build --release" -ForegroundColor White
-Write-Host "  2. Start server:   cd server; npm run build" -ForegroundColor White
+Write-Host "  2. Build server:   cd server; npm run build" -ForegroundColor White
 Write-Host ""
-Write-Host "  Run GUI wizard:   powershell setup-gui.ps1" -ForegroundColor Gray
+Write-Host "  Run GUI wizard:   powershell -ExecutionPolicy Bypass -File .\\setup-gui.ps1" -ForegroundColor Gray
 Write-Host ""
 

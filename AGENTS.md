@@ -33,11 +33,15 @@ npm run dev          # ts-node src/index.ts
 CODEATLAS_PORT=8090 npx ts-node src/index.ts <workspace-root>/.codeatlas
 ```
 
-### One-command setup (Windows)
+### Setup entry points
 ```powershell
-.\scripts\setup-all.ps1              # prereqs + indexer + server build
-.\scripts\setup-prereqs.ps1          # Node.js, npm, Rust only (no C/C++ tools)
-.\setup-gui.ps1                      # interactive GUI wizard
+.\setup-gui.ps1                      # recommended Windows GUI entry point
+.\scripts\setup-all.ps1             # Windows CLI bootstrap; -Gui delegates to setup-gui.ps1
+.\scripts\setup-prereqs.ps1         # Node.js, npm, Rust only (no C/C++ tools)
+```
+
+```bash
+./setup-gui.sh                        # recommended Linux/macOS GUI entry point
 ```
 
 ## Key Files

@@ -4,6 +4,30 @@
 
 CodeAtlas is a local code intelligence system for AI-assisted development. It indexes a workspace into SQLite and serves structured queries through MCP and HTTP so agents can reason about code without scanning raw files.
 
+## Start Here
+
+For most first-time installs, start with the guided setup wizard:
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
+```
+
+```bash
+# Linux / macOS
+./setup-gui.sh
+```
+
+`setup-all.ps1 -Gui` is kept as a Windows compatibility alias and delegates to `setup-gui.ps1`.
+
+The wizard guides you through:
+1. **Environment check** — detects Node.js, npm, Rust, and LLVM; installs missing tools via winget; offers to add LLVM to the user PATH if installed but not on PATH
+2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback
+3. **Server setup** — installs npm dependencies and builds TypeScript
+4. **Workspace configuration** — browse to your codebase; auto-detects `.sln` files; choose compile context method (`cpp_context` from `.vcxproj` scan, or `compile_commands` via MSBuild)
+5. **Indexing configuration** — select languages and file extensions to index
+6. **Complete** — apply MCP server config to your VS Code workspace (`.vscode/mcp.json`) with one click
+
 ## What You Get
 
 - **Hybrid Rust indexer**: Tree-sitter (syntax parsing for all languages) + libclang (precise C++ analysis with compile flags) — automatically selects the best engine per file
@@ -29,35 +53,20 @@ CodeAtlas is a local code intelligence system for AI-assisted development. It in
   - `libclang.dll` must be in `PATH` at indexing time
   - Without LLVM, CodeAtlas falls back to Tree-sitter for all C++ files
 
-## GUI Setup (Recommended for First-Time Users)
+## Manual / CLI Setup
 
-The easiest way to get started is with the interactive setup wizard:
+Use this path if you prefer a non-GUI bootstrap or want to script the setup steps yourself.
 
-```powershell
-# One-command GUI setup (installs prerequisites, builds indexer & server)
-powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
-```
-
-The wizard guides you through:
-1. **Environment check** — detects Node.js, npm, Rust, and LLVM; installs missing tools via winget; offers to add LLVM to the user PATH if installed but not on PATH
-2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback
-3. **Server setup** — installs npm dependencies and builds TypeScript
-4. **Workspace configuration** — browse to your codebase; auto-detects `.sln` files; choose compile context method (`cpp_context` from `.vcxproj` scan, or `compile_commands` via MSBuild)
-5. **Indexing configuration** — select languages and file extensions to index
-6. **Complete** — apply MCP server config to your VS Code workspace (`.vscode/mcp.json`) with one click
-
-## Quick Start
-
-### 1. Build
+### 1. Bootstrap and Build
 
 ```bash
 git clone https://github.com/byungsil/CodeAtlas.git
 cd CodeAtlas
 
-# one-touch Windows setup (prereqs + toolchain check + indexer/server build)
+# Windows CLI bootstrap (prereqs + optional indexer/server build prompt)
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-all.ps1
 
-# optional Windows bootstrap for Node.js, npm, Rust, and server npm deps
+# optional CLI prerequisite bootstrap for Node.js, npm, Rust, and server npm deps
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-prereqs.ps1
 # note: C/C++ build tools are not installed by this script
 

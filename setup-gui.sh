@@ -1,5 +1,6 @@
 #!/bin/bash
 # CodeAtlas GUI Setup Wizard Launcher (Linux/macOS)
+# Canonical POSIX entry point for the interactive setup wizard.
 # Usage: ./setup-gui.sh
 
 set -e
@@ -18,16 +19,21 @@ if [ ! -d "$WIZARD_DIR/node_modules" ]; then
     cd "$WIZARD_DIR" && npm install
 fi
 
-# Build TypeScript
+# Build TypeScript + copy assets
 echo "Building Setup Wizard..."
-cd "$WIZARD_DIR" && npx tsc
+cd "$WIZARD_DIR" && npm run build
 
-if [ ! -f "$WIZARD_DIR/electron-main.js" ]; then
+if [ ! -f "$WIZARD_DIR/main/electron-main.js" ]; then
     echo "Error: Build failed. Check TypeScript compilation." >&2
     exit 1
 fi
 
-# Launch Electron
+# Launch Electron (prefer the local binary to avoid npx prompts)
 echo ""
 echo "Starting CodeAtlas Setup Wizard..."
-cd "$WIZARD_DIR" && npx electron .
+ELECTRON_BIN="$WIZARD_DIR/node_modules/.bin/electron"
+if [ -x "$ELECTRON_BIN" ]; then
+    cd "$WIZARD_DIR" && "$ELECTRON_BIN" .
+else
+    cd "$WIZARD_DIR" && npx electron .
+fi

@@ -1,5 +1,5 @@
-# CodeAtlas Setup - Full Installation Script
-# Run this to install all prerequisites and build everything
+# CodeAtlas Setup - CLI bootstrap and GUI compatibility entry point
+# Use setup-gui.ps1 as the canonical GUI launcher; this script supports CLI setup and delegates -Gui.
 
 param(
     [switch]$Gui,
@@ -30,68 +30,25 @@ Write-Host ""
 
 # Check if running in GUI mode
 if ($Gui -or $LaunchGui) {
-    Write-Log "Launching GUI Setup Wizard..." "INFO"
-    
-    $wizardDir = Join-Path $RepoRoot "setup-wizard"
-    
-    if (-not (Test-Path $wizardDir)) {
-        Write-Log "Setup wizard directory not found: $wizardDir" "ERROR"
+    $guiLauncher = Join-Path $RepoRoot "setup-gui.ps1"
+
+    if (-not (Test-Path $guiLauncher)) {
+        Write-Log "GUI launcher not found: $guiLauncher" "ERROR"
         exit 1
     }
 
-    # Install npm dependencies for setup-wizard
-    if (-not (Test-Path (Join-Path $wizardDir "node_modules"))) {
-        Write-Host ""
-        Write-Log "Installing setup wizard dependencies..." "INFO"
-        Push-Location $wizardDir
-        try {
-            & npm install 2>&1 | Out-Null
-            Write-Log "Setup wizard dependencies installed" "INFO"
-        } catch {
-            Write-Log "Failed to install setup wizard dependencies: $_" "ERROR"
-            throw
-        } finally {
-            Pop-Location
-        }
-    }
-
-    # Build TypeScript
-    Write-Host ""
-    Write-Log "Building Setup Wizard..." "INFO"
-    Push-Location $wizardDir
-    try {
-        & npx tsc 2>&1 | Out-Null
-        Write-Log "Setup wizard build complete" "INFO"
-    } catch {
-        Write-Log "Failed to build setup wizard: $_" "ERROR"
-        throw
-    } finally {
-        Pop-Location
-    }
-
-    if (-not (Test-Path (Join-Path $wizardDir "electron-main.js"))) {
-        Write-Log "Build failed - electron-main.js not found" "ERROR"
+    Write-Log "Delegating GUI setup to setup-gui.ps1..." "INFO"
+    & $guiLauncher
+    if (-not $?) {
         exit 1
     }
 
-    # Launch Electron
-    Write-Host ""
-    Write-Log "Starting GUI Setup Wizard..." "INFO"
-    Start-Sleep -Seconds 1
-    
-    Push-Location $wizardDir
-    try {
-        & npx electron .
-    } finally {
-        Pop-Location
-    }
-    
     exit 0
 }
 
 # ==================== CLI Mode (Legacy) ====================
 
-Write-Log "Running in CLI mode. Use -Gui or -g flag for GUI." "INFO"
+Write-Log "Running in CLI bootstrap mode. Recommended GUI entry point: .\\setup-gui.ps1" "INFO"
 Write-Host ""
 
 $scriptPath = Join-Path $PSScriptRoot "setup-prereqs.ps1"
@@ -139,6 +96,6 @@ Write-Host ""
 Write-Log "Setup complete!" "INFO"
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Run 'setup-all.ps1 -Gui' for GUI setup wizard" -ForegroundColor White
+Write-Host "  1. Run 'powershell -ExecutionPolicy Bypass -File .\\setup-gui.ps1' for the GUI setup wizard" -ForegroundColor White
 Write-Host "  2. Or run server: cd server && npm start" -ForegroundColor White
 Write-Host ""

@@ -1,4 +1,5 @@
 # CodeAtlas GUI Setup Wizard Launcher
+# Canonical Windows entry point for the interactive setup wizard.
 # Usage: powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
 
 $RepoRoot = (Resolve-Path $PSScriptRoot).Path
