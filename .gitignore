@@ -22,6 +22,12 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# CodeAtlas runtime artifacts (versioned DB files, pointer, stats)
+# samples/index.db is intentionally tracked for test fixtures
+samples/.codeatlas/index-*.db
+samples/.codeatlas/current-db.json
+samples/.codeatlas/mcp-runtime-stats.json
+
 # Logs
 *.log
 
