@@ -265,6 +265,37 @@
           <!-- Dynamically populated -->
         </div>
 
+        <div class="instructions-section" style="margin:1.5rem 0; padding:1.2rem; background:var(--bg-secondary,#1e2130); border-radius:8px; border:1px solid var(--border-color,#2d3148)">
+          <h3 style="margin:0 0 0.5rem">🤖 AI 에이전트 지시문 적용 <span style="font-size:0.8em;color:#888;font-weight:400">(선택사항)</span></h3>
+          <p style="margin:0 0 1rem;color:#aaa;font-size:0.9em">CodeAtlas MCP 도구를 AI 에이전트에서 최적으로 활용하려면 지시문 파일을 복사해 두세요.</p>
+          <div style="display:flex;flex-direction:column;gap:0.6rem" id="instructionTargets">
+            <div class="instructions-option" style="display:flex;align-items:center;gap:0.8rem;padding:0.7rem 1rem;background:var(--bg-card,#252840);border-radius:6px;border:1px solid var(--border-color,#2d3148)">
+              <div style="flex:1">
+                <div style="font-weight:500">GitHub Copilot — 레포지토리</div>
+                <div style="font-size:0.8em;color:#888">&lt;워크스페이스&gt;/.github/copilot-instructions.md</div>
+              </div>
+              <button class="btn-secondary" id="btn-apply-copilot-repo" onclick="applyInstructions('copilot-repo')">적용</button>
+              <span class="instr-status" id="status-copilot-repo" style="display:none;color:#4ade80">✅</span>
+            </div>
+            <div class="instructions-option" style="display:flex;align-items:center;gap:0.8rem;padding:0.7rem 1rem;background:var(--bg-card,#252840);border-radius:6px;border:1px solid var(--border-color,#2d3148)">
+              <div style="flex:1">
+                <div style="font-weight:500">GitHub Copilot — 사용자 전역</div>
+                <div style="font-size:0.8em;color:#888">%APPDATA%/Code/User/prompts/codeatlas_instructions.md</div>
+              </div>
+              <button class="btn-secondary" id="btn-apply-copilot-user" onclick="applyInstructions('copilot-user')">적용</button>
+              <span class="instr-status" id="status-copilot-user" style="display:none;color:#4ade80">✅</span>
+            </div>
+            <div class="instructions-option" style="display:flex;align-items:center;gap:0.8rem;padding:0.7rem 1rem;background:var(--bg-card,#252840);border-radius:6px;border:1px solid var(--border-color,#2d3148)">
+              <div style="flex:1">
+                <div style="font-weight:500">Claude</div>
+                <div style="font-size:0.8em;color:#888">&lt;워크스페이스&gt;/CLAUDE.md</div>
+              </div>
+              <button class="btn-secondary" id="btn-apply-claude" onclick="applyInstructions('claude')">적용</button>
+              <span class="instr-status" id="status-claude" style="display:none;color:#4ade80">✅</span>
+            </div>
+          </div>
+        </div>
+
         <div class="action-buttons complete-actions">
           <button class="btn-primary btn-large" onclick="launchCodeAtlas()">
             🚀 CodeAtlas 시작하기
@@ -280,6 +311,7 @@
     <footer class="wizard-footer">
       <button class="btn-nav btn-back hidden" id="btnBack" onclick="goToStep(currentStep - 1)">← 이전</button>
       <div class="spacer"></div>
+      <button class="btn-nav btn-skip hidden" id="btnSkip" onclick="skipStep()" style="color:#888;background:transparent;border:1px solid #444;margin-right:0.5rem">건너뛰기</button>
       <button class="btn-nav btn-next" id="btnNext" onclick="nextStep()">다음 →</button>
     </footer>
 

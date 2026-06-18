@@ -12,7 +12,8 @@ const setupData = {
   serverInstalled: false,
   workspacePath: '',
   config: {},
-  selectedLangs: new Set()
+  selectedLangs: new Set(),
+  skipped: new Set()  // tracks which steps were skipped
 };
 
 // Supported languages and their extensions
@@ -125,12 +126,19 @@ function updateProgress(activeStep) {
 function updateFooter(stepIndex) {
   const btnBack = document.getElementById('btnBack');
   const btnNext = document.getElementById('btnNext');
+  const btnSkip = document.getElementById('btnSkip');
 
-  // Back button visibility
-  if (stepIndex === 0) {
-    btnBack.classList.add('hidden');
-  } else {
-    btnBack.classList.remove('hidden');
+  // Back button
+  btnBack.classList.toggle('hidden', stepIndex === 0);
+
+  // Skip button: visible for steps 1-5 (not welcome, not complete)
+  const skippableSteps = [1, 2, 3, 4, 5];
+  if (btnSkip) {
+    btnSkip.classList.toggle('hidden', !skippableSteps.includes(stepIndex));
+    // Label reflects current state
+    const alreadySkipped = setupData.skipped.has(stepIndex);
+    btnSkip.textContent = alreadySkipped ? '건너뜀 ✓' : '건너뛰기';
+    btnSkip.disabled = alreadySkipped;
   }
 
   // Next/Finish button logic
@@ -151,25 +159,25 @@ function updateFooter(stepIndex) {
     btnNext.onclick = nextStep;
     btnNext.disabled = false;
   } else if (stepIndex === 2) {
-    // Indexer build step - disable until build completes
-    btnNext.textContent = setupData.indexerBuilt ? '다음 →' : '다음 →';
+    // Indexer build step - disable until build completes or skipped
+    btnNext.textContent = '다음 →';
     btnNext.onclick = nextStep;
-    btnNext.disabled = !setupData.indexerBuilt || isBuildingIndexer;
+    btnNext.disabled = (!setupData.indexerBuilt && !setupData.skipped.has(2)) || isBuildingIndexer;
   } else if (stepIndex === 3) {
-    // Server install step - disable until install completes
-    btnNext.textContent = setupData.serverInstalled ? '다음 →' : '다음 →';
+    // Server install step - disable until install completes or skipped
+    btnNext.textContent = '다음 →';
     btnNext.onclick = nextStep;
-    btnNext.disabled = !setupData.serverInstalled || isInstallingServer;
+    btnNext.disabled = (!setupData.serverInstalled && !setupData.skipped.has(3)) || isInstallingServer;
   } else if (stepIndex === 4) {
     // Workspace config step - create data dir on next
     btnNext.textContent = '다음 →';
     btnNext.onclick = handleNextStep;
     btnNext.disabled = false;
   } else if (stepIndex === 5) {
-    // Indexing config step - disable until indexing completes
-    btnNext.textContent = setupData.indexingDone ? '다음 →' : '다음 →';
+    // Indexing config step - disable until indexing completes or skipped
+    btnNext.textContent = '다음 →';
     btnNext.onclick = nextStep;
-    btnNext.disabled = !setupData.indexingDone || isIndexing;
+    btnNext.disabled = (!setupData.indexingDone && !setupData.skipped.has(5)) || isIndexing;
   } else if (isBuildingIndexer || isInstallingServer) {
     // During any build/install operation
     btnNext.textContent = '작업 중...';
@@ -181,6 +189,27 @@ function updateFooter(stepIndex) {
     btnNext.disabled = false;
   }
 }
+
+// ==================== Skip Step ====================
+
+function skipStep() {
+  const skippable = [1, 2, 3, 4, 5];
+  if (!skippable.includes(currentStep)) return;
+
+  const stepLabels = { 1: '환경 검사', 2: '인덱서 빌드', 3: '서버 설정', 4: '작업 공간', 5: '인덱싱 설정' };
+  addLogEntry('INFO', 'NAV', `스텝 건너뜀: ${stepLabels[currentStep] || currentStep}`);
+
+  setupData.skipped.add(currentStep);
+
+  // Release any in-progress locks so navigation isn't blocked
+  if (currentStep === 2) isBuildingIndexer = false;
+  if (currentStep === 3) isInstallingServer = false;
+  if (currentStep === 5) isIndexing = false;
+
+  nextStep();
+}
+
+window.skipStep = skipStep;
 
 // ==================== Logging System ====================
 
@@ -984,8 +1013,10 @@ function populateSummary() {
   }
 
   // Build status
-  html += `<div class="summary-item"><span class="summary-label">🔨 인덱서</span><span class="summary-value">${setupData.indexerBuilt ? '✅ 빌드 완료' : '⏭️ 건너뜀'}</span></div>`;
-  html += `<div class="summary-item"><span class="summary-label">📦 서버</span><span class="summary-value">${setupData.serverInstalled ? '✅ 설치 완료' : '⏭️ 건너뜀'}</span></div>`;
+  const indexerLabel = setupData.skipped.has(2) ? '⏭️ 건너뜀' : (setupData.indexerBuilt ? '✅ 빌드 완료' : '⏭️ 건너뜀');
+  const serverLabel  = setupData.skipped.has(3) ? '⏭️ 건너뜀' : (setupData.serverInstalled ? '✅ 설치 완료' : '⏭️ 건너뜀');
+  html += `<div class="summary-item"><span class="summary-label">🔨 인덱서</span><span class="summary-value">${indexerLabel}</span></div>`;
+  html += `<div class="summary-item"><span class="summary-label">📦 서버</span><span class="summary-value">${serverLabel}</span></div>`;
 
   // Workspace
   if (setupData.workspacePath) {
@@ -1012,6 +1043,54 @@ function populateSummary() {
 
   summaryEl.innerHTML = html;
 }
+
+// ==================== Agent Instructions ====================
+
+async function applyInstructions(target) {
+  const btn = document.getElementById(`btn-apply-${target}`);
+  const statusEl = document.getElementById(`status-${target}`);
+  if (btn) btn.disabled = true;
+
+  try {
+    let dest;
+    if (target === 'copilot-repo') {
+      if (!setupData.workspacePath) {
+        addLogEntry('WARN', 'INSTRUCTIONS', '워크스페이스 경로가 설정되지 않았습니다.');
+        if (btn) btn.disabled = false;
+        return;
+      }
+      dest = await window.codeatlas.joinPaths(setupData.workspacePath, '.github', 'copilot-instructions.md');
+    } else if (target === 'copilot-user') {
+      const appData = await window.codeatlas.getAppDataPath();
+      dest = await window.codeatlas.joinPaths(appData, 'Code', 'User', 'prompts', 'codeatlas_instructions.md');
+    } else if (target === 'claude') {
+      if (!setupData.workspacePath) {
+        addLogEntry('WARN', 'INSTRUCTIONS', '워크스페이스 경로가 설정되지 않았습니다.');
+        if (btn) btn.disabled = false;
+        return;
+      }
+      dest = await window.codeatlas.joinPaths(setupData.workspacePath, 'CLAUDE.md');
+    } else {
+      return;
+    }
+
+    addLogEntry('INFO', 'INSTRUCTIONS', `Copying instructions to: ${dest}`);
+    const result = await window.codeatlas.copyInstructions(dest);
+    if (result.success) {
+      addLogEntry('INFO', 'INSTRUCTIONS', `✅ 지시문 적용 완료: ${dest}`);
+      if (statusEl) statusEl.style.display = 'inline';
+      if (btn) btn.textContent = '완료';
+    } else {
+      addLogEntry('ERROR', 'INSTRUCTIONS', `❌ 적용 실패: ${result.error}`);
+      if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
+    }
+  } catch (err) {
+    addLogEntry('ERROR', 'INSTRUCTIONS', `예외 발생: ${err.message}`);
+    if (btn) { btn.disabled = false; btn.textContent = '재시도'; }
+  }
+}
+
+window.applyInstructions = applyInstructions;
 
 async function launchCodeAtlas() {
   try {

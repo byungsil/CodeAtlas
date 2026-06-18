@@ -408,6 +408,28 @@ function emitLogToRenderer(event: any, logEntry: { level: string; step?: string;
   }
 }
 
+ipcMain.handle('copy-instructions', async (_event, dest: string) => {
+  const fs = require('fs') as typeof import('fs');
+  const pathMod = require('path') as typeof import('path');
+  try {
+    const src = pathMod.join(__dirname, '../../instructions/codeatlas_instructions.md');
+    if (!fs.existsSync(src)) {
+      return { success: false, error: 'Source file not found: ' + src };
+    }
+    const destDir = pathMod.dirname(dest);
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    fs.copyFileSync(src, dest);
+    log(LogLevel.INFO, 'INSTRUCTIONS', `Copied instructions to: ${dest}`);
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(LogLevel.ERROR, 'INSTRUCTIONS', `Failed to copy instructions: ${msg}`);
+    return { success: false, error: msg };
+  }
+});
+
 ipcMain.handle('check-command', async (event, name: string) => {
   const exists = checkCommand(name);
   let version = '';

@@ -66,5 +66,8 @@ contextBridge.exposeInMainWorld('codeatlas', {
   getAppDataPath: () => ipcRenderer.invoke('get-appdata-path'),
 
   // Directory operations
-  createDirectory: (dirPath: string) => ipcRenderer.invoke('create-directory', dirPath)
+  createDirectory: (dirPath: string) => ipcRenderer.invoke('create-directory', dirPath),
+
+  // Agent instructions
+  copyInstructions: (dest: string) => ipcRenderer.invoke('copy-instructions', dest)
 });
