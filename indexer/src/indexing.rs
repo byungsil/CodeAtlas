@@ -93,6 +93,22 @@ impl LanguageAdapter for CppLanguageAdapter {
                 }
             }
         }
+
+        // When the file is a C/C++ header (.h, .hpp, .hxx, .hh, .inl) and
+        // no -x flag was provided by the build system, tell Clang to parse it
+        // as C++ rather than letting it infer "C header" from the extension.
+        // Without this, Clang silently ignores classes, namespaces, etc.
+        let is_header = file_path.ends_with(".h")
+            || file_path.ends_with(".hpp")
+            || file_path.ends_with(".hxx")
+            || file_path.ends_with(".hh")
+            || file_path.ends_with(".inl");
+        let has_x_flag = args.iter().any(|a| a == "-x" || a.starts_with("-x"));
+        if is_header && !has_x_flag {
+            args.push("-x".to_string());
+            args.push("c++-header".to_string());
+        }
+
         crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)
     }
 }

@@ -400,22 +400,13 @@ export class SqliteStore {
     const fileRows = this.db
       .prepare("SELECT path, symbol_count FROM files")
       .all() as Array<{ path: string; symbol_count: number }>;
-    const symbolRows = this.db
-      .prepare("SELECT file_path FROM symbols")
-      .all() as Array<{ file_path: string }>;
     const summary = new Map<WorkspaceLanguageSummaryRecord["language"], WorkspaceLanguageSummaryRecord>();
 
     for (const row of fileRows) {
       const language = deriveLanguageFromPath(row.path);
       const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
       current.fileCount += 1;
-      summary.set(language, current);
-    }
-
-    for (const row of symbolRows) {
-      const language = deriveLanguageFromPath(row.file_path);
-      const current = summary.get(language) ?? { language, fileCount: 0, symbolCount: 0 };
-      current.symbolCount += 1;
+      current.symbolCount += (row.symbol_count ?? 0);
       summary.set(language, current);
     }
 
@@ -423,18 +414,37 @@ export class SqliteStore {
   }
 
   getIndexDetails(): IndexDetailsRecord {
-    const hasSymbolMetadata = this.hasMetadataColumns();
+    // Use the files table for counts that are pre-aggregated or per-file:
+    // - symbol count is summed from files.symbol_count (avoids full scan of symbols)
+    // - file risk counts use files table columns (no index on symbols risk columns)
+    const fileSummary = this.db
+      .prepare(`
+        SELECT
+          COUNT(*) AS file_count,
+          COALESCE(SUM(symbol_count), 0) AS symbol_count,
+          COALESCE(SUM(CASE WHEN parse_fragility = 'elevated' THEN 1 ELSE 0 END), 0) AS elevated_parse_fragility,
+          COALESCE(SUM(CASE WHEN macro_sensitivity = 'high' THEN 1 ELSE 0 END), 0) AS macro_sensitive,
+          COALESCE(SUM(CASE WHEN include_heaviness = 'heavy' THEN 1 ELSE 0 END), 0) AS include_heavy
+        FROM files
+      `)
+      .get() as {
+        file_count: number;
+        symbol_count: number;
+        elevated_parse_fragility: number;
+        macro_sensitive: number;
+        include_heavy: number;
+      };
     const counts = {
-      symbols: this.scalarCount("symbols"),
+      symbols: fileSummary.symbol_count,
       calls: this.scalarCount("calls"),
       references: this.hasReferencesTable() ? this.scalarCount("symbol_references") : 0,
       propagation: this.hasPropagationTable() ? this.scalarCount("propagation_events") : 0,
-      files: this.scalarCount("files"),
+      files: fileSummary.file_count,
     };
     const fileRiskCounts = {
-      elevatedParseFragility: hasSymbolMetadata ? this.scalarWhereCount("symbols", "parse_fragility = 'elevated'") : 0,
-      macroSensitive: hasSymbolMetadata ? this.scalarWhereCount("symbols", "macro_sensitivity = 'high'") : 0,
-      includeHeavy: hasSymbolMetadata ? this.scalarWhereCount("symbols", "include_heaviness = 'heavy'") : 0,
+      elevatedParseFragility: fileSummary.elevated_parse_fragility,
+      macroSensitive: fileSummary.macro_sensitive,
+      includeHeavy: fileSummary.include_heavy,
     };
     const metadata = this.readMetadataMap();
     const stat = safeStat(this.sourcePath);

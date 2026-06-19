@@ -3755,6 +3755,7 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: String::new(),
             line: call_node.start_position().row + 1,
         }),
@@ -3780,6 +3781,7 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
                 receiver_kind,
                 qualifier: None,
                 qualifier_kind: None,
+                pre_resolved_callee_id: None,
                 file_path: String::new(),
                 line: call_node.start_position().row + 1,
             })
@@ -3812,9 +3814,60 @@ fn parse_call_expr(func_node: Node, caller_id: &str, call_node: Node, ctx: &Ctx)
                 receiver_kind: None,
                 qualifier,
                 qualifier_kind,
+                pre_resolved_callee_id: None,
                 file_path: String::new(),
                 line: call_node.start_position().row + 1,
             })
+        }
+        // foo<T>(args) or Ns::foo<T>(args) — template_function wraps the real callee name
+        "template_function" => {
+            let name_child = func_node.child_by_field_name("name")?;
+            match name_child.kind() {
+                "identifier" => Some(RawCallSite {
+                    caller_id: caller_id.to_string(),
+                    called_name: ctx.node_text(name_child),
+                    call_kind: RawCallKind::Unqualified,
+                    argument_count,
+                    argument_texts,
+                    result_target,
+                    receiver: None,
+                    receiver_kind: None,
+                    qualifier: None,
+                    qualifier_kind: None,
+                    pre_resolved_callee_id: None,
+                    file_path: String::new(),
+                    line: call_node.start_position().row + 1,
+                }),
+                "qualified_identifier" => {
+                    let count = name_child.named_child_count();
+                    let last = name_child.named_child(count.checked_sub(1)?)?;
+                    let mut parts = Vec::new();
+                    for i in 0..count.saturating_sub(1) {
+                        if let Some(child) = name_child.named_child(i) {
+                            parts.push(ctx.node_text(child));
+                        }
+                    }
+                    let qualifier = if parts.is_empty() { None } else { Some(parts.join("::")) };
+                    let qualifier_kind =
+                        qualifier.as_deref().and_then(|v| classify_qualifier_kind(v, ctx));
+                    Some(RawCallSite {
+                        caller_id: caller_id.to_string(),
+                        called_name: ctx.node_text(last),
+                        call_kind: RawCallKind::Qualified,
+                        argument_count,
+                        argument_texts,
+                        result_target,
+                        receiver: None,
+                        receiver_kind: None,
+                        qualifier,
+                        qualifier_kind,
+                        pre_resolved_callee_id: None,
+                        file_path: String::new(),
+                        line: call_node.start_position().row + 1,
+                    })
+                }
+                _ => None,
+            }
         }
         _ => None,
     }

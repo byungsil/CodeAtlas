@@ -1,0 +1,22 @@
+[
+  {
+    "directory": "F:/dev/CodeAtlas/samples",
+    "command": "clang++ -std=c++17 -I. -Isrc src/game_object.cpp",
+    "file": "src/game_object.cpp"
+  },
+  {
+    "directory": "F:/dev/CodeAtlas/samples",
+    "command": "clang++ -std=c++17 -I. -Isrc -x c++-header src/game_object.h",
+    "file": "src/game_object.h"
+  },
+  {
+    "directory": "F:/dev/CodeAtlas/samples",
+    "command": "clang++ -std=c++17 -I. -Isrc src/ai_system.cpp",
+    "file": "src/ai_system.cpp"
+  },
+  {
+    "directory": "F:/dev/CodeAtlas/samples",
+    "command": "clang++ -std=c++17 -I. -Isrc src/main.cpp",
+    "file": "src/main.cpp"
+  }
+]

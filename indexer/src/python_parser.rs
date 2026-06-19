@@ -311,6 +311,7 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
                     receiver_kind,
                     qualifier,
                     qualifier_kind,
+                    pre_resolved_callee_id: None,
                     file_path: file_path.into(),
                     line: line_no,
                 });
@@ -341,6 +342,7 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
                         receiver_kind: None,
                         qualifier: parent_scope(imported_symbol_id),
                         qualifier_kind: Some(RawQualifierKind::Namespace),
+                        pre_resolved_callee_id: None,
                         file_path: file_path.into(),
                         line: line_no,
                     });
@@ -358,6 +360,7 @@ pub fn parse_python_file(file_path: &str, source: &str) -> Result<ParseResult, S
                     receiver_kind: None,
                     qualifier: None,
                     qualifier_kind: None,
+                    pre_resolved_callee_id: None,
                     file_path: file_path.into(),
                     line: line_no,
                 });

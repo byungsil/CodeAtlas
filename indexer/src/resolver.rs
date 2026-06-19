@@ -95,6 +95,26 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
     let mut seen = HashSet::new();
 
     for raw in raw_calls {
+        // Fast path: libclang USR pre-resolved callee — skip name-based disambiguation
+        if let Some(callee_id) = &raw.pre_resolved_callee_id {
+            if callee_id != &raw.caller_id {
+                if symbols.iter().any(|s| &s.id == callee_id) {
+                    let key = format!("{}->{}@{}:{}", raw.caller_id, callee_id, raw.file_path, raw.line);
+                    if seen.insert(key) {
+                        calls.push(Call {
+                            caller_id: raw.caller_id.clone(),
+                            callee_id: callee_id.clone(),
+                            file_path: raw.file_path.clone(),
+                            line: raw.line,
+                        });
+                    }
+                    continue;
+                }
+            } else {
+                continue; // self-call, skip
+            }
+        }
+
         let candidates = collect_candidates(raw, &by_name);
         let callee_files: Vec<&str> = candidates.iter().map(|s| s.file_path.as_str()).collect();
         let caller_file = raw.file_path.as_str();
@@ -441,7 +461,11 @@ fn tie_break<'a>(ranked: &[RankedCandidate<'a>]) -> (ResolutionStatus, Option<&'
     let top_count = ranked.iter().take_while(|candidate| candidate.score == top_score).count();
 
     if top_count > 1 {
-        return (ResolutionStatus::Ambiguous, None);
+        // When there is positive scoring signal but candidates are tied, preserve the
+        // top-ranked edge as a partial-confidence call rather than silently dropping it.
+        // Zero or negative scores mean no basis for a guess — drop those.
+        let chosen = if top_score > 0 { Some(first.symbol) } else { None };
+        return (ResolutionStatus::Ambiguous, chosen);
     }
 
     (ResolutionStatus::Resolved, Some(first.symbol))
@@ -980,6 +1004,28 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
     let mut seen = HashSet::new();
 
     for raw in raw_calls {
+        // Fast path: libclang USR pre-resolved callee — check in new_symbols, then DB
+        if let Some(callee_id) = &raw.pre_resolved_callee_id {
+            if callee_id != &raw.caller_id {
+                let in_new = new_symbols.iter().any(|s| &s.id == callee_id);
+                let exists = in_new || db.symbol_exists(callee_id).unwrap_or(false);
+                if exists {
+                    let key = format!("{}->{}@{}:{}", raw.caller_id, callee_id, raw.file_path, raw.line);
+                    if seen.insert(key) {
+                        calls.push(Call {
+                            caller_id: raw.caller_id.clone(),
+                            callee_id: callee_id.clone(),
+                            file_path: raw.file_path.clone(),
+                            line: raw.line,
+                        });
+                    }
+                    continue;
+                }
+            } else {
+                continue; // self-call, skip
+            }
+        }
+
         let caller_parent = new_parent_of
             .get(raw.caller_id.as_str())
             .copied()
@@ -1440,6 +1486,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         }
@@ -1457,6 +1504,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         }
@@ -2304,6 +2352,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "shotnormal.cpp".into(),
             line: 1634,
         };
@@ -2427,6 +2476,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2462,6 +2512,7 @@ mod tests {
             receiver_kind: None,
             qualifier: Some("Worker".to_string()),
             qualifier_kind: Some(RawQualifierKind::Type),
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2497,6 +2548,7 @@ mod tests {
             receiver_kind: None,
             qualifier: Some("Gameplay".to_string()),
             qualifier_kind: Some(RawQualifierKind::Namespace),
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2532,6 +2584,7 @@ mod tests {
             receiver_kind: None,
             qualifier: Some("Gameplay".to_string()),
             qualifier_kind: Some(RawQualifierKind::Namespace),
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2567,6 +2620,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2610,6 +2664,7 @@ mod tests {
             receiver_kind: None,
             qualifier: None,
             qualifier_kind: None,
+            pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
         };
@@ -2668,14 +2723,19 @@ mod tests {
 
         let decision = resolve_one(&raw, candidates, context);
 
+        // Status is Ambiguous. Both candidates share file_path="test.cpp" which gives
+        // implementation_file_preferred (+20), so top_score=20 > 0 and the top
+        // candidate is now preserved rather than dropped.
         assert_eq!(decision.status, ResolutionStatus::Ambiguous);
-        assert!(decision.chosen.is_none());
+        assert!(decision.chosen.is_some());
         assert_eq!(decision.ranked.len(), 2);
         assert_eq!(decision.ranked[0].score, decision.ranked[1].score);
     }
 
     #[test]
-    fn ambiguous_edges_are_not_emitted() {
+    fn ambiguous_edges_with_positive_score_are_emitted() {
+        // Both candidates live in test.cpp (implementation_file_preferred +20),
+        // so the top score is positive and the tie-break promotes the first candidate.
         let symbols = vec![
             make_sym("Gameplay::Update", "Update", "function", None),
             make_sym("UI::Update", "Update", "function", None),
@@ -2684,7 +2744,8 @@ mod tests {
 
         let calls = resolve_calls(&raw, &symbols);
 
-        assert!(calls.is_empty());
+        assert!(!calls.is_empty());
+        assert_eq!(calls[0].callee_id, "Gameplay::Update");
     }
 
     #[test]
@@ -2796,7 +2857,11 @@ mod tests {
     }
 
     #[test]
-    fn overloads_fixture_keeps_same_arity_namespace_call_ambiguous() {
+    fn overloads_fixture_promotes_top_candidate_when_ambiguous_with_positive_score() {
+        // Math::Blend has two same-arity overloads (int and float). Both score equally
+        // via qualified_namespace_match + parameter_count_match (score > 0), so the
+        // tie-break now preserves the top-ranked edge as a partial-confidence call
+        // instead of dropping it silently.
         let source = include_str!("../../samples/ambiguity/src/overloads.cpp");
         let (symbols, raw_calls, calls) =
             resolve_fixture_source("samples/ambiguity/src/overloads.cpp", source);
@@ -2809,9 +2874,12 @@ mod tests {
             Some("Math"),
         );
         assert_eq!(decision.status, ResolutionStatus::Ambiguous);
-        assert!(decision.chosen.is_none());
+        // Chosen is now the top-ranked candidate (positive score preserved).
+        assert!(decision.chosen.is_some());
 
-        assert!(calls.is_empty());
+        // The call edge is recorded (partial confidence, not dropped).
+        assert!(!calls.is_empty());
+        assert!(calls.iter().any(|c| c.caller_id == "Renderer::Blend"));
     }
 
     #[test]

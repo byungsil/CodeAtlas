@@ -267,6 +267,7 @@ pub fn parse_lua_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
                     receiver_kind: None,
                     qualifier: Some(qualifier),
                     qualifier_kind,
+                    pre_resolved_callee_id: None,
                     file_path: file_path.into(),
                     line: line_no,
                 });
@@ -295,6 +296,7 @@ pub fn parse_lua_file(file_path: &str, source: &str) -> Result<ParseResult, Stri
                     receiver_kind: None,
                     qualifier: None,
                     qualifier_kind: None,
+                    pre_resolved_callee_id: None,
                     file_path: file_path.into(),
                     line: line_no,
                 });

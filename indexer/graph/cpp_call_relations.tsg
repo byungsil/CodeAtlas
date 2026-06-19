@@ -101,6 +101,40 @@
   attr (@call.event) line = (plus (start-row @call) 1)
 }
 
+; ── Template function call rules ──────────────────────────────────────
+; Captures foo<T>(args) and Ns::foo<T>(args) which use a template_function
+; node as the call target instead of a plain identifier.
+
+(call_expression
+  function: (template_function
+    name: (identifier) @callee)
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "unqualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
+; Ns::foo<T>(args) — qualified_identifier whose name is a template_function
+(call_expression
+  function: (qualified_identifier
+    scope: (_) @qualifier
+    name: (template_function
+      name: (identifier) @callee))
+  arguments: (argument_list) @args) @call
+{
+  node @call.event
+  attr (@call.event) relation_kind = "call"
+  attr (@call.event) call_kind = "qualified"
+  attr (@call.event) target_name = (source-text @callee)
+  attr (@call.event) argument_count = (named-child-count @args)
+  attr (@call.event) qualifier = (source-text @qualifier)
+  attr (@call.event) line = (plus (start-row @call) 1)
+}
+
 ; ── Field access rules (MS19) ──────────────────────────────────────────
 ; These match ALL field_expression nodes, including those inside
 ; call_expression. Deduplication against method-call events happens in

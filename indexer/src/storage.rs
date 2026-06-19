@@ -16,7 +16,7 @@ use crate::models::InheritanceEdge;
 use crate::constants::{ACTIVE_DB_POINTER_FILENAME, DB_FILENAME};
 use crate::resolver;
 
-const DB_SCHEMA_VERSION: i64 = 1;
+const DB_SCHEMA_VERSION: i64 = 2;
 const INDEX_FORMAT_VERSION: u32 = 1;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS raw_calls (
     receiver_kind TEXT,
     qualifier   TEXT,
     qualifier_kind TEXT,
+    pre_resolved_callee_id TEXT,
     file_path   TEXT NOT NULL,
     line        INTEGER NOT NULL
 );
@@ -545,8 +546,8 @@ impl Database {
             "INSERT INTO raw_calls (
                 caller_id, called_name, call_kind, argument_count, argument_texts_json,
                 result_target_json, receiver, receiver_kind, qualifier, qualifier_kind,
-                file_path, line
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                pre_resolved_callee_id, file_path, line
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for raw_call in raw_calls {
             stmt.execute(params![
@@ -563,6 +564,7 @@ impl Database {
                 raw_call.receiver_kind.as_ref().map(raw_receiver_kind_key),
                 raw_call.qualifier,
                 raw_call.qualifier_kind.as_ref().map(raw_qualifier_kind_key),
+                raw_call.pre_resolved_callee_id.as_deref(),
                 raw_call.file_path,
                 raw_call.line,
             ])?;
@@ -919,7 +921,7 @@ impl Database {
 
         let placeholders = vec!["?"; file_paths.len()].join(", ");
         let sql = format!(
-            "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, file_path, line
+            "SELECT caller_id, called_name, call_kind, argument_count, argument_texts_json, result_target_json, receiver, receiver_kind, qualifier, qualifier_kind, pre_resolved_callee_id, file_path, line
              FROM raw_calls
              WHERE file_path IN ({})
              ORDER BY file_path, line, caller_id, called_name",
@@ -948,8 +950,9 @@ impl Database {
                     .get::<_, Option<String>>(9)?
                     .as_deref()
                     .map(raw_qualifier_kind_from_key),
-                file_path: row.get(10)?,
-                line: row.get(11)?,
+                pre_resolved_callee_id: row.get(10)?,
+                file_path: row.get(11)?,
+                line: row.get(12)?,
             })
         })?;
         rows.collect()
@@ -1298,6 +1301,16 @@ impl Database {
             row.get::<_, String>(0)
         })?;
         rows.collect()
+    }
+
+    /// Returns true if a symbol with the given ID exists in the DB.
+    pub fn symbol_exists(&self, id: &str) -> SqlResult<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM symbols WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     pub fn find_parent_ids(&self, symbol_ids: &[String]) -> SqlResult<HashMap<String, String>> {

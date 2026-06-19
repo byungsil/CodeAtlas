@@ -255,6 +255,9 @@ pub struct RawCallSite {
     pub receiver_kind: Option<RawReceiverKind>,
     pub qualifier: Option<String>,
     pub qualifier_kind: Option<RawQualifierKind>,
+    /// Pre-resolved callee symbol ID (USR from libclang). When set, `resolve_calls`
+    /// skips name-based disambiguation and records this as the callee directly.
+    pub pre_resolved_callee_id: Option<String>,
     pub file_path: String,
     pub line: usize,
 }
@@ -320,6 +323,7 @@ impl RawRelationEvent {
             receiver_kind: self.receiver_kind.clone(),
             qualifier: self.qualifier.clone(),
             qualifier_kind: self.qualifier_kind.clone(),
+            pre_resolved_callee_id: None,
             file_path: self.file_path.clone(),
             line: self.line,
         })
