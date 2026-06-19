@@ -271,6 +271,10 @@
           <p class="description" style="margin-bottom: 12px; font-size: 13px;">
             선택된 확장자로 워크스페이스를 인덱싱합니다. (최초 인덱싱은 수 분 소요)
           </p>
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px; color: var(--text-secondary, #ccc);">
+            <input type="checkbox" id="chkForceFullIndex" style="width: 16px; height: 16px; cursor: pointer;">
+            강제 전체 인덱싱 (<code>--full</code>) — 기존 DB를 무시하고 처음부터 재인덱싱합니다.
+          </label>
           <button class="btn-primary btn-start-build" id="btnStartIndexing" onclick="runIndexing()">
             🚀 인덱싱 시작
           </button>

@@ -935,7 +935,8 @@ async function runIndexing() {
 
     statusEl.className = 'status-message info';
     statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`; 
-    addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}`);
+    const forceFullIndex = document.getElementById('chkForceFullIndex')?.checked ?? false;
+    addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}${forceFullIndex ? ' --full' : ''}`);
 
     // For C/C++: generate compile_commands.json first so Clang AST parsing works
     if (setupData.selectedLangs.has('cpp')) {
@@ -954,6 +955,10 @@ async function runIndexing() {
     }
 
     const indexerArgs = [setupData.workspacePath, '--extensions', allExts.join(',')];
+    if (forceFullIndex) {
+      indexerArgs.push('--full');
+      addLogEntry('INFO', 'INDEXING', 'Force full re-indexing enabled (--full)');
+    }
 
     // Start elapsed time ticker
     const indexingStartTime = Date.now();

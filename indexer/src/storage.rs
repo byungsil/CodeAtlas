@@ -1200,6 +1200,50 @@ impl Database {
         Ok(())
     }
 
+    /// Batch-delete rows for multiple paths at once.
+    /// Reduces N×6 individual round-trips to 6 queries (chunked at 900 paths).
+    pub fn delete_for_files(&self, file_paths: &[String]) -> SqlResult<()> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+        for chunk in file_paths.chunks(SQLITE_VARIABLE_LIMIT) {
+            let ph = vec!["?"; chunk.len()].join(", ");
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM calls WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM symbol_references WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM propagation_events WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM callable_flow_summaries WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM symbols_raw WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM files WHERE path IN ({})", ph), args)?;
+        }
+        Ok(())
+    }
+
+    /// Batch-delete only call/reference/propagation rows for re-resolved files.
+    /// Used when re-parsing affected files: symbols and file records remain intact.
+    pub fn delete_call_data_for_files(&self, file_paths: &[String]) -> SqlResult<()> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        if file_paths.is_empty() {
+            return Ok(());
+        }
+        for chunk in file_paths.chunks(SQLITE_VARIABLE_LIMIT) {
+            let ph = vec!["?"; chunk.len()].join(", ");
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM calls WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM symbol_references WHERE file_path IN ({})", ph), args)?;
+            let args = params_from_iter(chunk.iter());
+            self.conn.execute(&format!("DELETE FROM propagation_events WHERE file_path IN ({})", ph), args)?;
+        }
+        Ok(())
+    }
+
     pub fn read_callable_flow_summaries_for_ids(
         &self,
         callable_symbol_ids: &[String],
@@ -1267,6 +1311,7 @@ impl Database {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn find_symbols_by_name(&self, name: &str) -> SqlResult<Vec<Symbol>> {
         let sql = format!(
             "SELECT {} FROM symbols WHERE name = ?1 AND (type = 'function' OR type = 'method')",
@@ -1275,6 +1320,55 @@ impl Database {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![name], row_to_symbol)?;
         rows.collect()
+    }
+
+    /// Bulk version of [`find_symbols_by_name`].  Returns all callable symbols
+    /// (function or method) whose name appears in `names`, grouped by name.
+    /// Names with no matching symbol are absent from the returned map.
+    pub fn find_symbols_by_names(&self, names: &[String]) -> SqlResult<HashMap<String, Vec<Symbol>>> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        let mut result: HashMap<String, Vec<Symbol>> = HashMap::new();
+        if names.is_empty() {
+            return Ok(result);
+        }
+        for chunk in names.chunks(SQLITE_VARIABLE_LIMIT) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT {} FROM symbols WHERE name IN ({}) AND (type = 'function' OR type = 'method')",
+                SYMBOL_SELECT_COLUMNS, placeholders
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), row_to_symbol)?;
+            for sym in rows {
+                let sym = sym?;
+                result.entry(sym.name.clone()).or_default().push(sym);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Returns the subset of `ids` that exist in the `symbols` table.
+    pub fn symbol_ids_exist(&self, ids: &[String]) -> SqlResult<HashSet<String>> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        let mut result = HashSet::new();
+        if ids.is_empty() {
+            return Ok(result);
+        }
+        for chunk in ids.chunks(SQLITE_VARIABLE_LIMIT) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT id FROM symbols WHERE id IN ({})",
+                placeholders
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                row.get::<_, String>(0)
+            })?;
+            for id in rows {
+                result.insert(id?);
+            }
+        }
+        Ok(result)
     }
 
     pub fn read_raw_symbols_for_file(&self, file_path: &str) -> SqlResult<Vec<Symbol>> {
@@ -1304,6 +1398,7 @@ impl Database {
     }
 
     /// Returns true if a symbol with the given ID exists in the DB.
+    #[allow(dead_code)]
     pub fn symbol_exists(&self, id: &str) -> SqlResult<bool> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM symbols WHERE id = ?1",

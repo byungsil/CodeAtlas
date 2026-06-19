@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,6 +39,68 @@ const SKIP_CPP_LARGER_THAN_BYTES_ENV: &str = "CODEATLAS_SKIP_CPP_LARGER_THAN_BYT
 /// When set to a positive integer, caps the indexing thread pool size.
 /// Used in watch/background mode to avoid starving the foreground process.
 pub const BACKGROUND_THREADS_ENV: &str = "CODEATLAS_BACKGROUND_THREADS";
+
+/// Caps the number of simultaneously active libclang translation units.
+/// Defaults to min(4, thread_pool_size) — libclang TUs are memory-heavy
+/// (200–500 MB each), so limiting concurrency prevents multi-GB RSS spikes
+/// on large C++ projects. Override with CODEATLAS_CPP_PARSE_THREADS.
+const CPP_PARSE_THREADS_ENV: &str = "CODEATLAS_CPP_PARSE_THREADS";
+static CPP_PARSE_SEMAPHORE: OnceLock<CppParseSemaphore> = OnceLock::new();
+
+struct CppParseSemaphore {
+    permits: Mutex<usize>,
+    cond: Condvar,
+}
+
+impl CppParseSemaphore {
+    fn new(n: usize) -> Self {
+        CppParseSemaphore { permits: Mutex::new(n), cond: Condvar::new() }
+    }
+
+    fn acquire(&self) {
+        let mut avail = self.permits.lock().unwrap();
+        while *avail == 0 {
+            avail = self.cond.wait(avail).unwrap();
+        }
+        *avail -= 1;
+    }
+
+    fn release(&self) {
+        let mut avail = self.permits.lock().unwrap();
+        *avail += 1;
+        self.cond.notify_one();
+    }
+}
+
+/// RAII guard — releases one permit when dropped.
+struct CppParsePermit;
+impl Drop for CppParsePermit {
+    fn drop(&mut self) {
+        if let Some(sem) = CPP_PARSE_SEMAPHORE.get() {
+            sem.release();
+        }
+    }
+}
+
+/// Acquires one C++ parse permit, blocking if the concurrency limit is reached.
+/// Default: min(2, pool_size) — keeps peak RSS under ~1 GB on large C++ projects
+/// (each libclang TU can consume 200–500 MB while active).
+/// Override with CODEATLAS_CPP_PARSE_THREADS for higher throughput on
+/// memory-rich machines (e.g. CODEATLAS_CPP_PARSE_THREADS=4 restores old behaviour).
+fn acquire_cpp_parse_permit() -> CppParsePermit {
+    let sem = CPP_PARSE_SEMAPHORE.get_or_init(|| {
+        let pool_size = indexing_thread_pool().current_num_threads();
+        let permits = std::env::var(CPP_PARSE_THREADS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| pool_size.min(8).max(1));
+        eprintln!("  C++ parse concurrency: {} thread(s) (pool: {})", permits, pool_size);
+        CppParseSemaphore::new(permits)
+    });
+    sem.acquire();
+    CppParsePermit
+}
 
 #[derive(Clone)]
 struct ActiveParseEntry {
@@ -108,6 +170,10 @@ impl LanguageAdapter for CppLanguageAdapter {
             args.push("-x".to_string());
             args.push("c++-header".to_string());
         }
+
+        // Acquire a permit to bound simultaneous libclang TUs and prevent
+        // multi-GB RSS spikes. Released automatically when the guard is dropped.
+        let _permit = acquire_cpp_parse_permit();
 
         crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)
     }
@@ -824,6 +890,34 @@ fn format_elapsed_u128_ms(elapsed_ms: u128) -> String {
     } else {
         format!("{}ms", elapsed_ms)
     }
+}
+
+/// Parses `paths` in parallel using the shared indexing thread pool.
+///
+/// Each entry in the returned `Vec` corresponds to one input path and contains
+/// `(rel_path, ParseResult, lossy, skipped)`.  The order of entries matches the
+/// order of `paths`.  If any file fails to parse the whole batch is aborted and
+/// the error is returned.
+///
+/// Callers are responsible for applying any subsequent DB mutations
+/// sequentially after this call returns.
+pub fn parse_paths_parallel(
+    workspace_root: &Path,
+    paths: &[&str],
+    build_metadata: Option<&BuildMetadataContext>,
+) -> Result<Vec<(String, ParseResult, bool, bool)>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    indexing_thread_pool().install(|| {
+        paths
+            .par_iter()
+            .map(|path| {
+                parse_file_strict(workspace_root, path, build_metadata)
+                    .map(|(result, _hash, lossy, skipped)| (path.to_string(), result, lossy, skipped))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
 }
 
 pub fn parse_file_strict(

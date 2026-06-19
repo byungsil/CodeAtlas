@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
+
 use crate::models::{
     Call, CallableFlowSummary, PropagationAnchor, PropagationAnchorKind, PropagationEvent,
     PropagationKind, PropagationRisk, RawCallKind, RawCallSite, RawExtractionConfidence,
@@ -661,18 +663,36 @@ fn normalize_identifier(value: &str) -> String {
 }
 
 pub fn merge_symbols(all_symbols: &[Symbol]) -> Vec<Symbol> {
-    let mut by_id: HashMap<String, Symbol> = HashMap::new();
-
-    for sym in all_symbols {
-        let entry = by_id.entry(sym.id.clone());
-        entry
-            .and_modify(|existing| {
-                merge_symbol_variant(existing, sym);
-            })
-            .or_insert_with(|| sym.clone());
-    }
-
-    by_id.into_values().collect()
+    // Each rayon worker builds a local HashMap; the reduce phase merges them.
+    // Primary representative selection (which file/line to show) is always
+    // deterministic because `incoming_replaces_representative` is a total
+    // order.  Optional supplementary fields (signature, dual locations, etc.)
+    // use first-some-wins, which may vary for symbols with multiple instances
+    // spanning partition boundaries — acceptable for those rare edge cases.
+    all_symbols
+        .par_iter()
+        .fold(
+            || HashMap::<String, Symbol>::new(),
+            |mut map, sym| {
+                map.entry(sym.id.clone())
+                    .and_modify(|existing| merge_symbol_variant(existing, sym))
+                    .or_insert_with(|| sym.clone());
+                map
+            },
+        )
+        .reduce(
+            || HashMap::new(),
+            |mut a, b| {
+                for (id, sym) in b {
+                    a.entry(id)
+                        .and_modify(|existing| merge_symbol_variant(existing, &sym))
+                        .or_insert(sym);
+                }
+                a
+            },
+        )
+        .into_values()
+        .collect()
 }
 
 fn merge_symbol_variant(existing: &mut Symbol, incoming: &Symbol) {
@@ -974,9 +994,14 @@ fn looks_like_implementation_path(path: &str) -> bool {
 }
 
 pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], db: &Database) -> Vec<Call> {
+    if raw_calls.is_empty() {
+        return Vec::new();
+    }
+
     let new_by_name = build_callable_index(new_symbols);
     let new_parent_of = build_parent_index(new_symbols);
 
+    // --- Existing bulk pre-fetches (caller parents + base classes) ---
     let mut caller_ids: Vec<String> = raw_calls
         .iter()
         .map(|raw| raw.caller_id.clone())
@@ -1000,74 +1025,118 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
     caller_parent_ids.dedup();
     let db_bases_by_parent = db.find_direct_base_ids(&caller_parent_ids).unwrap_or_default();
 
-    let mut calls = Vec::new();
-    let mut seen = HashSet::new();
-
-    for raw in raw_calls {
-        // Fast path: libclang USR pre-resolved callee — check in new_symbols, then DB
-        if let Some(callee_id) = &raw.pre_resolved_callee_id {
-            if callee_id != &raw.caller_id {
-                let in_new = new_symbols.iter().any(|s| &s.id == callee_id);
-                let exists = in_new || db.symbol_exists(callee_id).unwrap_or(false);
-                if exists {
-                    let key = format!("{}->{}@{}:{}", raw.caller_id, callee_id, raw.file_path, raw.line);
-                    if seen.insert(key) {
-                        calls.push(Call {
-                            caller_id: raw.caller_id.clone(),
-                            callee_id: callee_id.clone(),
-                            file_path: raw.file_path.clone(),
-                            line: raw.line,
-                        });
-                    }
-                    continue;
-                }
-            } else {
-                continue; // self-call, skip
+    // --- New: bulk pre-fetch to eliminate per-call DB round-trips ---
+    //
+    // 1. Gather all unique called names for name-based candidate lookup.
+    let unique_names: Vec<String> = {
+        let mut names = HashSet::new();
+        for raw in raw_calls {
+            if raw.pre_resolved_callee_id.is_none() {
+                names.insert(raw.called_name.clone());
             }
         }
+        names.into_iter().collect()
+    };
+    let db_candidates_by_name = db.find_symbols_by_names(&unique_names).unwrap_or_default();
 
-        let caller_parent = new_parent_of
-            .get(raw.caller_id.as_str())
-            .copied()
-            .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|p| p.as_str()));
-
-        let owned_candidates = collect_candidates_with_db(raw, &new_by_name, db);
-        let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
-        let caller_base_ids: Vec<&str> = caller_parent
-            .and_then(|parent| db_bases_by_parent.get(parent))
-            .map(|base_ids| base_ids.iter().map(|base_id| base_id.as_str()).collect())
-            .unwrap_or_default();
-
-         let callee_files: Vec<&str> = owned_candidates.iter().map(|s| s.file_path.as_str()).collect();
-        let file_relationship = compute_file_relationship(&raw.file_path, &callee_files);
-        let macro_signals = build_macro_context_signals(&candidates, raw.caller_id.as_str(), None);
-
-        let context = ResolutionContext {
-            caller_parent,
-            caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
-            caller_bases: caller_base_ids.as_slice(),
-            caller_file: Some(raw.file_path.as_str()),
-            file_relationship,
-            macro_context: macro_signals,
-        };
-        let decision = resolve_one(raw, candidates, context);
-
-        if let Some(callee) = decision.chosen {
-            if callee.id == raw.caller_id {
-                continue;
+    // 2. Gather all unique pre-resolved callee IDs not already in new_symbols
+    //    so we can check existence without a per-call DB query.
+    let new_symbol_ids: HashSet<&str> = new_symbols.iter().map(|s| s.id.as_str()).collect();
+    let unique_pre_resolved: Vec<String> = {
+        let mut ids = HashSet::new();
+        for raw in raw_calls {
+            if let Some(callee_id) = &raw.pre_resolved_callee_id {
+                if callee_id != &raw.caller_id && !new_symbol_ids.contains(callee_id.as_str()) {
+                    ids.insert(callee_id.clone());
+                }
             }
-            let key = format!("{}->{}@{}:{}", raw.caller_id, callee.id, raw.file_path, raw.line);
-            if seen.insert(key) {
-                calls.push(Call {
+        }
+        ids.into_iter().collect()
+    };
+    let db_existing_ids = db.symbol_ids_exist(&unique_pre_resolved).unwrap_or_default();
+
+    // --- Parallel resolution (no DB access inside the closure) ---
+    //
+    // Each raw call resolves independently using the pre-fetched indexes.
+    // Results are collected as (dedup-key, Call) pairs and deduped sequentially.
+    let raw_results: Vec<Option<(String, Call)>> = raw_calls
+        .par_iter()
+        .map(|raw| {
+            // Fast path: libclang USR pre-resolved callee
+            if let Some(callee_id) = &raw.pre_resolved_callee_id {
+                if callee_id == &raw.caller_id {
+                    return None; // self-call
+                }
+                let exists = new_symbol_ids.contains(callee_id.as_str())
+                    || db_existing_ids.contains(callee_id.as_str());
+                if exists {
+                    let key = format!("{}->{}@{}:{}", raw.caller_id, callee_id, raw.file_path, raw.line);
+                    return Some((key, Call {
+                        caller_id: raw.caller_id.clone(),
+                        callee_id: callee_id.clone(),
+                        file_path: raw.file_path.clone(),
+                        line: raw.line,
+                    }));
+                }
+                return None;
+            }
+
+            // Name-based resolution using pre-fetched candidate cache
+            let caller_parent = new_parent_of
+                .get(raw.caller_id.as_str())
+                .copied()
+                .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|p| p.as_str()));
+
+            let owned_candidates =
+                collect_candidates_from_cache(raw, &new_by_name, &db_candidates_by_name);
+            let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
+            let caller_base_ids: Vec<&str> = caller_parent
+                .and_then(|parent| db_bases_by_parent.get(parent))
+                .map(|base_ids| base_ids.iter().map(|id| id.as_str()).collect())
+                .unwrap_or_default();
+
+            let callee_files: Vec<&str> =
+                owned_candidates.iter().map(|s| s.file_path.as_str()).collect();
+            let file_relationship = compute_file_relationship(&raw.file_path, &callee_files);
+            let macro_signals =
+                build_macro_context_signals(&candidates, raw.caller_id.as_str(), None);
+
+            let context = ResolutionContext {
+                caller_parent,
+                caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
+                caller_bases: caller_base_ids.as_slice(),
+                caller_file: Some(raw.file_path.as_str()),
+                file_relationship,
+                macro_context: macro_signals,
+            };
+            let decision = resolve_one(raw, candidates, context);
+
+            if let Some(callee) = decision.chosen {
+                if callee.id == raw.caller_id {
+                    return None;
+                }
+                let key = format!("{}->{}@{}:{}", raw.caller_id, callee.id, raw.file_path, raw.line);
+                return Some((key, Call {
                     caller_id: raw.caller_id.clone(),
                     callee_id: callee.id.clone(),
                     file_path: raw.file_path.clone(),
                     line: raw.line,
-                });
+                }));
             }
+            None
+        })
+        .collect();
+
+    // Sequential dedup — preserves the first occurrence of each key,
+    // matching the ordering guarantee of the original sequential loop.
+    let mut seen = HashSet::new();
+    let mut calls = Vec::new();
+    for item in raw_results.into_iter().flatten() {
+        let (key, call) = item;
+        if seen.insert(key) {
+            calls.push(call);
         }
     }
-
     calls
 }
 
@@ -1219,71 +1288,74 @@ pub fn derive_function_boundary_propagation_events_with_indexes(
         .map(|summary| (summary.callable_symbol_id.as_str(), summary))
         .collect();
 
-    let mut events = Vec::new();
-
-    for call in calls {
-        let key = raw_call_site_key(&call.caller_id, &call.file_path, call.line);
-        let Some(raw_calls_at_site) = raw_calls_by_site.get(key.as_str()) else {
-            continue;
-        };
-        let callee_name = callee_name_by_id
-            .get(call.callee_id.as_str())
-            .map(|name| name.as_str());
-        let Some(raw_call) = raw_calls_at_site
-            .iter()
-            .copied()
-            .find(|raw| callee_name == Some(raw.called_name.as_str()))
-            .or_else(|| raw_calls_at_site.first().copied())
-        else {
-            continue;
-        };
-        let Some(summary) = summary_by_callable.get(call.callee_id.as_str()) else {
-            continue;
-        };
-
-        for (index, parameter_anchor) in summary.parameter_anchors.iter().enumerate() {
-            let Some(argument_text) = raw_call.argument_texts.get(index) else {
-                continue;
+    // All lookups are read-only on pre-built indexes; each call resolves
+    // independently, so the inner loop is embarrassingly parallel.
+    let events: Vec<PropagationEvent> = calls
+        .par_iter()
+        .flat_map(|call| {
+            let mut local: Vec<PropagationEvent> = Vec::new();
+            let key = raw_call_site_key(&call.caller_id, &call.file_path, call.line);
+            let Some(raw_calls_at_site) = raw_calls_by_site.get(key.as_str()) else {
+                return local;
             };
-            let source_anchor =
-                resolve_argument_source_anchor(
+            let callee_name = callee_name_by_id
+                .get(call.callee_id.as_str())
+                .map(|name| name.as_str());
+            let Some(raw_call) = raw_calls_at_site
+                .iter()
+                .copied()
+                .find(|raw| callee_name == Some(raw.called_name.as_str()))
+                .or_else(|| raw_calls_at_site.first().copied())
+            else {
+                return local;
+            };
+            let Some(summary) = summary_by_callable.get(call.callee_id.as_str()) else {
+                return local;
+            };
+
+            for (index, parameter_anchor) in summary.parameter_anchors.iter().enumerate() {
+                let Some(argument_text) = raw_call.argument_texts.get(index) else {
+                    continue;
+                };
+                let source_anchor = resolve_argument_source_anchor(
                     &raw_call.caller_id,
                     argument_text,
                     caller_parent_by_id,
                     index,
                     raw_call.line,
                 );
-            let (confidence, risks) = propagation_confidence_for_anchor(&source_anchor);
-            events.push(PropagationEvent {
-                owner_symbol_id: Some(call.callee_id.clone()),
-                source_anchor,
-                target_anchor: parameter_anchor.clone(),
-                propagation_kind: PropagationKind::ArgumentToParameter,
-                file_path: call.file_path.clone(),
-                line: call.line,
-                confidence,
-                risks,
-            });
-        }
-
-        if let Some(result_target) = raw_call.result_target.clone() {
-            for return_anchor in &summary.return_anchors {
-                let (confidence, risks) = propagation_confidence_for_anchor(return_anchor);
-                events.push(PropagationEvent {
+                let (confidence, risks) = propagation_confidence_for_anchor(&source_anchor);
+                local.push(PropagationEvent {
                     owner_symbol_id: Some(call.callee_id.clone()),
-                    source_anchor: return_anchor.clone(),
-                    target_anchor: result_target.clone(),
-                    propagation_kind: PropagationKind::ReturnValue,
+                    source_anchor,
+                    target_anchor: parameter_anchor.clone(),
+                    propagation_kind: PropagationKind::ArgumentToParameter,
                     file_path: call.file_path.clone(),
                     line: call.line,
                     confidence,
                     risks,
                 });
             }
-        } else if callee_name_by_id.contains_key(call.callee_id.as_str()) {
-            continue;
-        }
-    }
+
+            if let Some(result_target) = raw_call.result_target.clone() {
+                for return_anchor in &summary.return_anchors {
+                    let (confidence, risks) = propagation_confidence_for_anchor(return_anchor);
+                    local.push(PropagationEvent {
+                        owner_symbol_id: Some(call.callee_id.clone()),
+                        source_anchor: return_anchor.clone(),
+                        target_anchor: result_target.clone(),
+                        propagation_kind: PropagationKind::ReturnValue,
+                        file_path: call.file_path.clone(),
+                        line: call.line,
+                        confidence,
+                        risks,
+                    });
+                }
+            }
+
+            local
+        })
+        .collect();
 
     let mut events = dedupe_propagation_events(events);
     for event in &mut events {
@@ -1415,23 +1487,25 @@ fn build_methods_by_parent<'a>(symbols: &'a [Symbol]) -> HashMap<&'a str, Vec<&'
     methods_by_parent
 }
 
-fn collect_candidates_with_db<'a>(
+/// Collects resolution candidates for `raw` using a pre-fetched name cache
+/// instead of issuing a live DB query.  This is the cache-based replacement
+/// for the former `collect_candidates_with_db`.
+fn collect_candidates_from_cache<'a>(
     raw: &RawCallSite,
     new_by_name: &HashMap<&'a str, Vec<&'a Symbol>>,
-    db: &Database,
+    db_by_name: &HashMap<String, Vec<Symbol>>,
 ) -> Vec<Symbol> {
     let mut candidates: Vec<Symbol> = collect_candidates(raw, new_by_name)
         .into_iter()
         .cloned()
         .collect();
-    let db_candidates = db.find_symbols_by_name(&raw.called_name).unwrap_or_default();
-
-    for db_sym in db_candidates {
-        if !candidates.iter().any(|candidate| candidate.id == db_sym.id) {
-            candidates.push(db_sym);
+    if let Some(db_syms) = db_by_name.get(&raw.called_name) {
+        for db_sym in db_syms {
+            if !candidates.iter().any(|c| c.id == db_sym.id) {
+                candidates.push(db_sym.clone());
+            }
         }
     }
-
     candidates
 }
 

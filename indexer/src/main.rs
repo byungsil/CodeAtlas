@@ -35,14 +35,14 @@ use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS, INDEX_EXTENSIONS_ENV, parse_extension_list};
 use indexing::{
-    default_language_registry, make_relative, parse_discovered_files_with_progress, parse_file_strict,
-    parse_files_strict,
+    default_language_registry, make_relative, parse_discovered_files_with_progress,
+    parse_files_strict, parse_paths_parallel,
 };
 use models::ParseMetrics;
 use representative_rules::{load_workspace_representative_rules, set_active_representative_rules};
 use retry::{retry_io, open_database_with_retry};
 use summary::{load_missing_callable_summaries, merge_callable_summaries};
-const FULL_REBUILD_PARSE_BATCH_SIZE: usize = 2048;
+const FULL_REBUILD_PARSE_BATCH_SIZE: usize = 1024;
 const FULL_REBUILD_PARSE_BATCH_SIZE_ENV: &str = "CODEATLAS_FULL_REBUILD_PARSE_BATCH_SIZE";
 const LOG_DIAGNOSTICS_ENV: &str = "CODEATLAS_LOG_DIAGNOSTICS";
 
@@ -1219,7 +1219,6 @@ fn run_full(
     let parse_start = Instant::now();
     let mut parse_metrics = ParseMetrics::default();
     let mut all_relation_events = Vec::new();
-    let mut all_include_deps: Vec<crate::models::IncludeDependency> = Vec::new();
     db.begin().expect("Failed to begin full rebuild transaction");
     db.clear().expect("Failed to clear SQLite tables before full rebuild");
     for (batch_index, batch) in discovered_files
@@ -1274,7 +1273,6 @@ fn run_full(
             db.write_conditional_symbols(&conditional_symbols)
                 .expect("Failed to write conditional symbols");
         }
-        all_include_deps.extend(include_dependencies);
         all_relation_events.extend(relation_events);
         accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
         if !verbose {
@@ -1289,7 +1287,10 @@ fn run_full(
             }
         }
     }
-    // Phase 4: Detect circular dependencies across all files
+    // Phase 4: Detect circular dependencies across all files.
+    // Include deps are already persisted per batch; read back from DB to avoid
+    // holding a full cross-batch Vec<IncludeDependency> in memory.
+    let all_include_deps = db.find_all_include_dependencies().unwrap_or_default();
     if !all_include_deps.is_empty() {
         let cycles = parser::detect_circular_dependencies(&all_include_deps);
         if !cycles.is_empty() {
@@ -1611,33 +1612,15 @@ fn run_incremental(
         let cleanup_refresh_start = Instant::now();
         for path in &plan.to_delete {
             println!("  DELETE: {}", path);
-            db.delete_calls_for_file(path)
-                .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
-            db.delete_references_for_file(path)
-                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
-            db.delete_propagation_for_file(path)
-                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
-            db.delete_callable_flow_summaries_for_file(path)
-                .map_err(|e| format!("Failed to delete callable summaries for {}: {}", path, e))?;
-            db.delete_raw_symbols_for_file(path)
-                .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
-            db.delete_file_record(path)
-                .map_err(|e| format!("Failed to delete file record for {}: {}", path, e))?;
         }
-        for path in &plan.to_index {
-            db.delete_calls_for_file(path)
-                .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
-            db.delete_references_for_file(path)
-                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
-            db.delete_propagation_for_file(path)
-                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
-            db.delete_callable_flow_summaries_for_file(path)
-                .map_err(|e| format!("Failed to delete callable summaries for {}: {}", path, e))?;
-            db.delete_raw_symbols_for_file(path)
-                .map_err(|e| format!("Failed to delete raw symbols for {}: {}", path, e))?;
-            db.delete_file_record(path)
-                .map_err(|e| format!("Failed to delete file record for {}: {}", path, e))?;
-        }
+        // Batch-delete all stale data for both deleted and re-indexed paths
+        // in 6 queries instead of N×6 individual round-trips.
+        let paths_to_clear: Vec<String> = plan.to_delete.iter()
+            .chain(plan.to_index.iter())
+            .cloned()
+            .collect();
+        db.delete_for_files(&paths_to_clear)
+            .map_err(|e| format!("Failed to batch-delete stale data: {}", e))?;
 
         if !parsed_symbols.is_empty() {
             db.write_raw_symbols(&parsed_symbols)
@@ -1692,28 +1675,40 @@ fn run_incremental(
         }
 
         let affected_reparse_start = Instant::now();
+        // Update files_to_reresolve first (order preserved for reproducibility).
         for path in &affected {
             if !files_to_reresolve.contains(path) {
                 files_to_reresolve.push(path.clone());
             }
-            if plan_to_index_set.contains(path.as_str()) {
-                continue;
-            }
-
-            let (result, _, lossy, skipped) = parse_file_strict(workspace_root, path, build_metadata)?;
-            if skipped {
-                println!("  SKIP: {}: oversized file", path);
-                continue;
-            }
+        }
+        // Parse affected files that were NOT already re-parsed in the initial
+        // parse phase.  Parsing is CPU-bound and each file is independent, so
+        // we run this in parallel via the shared indexing thread pool.
+        // DB mutations are applied sequentially after all parses complete.
+        let affected_to_reparse: Vec<&str> = affected
+            .iter()
+            .filter(|p| !plan_to_index_set.contains(p.as_str()))
+            .map(|p| p.as_str())
+            .collect();
+        let affected_parse_results =
+            parse_paths_parallel(workspace_root, &affected_to_reparse, build_metadata)?;
+        // Separate skipped files first so we can batch-delete only parseable ones.
+        let (to_process, skipped): (Vec<_>, Vec<_>) = affected_parse_results
+            .into_iter()
+            .partition(|(_, _, _, skipped)| !skipped);
+        for (path, _, _, _) in &skipped {
+            println!("  SKIP: {}: oversized file", path);
+        }
+        // Batch-delete stale call/reference/propagation data for all affected
+        // files in 3 queries instead of N×3 individual round-trips.
+        let affected_clear_paths: Vec<String> =
+            to_process.iter().map(|(p, _, _, _)| p.clone()).collect();
+        db.delete_call_data_for_files(&affected_clear_paths)
+            .map_err(|e| format!("Failed to batch-delete affected call data: {}", e))?;
+        for (path, result, lossy, _) in to_process {
             if verbose && lossy {
                 println!("  LOSSY: {}: non-UTF8 bytes replaced during parsing", path);
             }
-            db.delete_calls_for_file(path)
-                .map_err(|e| format!("Failed to delete calls for {}: {}", path, e))?;
-            db.delete_references_for_file(path)
-                .map_err(|e| format!("Failed to delete references for {}: {}", path, e))?;
-            db.delete_propagation_for_file(path)
-                .map_err(|e| format!("Failed to delete propagation for {}: {}", path, e))?;
             all_calls.extend(result.raw_calls);
             all_relation_events.extend(
                 result
