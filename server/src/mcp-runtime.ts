@@ -2304,7 +2304,7 @@ export async function runMcpServer(dataDir: string = DEFAULT_DATA_DIR): Promise<
       }],
     });
     const port = config.dashboard.port;
-    const httpServer = httpApp.listen(port, () => {
+    const httpServer = httpApp.listen(port, "127.0.0.1", () => {
       const url = `http://localhost:${port}/dashboard/`;
       import("child_process").then(({ exec }) => {
         const cmd = process.platform === "win32" ? `start ${url}`

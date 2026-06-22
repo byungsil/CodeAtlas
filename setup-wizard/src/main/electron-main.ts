@@ -487,9 +487,7 @@ ipcMain.handle('apply-mcp-config', async (_event, opts: {
     const repoRoot = getRepoRoot();
     const fwd = (p: string) => p.replace(/\\/g, '/');
 
-    // Locate ts-node binary inside the server's node_modules
-    const tsNodePath = pathMod.join(repoRoot, 'server', 'node_modules', 'ts-node', 'dist', 'bin.js');
-    const mcpTsPath  = pathMod.join(repoRoot, 'server', 'src', 'mcp.ts');
+    const mcpJsPath  = pathMod.join(repoRoot, 'server', 'dist', 'mcp.js');
     const indexerExe = pathMod.join(
       repoRoot, 'indexer', 'target', 'release',
       process.platform === 'win32' ? 'codeatlas-indexer.exe' : 'codeatlas-indexer'
@@ -499,8 +497,7 @@ ipcMain.handle('apply-mcp-config', async (_event, opts: {
       type: 'stdio',
       command: 'node',
       args: [
-        fwd(tsNodePath),
-        fwd(mcpTsPath),
+        fwd(mcpJsPath),
         fwd(opts.dataDir),
       ],
       env: {

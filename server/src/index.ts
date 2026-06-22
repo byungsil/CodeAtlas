@@ -36,7 +36,7 @@ const app = createApp(store, {
   }],
 });
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`CodeAtlas server listening on http://localhost:${PORT}`);
   console.log(`Dashboard: http://localhost:${PORT}/dashboard/`);
 });
