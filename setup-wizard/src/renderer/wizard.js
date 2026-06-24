@@ -675,7 +675,7 @@ function updateExtensionTags() {
       statusEl.textContent = `⚠️ 선택된 확장자가 없습니다. ${LANGUAGES.length}개 언어 중 최소 하나를 선택하세요.`;
     } else {
       statusEl.className = 'status-message info';
-      statusEl.textContent = `${allExts.length}개 확장자 (${setupData.selectedLangs.size}/${LANGUAGES.length} 언어)가 선택되었습니다. 인덱싱을 시작하려면 아래 버튼을 클릭하세요.`;
+      statusEl.textContent = `${allExts.length}개 확장자 (${setupData.selectedLangs.size}/${LANGUAGES.length} 언어)가 선택되었습니다.`;
     }
   }
 }
