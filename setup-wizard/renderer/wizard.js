@@ -938,9 +938,12 @@ async function runIndexing() {
     const forceFullIndex = document.getElementById('chkForceFullIndex')?.checked ?? false;
     addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}${forceFullIndex ? ' --full' : ''}`);
 
-    // For C/C++: generate compile_commands.json first so Clang AST parsing works
+    // For C/C++: ensure a compile context exists first so Clang AST parsing
+    // works. The concrete artifact (compile_commands.json or cpp_context.json)
+    // depends on the project type and selected method, so the header stays
+    // generic — the helper emits the precise per-strategy [PREP] lines.
     if (setupData.selectedLangs.has('cpp')) {
-      outputEl.textContent += '--- 전처리: compile_commands.json 확인/생성 ---\n';
+      outputEl.textContent += '--- 전처리: 컴파일 컨텍스트 확인/생성 ---\n';
       await generateCompileCommandsIfNeeded(outputEl, statusEl, binPath, indexerPath);
       outputEl.textContent += '--- 인덱싱 시작 ---\n';
     }
