@@ -280,7 +280,8 @@ pub enum PropagationRisk {
     UnsupportedFlowShape,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RawCallSite {
     pub caller_id: String,
     pub called_name: String,
@@ -501,7 +502,8 @@ pub struct ParseMetrics {
     pub conditional_symbol_ms: u128,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IncludeDependency {
     pub source_file: String,
     pub included_file: String,
@@ -587,7 +589,7 @@ pub struct ConditionalSymbol {
     pub is_negated: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ParseResult {
     pub symbols: Vec<Symbol>,
     pub file_risk_signals: FileRiskSignals,

@@ -171,12 +171,113 @@ impl LanguageAdapter for CppLanguageAdapter {
             args.push("c++-header".to_string());
         }
 
+        // MS22 parse cache gate. Compute a content-addressable key over the
+        // normalized args + source + direct-include contents, and serve an
+        // unchanged TU from cache — skipping the libclang parse AND its permit /
+        // 200–500 MB RSS spike entirely. A miss falls through to a real parse
+        // whose result is stored (unless macro-sensitive — see below). The cache
+        // is a pure memoization: any change to args/source/direct-includes shifts
+        // the key, forcing a real re-parse.
+        let cache_key = compute_parse_cache_key(source, file_path, &args, workspace_root);
+        if let Some(ref key) = cache_key {
+            if let Some(cached) = crate::parse_cache::lookup(key) {
+                return Ok(cached);
+            }
+        }
+
         // Acquire a permit to bound simultaneous libclang TUs and prevent
         // multi-GB RSS spikes. Released automatically when the guard is dropped.
         let _permit = acquire_cpp_parse_permit();
 
-        crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)
+        let result = crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)?;
+
+        // Store on a miss — but never cache macro-sensitive TUs. Their parse
+        // output depends on preprocessor state our cheap direct-include key does
+        // not fully capture, so they must always be parsed fresh (matches MS16's
+        // macro fallback philosophy). Skipping the store means such a file never
+        // has an entry and therefore always misses → always parses.
+        if let Some(ref key) = cache_key {
+            if result.file_risk_signals.macro_sensitivity != MacroSensitivity::High {
+                crate::parse_cache::store(key, &result);
+            }
+        }
+
+        Ok(result)
     }
+}
+
+/// Build the MS22 parse-cache key for a C++ translation unit, or `None` when the
+/// key cannot be computed (in which case the caller parses without caching).
+///
+/// Resolves the TU's direct `#include`s against the build's `-I` search dirs and
+/// hashes each resolved header's contents, so a change to any directly-included
+/// header shifts the key. Resolution mirrors clang's default order: quote
+/// includes (`"..."`) search the including file's own directory first, then the
+/// `-I` dirs; angle includes (`<...>`) search only the `-I` dirs. An include
+/// that resolves to no on-disk file contributes its path but no content hash
+/// (its change is then caught by the includer's own re-parse under MS16 — see
+/// MS22 Risk 1).
+fn compute_parse_cache_key(
+    source: &str,
+    file_path: &str,
+    args: &[String],
+    workspace_root: Option<&Path>,
+) -> Option<String> {
+    let include_dirs: Vec<&str> = args
+        .iter()
+        .filter_map(|a| a.strip_prefix("-I"))
+        .filter(|d| !d.is_empty())
+        .collect();
+
+    // Directory of the including file on disk (for quote-include resolution).
+    let own_dir: Option<std::path::PathBuf> = workspace_root.map(|root| {
+        root.join(file_path.replace('/', std::path::MAIN_SEPARATOR_STR))
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| root.to_path_buf())
+    });
+
+    let deps = crate::parser::extract_include_dependencies(source, file_path);
+    let mut direct_includes: Vec<crate::parse_cache::DirectInclude> = Vec::with_capacity(deps.len());
+    for dep in &deps {
+        let header = dep.included_file.as_str();
+        let resolved = resolve_include_path(header, dep.is_system_include, own_dir.as_deref(), &include_dirs);
+        let content_hash = resolved
+            .as_ref()
+            .and_then(|p| fs::read(p).ok())
+            .map(|bytes| format!("{:x}", Sha256::digest(&bytes)))
+            .unwrap_or_default();
+        direct_includes.push((header.to_string(), content_hash));
+    }
+
+    Some(crate::parse_cache::compute_key(args, source, &direct_includes))
+}
+
+/// Resolve one `#include` to an on-disk path using clang's basic search order.
+/// Returns `None` when no candidate exists.
+fn resolve_include_path(
+    header: &str,
+    is_system_include: bool,
+    own_dir: Option<&Path>,
+    include_dirs: &[&str],
+) -> Option<std::path::PathBuf> {
+    let rel = header.replace('/', std::path::MAIN_SEPARATOR_STR);
+    // Quote includes search the including file's own directory first.
+    if !is_system_include {
+        if let Some(dir) = own_dir {
+            let candidate = dir.join(&rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    for dir in include_dirs {
+        let candidate = Path::new(dir).join(&rel);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 impl LanguageAdapter for LuaLanguageAdapter {

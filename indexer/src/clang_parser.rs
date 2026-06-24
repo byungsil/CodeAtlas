@@ -11,6 +11,15 @@ use crate::parser::{
 };
 use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 
+/// Identifies the shape of the `ParseResult` this extractor produces.
+///
+/// Bump this whenever the libclang extraction output changes in any way that
+/// affects the serialized `ParseResult` (new fields, changed semantics, USR
+/// scheme tweaks, etc.). The parse cache (MS22) folds this tag into its
+/// content-addressable key so a version bump transparently invalidates every
+/// previously cached entry — old-format keys simply never match again.
+pub const PARSER_VERSION_TAG: &str = "cpp-clang-v1";
+
 // ─── Global Clang instance ────────────────────────────────────────────────────
 // We keep exactly ONE `Clang` guard alive for the process lifetime, initialised
 // on first use via `OnceLock`.  After `Clang::new()` completes, the guard is

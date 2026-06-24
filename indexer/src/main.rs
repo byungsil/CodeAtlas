@@ -15,6 +15,7 @@ mod language;
 mod lua_parser;
 mod metadata;
 mod models;
+mod parse_cache;
 mod parser;
 mod python_parser;
 mod representative_rules;
@@ -159,6 +160,10 @@ fn main() {
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    // MS22: initialise the translation-unit parse cache (no-op if disabled via
+    // CODEATLAS_PARSE_CACHE=0). Must precede any parsing so cache lookups/stores
+    // are live for the full/incremental run.
+    parse_cache::init(&data_dir);
     let index_mode = if watch_mode {
         "watch"
     } else if requested_full_mode {

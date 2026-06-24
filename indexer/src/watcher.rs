@@ -374,6 +374,9 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
     activity_log::init(&data_dir);
+    // MS22: parse cache persists across the watch session so unchanged TUs hit
+    // the cache on each incremental reindex (no-op if disabled via env).
+    crate::parse_cache::init(&data_dir);
     let expected_index_metadata = storage::expected_index_metadata(&workspace_root, workspace_name);
 
     let ignore_rules = IgnoreRules::load(&workspace_root);

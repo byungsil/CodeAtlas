@@ -2,6 +2,75 @@
 
 Status:
 
+- Completed (2026-06-24)
+
+## Completion Evidence
+
+Implemented as a content-addressable `ParseResult` cache gating
+`CppLanguageAdapter::parse_file()` before `acquire_cpp_parse_permit()`.
+
+Code:
+
+- `indexer/src/parse_cache.rs` (new): `compute_key()`, `ParseCache::{open,load,store}`,
+  generation/version dir cleanup, size-cap eviction, `CODEATLAS_PARSE_CACHE` disable
+  switch, `CODEATLAS_PARSE_CACHE_MAX_MB` cap, global `init/lookup/store`. 11 unit tests.
+- `indexer/src/clang_parser.rs`: `PARSER_VERSION_TAG` folded into the key.
+- `indexer/src/indexing.rs`: cache gate + cheap direct-include resolver
+  (`compute_parse_cache_key`, `resolve_include_path`) + macro-sensitive store bypass.
+- `indexer/src/models.rs`: `Serialize`/`Deserialize` added to `RawCallSite`,
+  `IncludeDependency`, `ParseResult` (the spec assumed these were already present —
+  they were not).
+- `indexer/src/{main.rs,watcher.rs}`: `parse_cache::init()` wired into both the
+  full/incremental and watch entry points.
+
+Serialization format: **serde_json**, not bincode/postcard. The models use
+`#[serde(skip_serializing_if = ...)]` extensively, which is incompatible with
+non-self-describing formats; serde_json was already a dependency, so no new crate.
+
+Tests: `cargo test` 301 passed (11 new `parse_cache` tests); `cargo build --release` clean.
+
+### E4 measurements (F:\dev\opencv, 4888 files, 771 C++ TUs cached, ~27 MB)
+
+| run | parse stage | total wall | symbols | calls | propagation |
+|---|---|---|---|---|---|
+| cache OFF (baseline) | 50.14s | 87s | 74562 | 183326 | 281833 |
+| cache ON, cold (populate) | 49.84s | 85s | 74562 | 183326 | 281833 |
+| cache ON, warm (restart) | **32.92s** | **66s** | 74562 | 183326 | 281833 |
+
+Warm restart: parse stage **−34%** (50.14s → 32.92s), total **−24%** (87s → 66s).
+Only 771 of 4888 files take the libclang path (the rest are tree-sitter, out of
+scope); the parse-stage win is concentrated in those 771 TUs.
+
+### Correctness equivalence (release gate E4-T2)
+
+All structurally-determined tables are byte-identical cache ON vs OFF: calls
+(183326), raw_calls (419523), propagation_events (281833), symbol_references
+(44414), files (4888) — content-hash MATCH.
+
+The `symbols` table count is identical (74562) but ~66–104 rows differ in
+`definition_line`/`file_path`/etc. **This is pre-existing parallel-merge
+non-determinism, not caused by the cache**, proven by:
+
+- two cache-**OFF** runs differ from each other by **90 symbols** (the
+  run-to-run baseline floor)
+- cache-OFF vs cache-ON-**cold** differ by **104** — yet a cold run's cache is
+  empty on every lookup, so every file is a real libclang parse (store happens
+  only *after* the parse returns and cannot alter it); OFF and cold are
+  operationally identical runs
+- cache-ON-**warm** vs cache-OFF differ by **66**, *below* the 90-symbol floor
+
+The differing symbols are IDs whose definition appears in multiple source files
+(e.g. `cv::VideoCapture_obsensor::setProperty` in both `cap_obsensor_capture.cpp`
+and `cap_obsensor_liborbbec.cpp`); which definition wins the merge depends on
+parse-completion order across rayon workers. MS22 adds **zero** divergence beyond
+this pre-existing floor.
+
+---
+
+## Original Spec
+
+Status:
+
 - Not started
 
 ## 1. Objective
