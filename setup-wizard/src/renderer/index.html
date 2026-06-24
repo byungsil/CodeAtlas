@@ -275,9 +275,13 @@
           <p class="description" style="margin-bottom: 12px; font-size: 13px;">
             선택된 확장자로 워크스페이스를 인덱싱합니다. (최초 인덱싱은 수 분 소요)
           </p>
-          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px; color: var(--text-secondary, #ccc);">
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; font-size: 13px; color: var(--text-secondary, #ccc);">
             <input type="checkbox" id="chkForceFullIndex" style="width: 16px; height: 16px; cursor: pointer;">
             강제 전체 인덱싱 (<code>--full</code>) — 기존 DB를 무시하고 처음부터 재인덱싱합니다.
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px; color: var(--text-secondary, #ccc);">
+            <input type="checkbox" id="chkRebuildParseCache" style="width: 16px; height: 16px; cursor: pointer;">
+            파스 캐시도 무효화 (<code>--rebuild-cache</code>) — MS22 TU 파스 캐시를 비우고 모든 C/C++ 파일을 libclang으로 다시 파싱합니다. (느림)
           </label>
           <button class="btn-primary btn-start-build" id="btnStartIndexing" onclick="runIndexing()">
             🚀 인덱싱 시작

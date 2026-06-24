@@ -934,9 +934,11 @@ async function runIndexing() {
     }
 
     statusEl.className = 'status-message info';
-    statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`; 
+    statusEl.textContent = `🚀 인덱싱을 시작합니다... (${allExts.join(', ')})`;
     const forceFullIndex = document.getElementById('chkForceFullIndex')?.checked ?? false;
-    addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}${forceFullIndex ? ' --full' : ''}`);
+    const rebuildParseCache = document.getElementById('chkRebuildParseCache')?.checked ?? false;
+    const flagSuffix = `${forceFullIndex ? ' --full' : ''}${rebuildParseCache ? ' --rebuild-cache' : ''}`;
+    addLogEntry('INFO', 'INDEXING', `Running: ${binPath} "${setupData.workspacePath}" --extensions ${allExts.join(',')}${flagSuffix}`);
 
     // For C/C++: ensure a compile context exists first so Clang AST parsing
     // works. The concrete artifact (compile_commands.json or cpp_context.json)
@@ -961,6 +963,10 @@ async function runIndexing() {
     if (forceFullIndex) {
       indexerArgs.push('--full');
       addLogEntry('INFO', 'INDEXING', 'Force full re-indexing enabled (--full)');
+    }
+    if (rebuildParseCache) {
+      indexerArgs.push('--rebuild-cache');
+      addLogEntry('INFO', 'INDEXING', 'Parse cache rebuild enabled (--rebuild-cache) — every C/C++ TU will be re-parsed by libclang');
     }
 
     // Start elapsed time ticker

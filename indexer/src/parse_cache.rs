@@ -268,6 +268,29 @@ fn collect_entries(
     }
 }
 
+/// Wipe the entire parse-cache tree under `data_dir` (`<data_dir>/parse-cache/`),
+/// including every format-version generation. Used by `--rebuild-cache` to force
+/// a from-scratch re-parse pass without flipping the env switch. Must be called
+/// BEFORE [`init`] — once `init` runs, the active `v*` directory has been
+/// recreated and a wipe afterward would race with concurrent stores.
+///
+/// Best-effort: a missing tree is a no-op; an unremovable subdir surfaces a
+/// warning but never aborts the run (the cache simply rebuilds whatever it can).
+pub fn wipe(data_dir: &Path) {
+    let root = data_dir.join("parse-cache");
+    if !root.exists() {
+        return;
+    }
+    match fs::remove_dir_all(&root) {
+        Ok(_) => eprintln!("  Parse cache: wiped {} (--rebuild-cache)", root.display()),
+        Err(e) => eprintln!(
+            "  Parse cache: warning — failed to wipe {}: {} (continuing; stale entries may remain)",
+            root.display(),
+            e
+        ),
+    }
+}
+
 /// Initialise the process-global parse cache rooted at `data_dir`. Idempotent
 /// (first call wins). When the `CODEATLAS_PARSE_CACHE` env switch disables the
 /// cache, this stores `None` and the cache becomes a transparent no-op.

@@ -22,11 +22,15 @@ powershell -ExecutionPolicy Bypass -File .\setup-gui.ps1
 
 The wizard guides you through:
 1. **Environment check** — detects Node.js, npm, Rust, and LLVM; installs missing tools via winget; offers to add LLVM to the user PATH if installed but not on PATH
-2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback
+2. **Indexer build** — compiles the Tree-sitter + libclang hybrid engine with progress feedback; the page header shows the resolved indexer version
 3. **Server setup** — installs npm dependencies and builds TypeScript
 4. **Workspace configuration** — browse to your codebase; auto-detects `.sln` files; choose compile context method (`cpp_context` from `.vcxproj` scan, or `compile_commands` via MSBuild)
-5. **Indexing configuration** — select languages and file extensions to index
+5. **Indexing configuration** — select languages and file extensions to index, then run the indexer. Two reset options are available next to the start button:
+   - **강제 전체 인덱싱 (`--full`)** — discards the existing DB and rebuilds from scratch
+   - **파스 캐시도 무효화 (`--rebuild-cache`)** — additionally wipes the on-disk translation-unit parse cache so every C/C++ file is re-parsed by libclang (slower; use when an indexed result looks suspect)
 6. **Complete** — apply MCP server config to your VS Code workspace (`.vscode/mcp.json`) with one click
+
+Each step has a **Skip** button if you want to jump past a stage that is already configured.
 
 ## What You Get
 
@@ -34,9 +38,12 @@ The wizard guides you through:
 - Full, incremental, and watch-mode indexing
 - SQLite generations at `<workspace-root>/.codeatlas/index-<timestamp>.db`
 - Active DB pointer at `<workspace-root>/.codeatlas/current-db.json`
+- **Translation-unit parse cache**: each C/C++ TU's parse result is memoized under a content-addressable key (normalized compiler args + source + direct-include contents). Unchanged TUs are served from disk on subsequent runs, skipping the libclang parse and its memory spike entirely
+- Sticky extension set: the extensions chosen at the initial index are recorded in DB metadata and reused on every incremental/watch run, so a partial-language index is never silently rebuilt as full
 - `generate-compile-commands` subcommand: generates `compile_commands.json` from a Visual Studio `.sln`/`.vcxproj` for large MSVC projects
 - Watch mode with vcxproj-change detection: automatically patches `compile_commands.json` when project files change
-- Node.js server for MCP tools, HTTP API, and dashboard
+- Node.js server (bound to `localhost`) for MCP tools, HTTP API, and dashboard
+- Dashboard with a **live indexer activity log** tab streamed over SSE
 - Support for C/C++, Lua, Python, TypeScript, and Rust source files
 
 ## Requirements
@@ -140,12 +147,16 @@ Common optional flags:
 ./indexer/target/release/codeatlas-indexer <workspace-root> --extensions cpp,h,hpp,py
 ./indexer/target/release/codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
 ./indexer/target/release/codeatlas-indexer <workspace-root> --verbose
+./indexer/target/release/codeatlas-indexer <workspace-root> --full --rebuild-cache
 ```
+
+`--rebuild-cache` wipes the on-disk translation-unit parse cache before indexing, forcing every C/C++ TU to be re-parsed by libclang. It is independent of `--full` (you can rebuild only the cache, only the DB, or both) and is rejected in `watch` mode.
 
 Watch mode notes:
 - On startup, runs an incremental catch-up pass before entering watch mode
 - Detects `.vcxproj` changes and automatically patches `compile_commands.json`
 - File change → re-index is significantly faster than running standalone incremental
+- `--rebuild-cache` is rejected here; wipe the cache via a one-shot run first if needed
 
 ### 4. Start the Server
 
@@ -255,12 +266,15 @@ The file uses `applyTo: "**"` front matter so it is active for all files in the 
 | `CODEATLAS_BACKGROUND_THREADS` | `(cpus / 2).clamp(4, 16)` | Worker thread count for indexing; `0` = use all logical CPUs |
 | `CODEATLAS_INDEXER_STACK_BYTES` | large default | Per-worker stack size (override for very deep ASTs) |
 | `CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES` | `2097152` | Skip oversized C++ files; set to `0` to disable |
+| `CODEATLAS_PARSE_CACHE` | `1` | Translation-unit parse cache switch; set to `0`/`false`/`off` to bypass and always re-parse |
+| `CODEATLAS_PARSE_CACHE_MAX_MB` | unbounded | Soft size cap on the parse cache; oldest entries are evicted at startup once exceeded |
 
 ## Supported Indexer Commands
 
 ```text
 codeatlas-indexer <workspace-root>
 codeatlas-indexer <workspace-root> --full --workspace-name <display-name>
+codeatlas-indexer <workspace-root> --full --rebuild-cache
 codeatlas-indexer <workspace-root> --json
 codeatlas-indexer <workspace-root> --verbose
 codeatlas-indexer <workspace-root> --workspace-name <display-name>
@@ -268,6 +282,7 @@ codeatlas-indexer <workspace-root> --extensions cpp,h,hpp
 codeatlas-indexer <workspace-root> --parse-timeout-ms 60000
 codeatlas-indexer watch <workspace-root> --workspace-name <display-name>
 codeatlas-indexer generate-compile-commands <workspace-root> --sln <path>
+codeatlas-indexer generate-cpp-context <workspace-root> --sln <path>
 ```
 
 Supported extensions by default:
@@ -288,6 +303,8 @@ libclang advantages over Tree-sitter for C++:
 - Resolves macros with actual compile-time define flags
 - Discovers ~17% more call edges on large MSVC projects (measured on a ~19k-file codebase)
 - Correct include path resolution without guessing
+
+Parsed libclang results are cached on disk under `<workspace-root>/.codeatlas/parse-cache/v<version>/`. Cache hits skip the libclang parse on the next run; macro-sensitive translation units are detected and never cached, so they are always re-parsed.
 
 ## Workspace Hygiene
 

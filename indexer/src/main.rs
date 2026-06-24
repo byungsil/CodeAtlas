@@ -91,6 +91,7 @@ struct CliOptions {
     workspace_name: Option<String>,
     watch_mode: bool,
     requested_full_mode: bool,
+    rebuild_parse_cache: bool,
     json_mode: bool,
     verbose_mode: bool,
     index_extensions: Option<Vec<String>>,
@@ -129,6 +130,7 @@ fn main() {
         workspace_name,
         watch_mode,
         requested_full_mode,
+        rebuild_parse_cache,
         json_mode,
         verbose_mode,
         index_extensions,
@@ -163,6 +165,13 @@ fn main() {
     // MS22: initialise the translation-unit parse cache (no-op if disabled via
     // CODEATLAS_PARSE_CACHE=0). Must precede any parsing so cache lookups/stores
     // are live for the full/incremental run.
+    //
+    // --rebuild-cache wipes the on-disk tree before init so the run is forced to
+    // re-parse every TU from scratch. Must run BEFORE init, otherwise the active
+    // v* directory init creates would be deleted from underneath live stores.
+    if rebuild_parse_cache {
+        parse_cache::wipe(&data_dir);
+    }
     parse_cache::init(&data_dir);
     let index_mode = if watch_mode {
         "watch"
@@ -909,6 +918,7 @@ fn print_help() {
     println!("  codeatlas-indexer <workspace-root>");
     println!("  codeatlas-indexer <workspace-root> --full --workspace-name <name>");
     println!("  codeatlas-indexer <workspace-root> --full --json");
+    println!("  codeatlas-indexer <workspace-root> --full --rebuild-cache");
     println!("  codeatlas-indexer <workspace-root> --workspace-name opencv --extensions cpp,h,hpp --parse-timeout-ms 60000");
     println!("  codeatlas-indexer watch <workspace-root>");
     println!("  codeatlas-indexer watch <workspace-root> --workspace-name opencv --extensions cpp,h,hpp --parse-timeout-ms 60000");
@@ -916,7 +926,11 @@ fn print_help() {
     println!();
     println!("Modes:");
     println!("  incremental  Re-index only changed files and remove deleted files");
-    println!("  --full       Rebuild the entire index from scratch");
+    println!("  --full       Rebuild the entire index DB from scratch");
+    println!("  --rebuild-cache  Wipe the translation-unit parse cache before indexing,");
+    println!("                   forcing every C/C++ TU to be re-parsed by libclang.");
+    println!("                   Independent of --full; usually paired with it.");
+    println!("                   Rejected in watch mode.");
     println!("  watch        Monitor the workspace and re-index on file changes");
     println!("  generate-compile-commands  Generate compile_commands.json from .sln/.vcxproj (requires MSBuild)");
     println!("  generate-cpp-context       Generate cpp_context.json from .vcxproj files (fast, no MSBuild)");
@@ -964,6 +978,7 @@ fn print_help() {
 fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
     let mut watch_mode = false;
     let mut requested_full_mode = false;
+    let mut rebuild_parse_cache = false;
     let mut json_mode = false;
     let mut verbose_mode = false;
     let mut workspace_root: Option<PathBuf> = None;
@@ -981,6 +996,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
         let arg = &args[index];
         match arg.as_str() {
             "--full" => requested_full_mode = true,
+            "--rebuild-cache" => rebuild_parse_cache = true,
             "--json" => json_mode = true,
             "--verbose" => verbose_mode = true,
             "--workspace-name" => {
@@ -1027,14 +1043,29 @@ fn parse_cli_args(args: &[String]) -> Result<CliOptions, String> {
     }
 
     let workspace_root = workspace_root.ok_or_else(|| {
-        "Usage: codeatlas-indexer [watch] <workspace-root> [--full] [--json]".to_string()
+        "Usage: codeatlas-indexer [watch] <workspace-root> [--full] [--rebuild-cache] [--json]"
+            .to_string()
     })?;
+
+    // --rebuild-cache wipes the on-disk parse cache before any parsing. In watch
+    // mode the run is long-lived and the wipe would only fire once at startup,
+    // creating a misleading "rebuild every run" expectation; refuse instead so
+    // the user picks the right tool (a one-shot run with --rebuild-cache, or
+    // restarting watch).
+    if watch_mode && rebuild_parse_cache {
+        return Err(
+            "--rebuild-cache cannot be combined with watch mode; run a one-shot index with \
+             --rebuild-cache first, then start watch."
+                .to_string(),
+        );
+    }
 
     Ok(CliOptions {
         workspace_root,
         workspace_name,
         watch_mode,
         requested_full_mode,
+        rebuild_parse_cache,
         json_mode,
         verbose_mode,
         index_extensions,
