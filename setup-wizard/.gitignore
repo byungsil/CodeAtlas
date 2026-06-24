@@ -1,4 +1,7 @@
 node_modules/
 main/*.js
+main/*.js.map
 renderer/preload.js
+renderer/preload.js.map
+renderer/*.js.map
 *.log

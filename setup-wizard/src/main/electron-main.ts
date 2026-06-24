@@ -412,6 +412,26 @@ function getRepoRoot(): string {
   return repoRoot;
 }
 
+/**
+ * Read the Rust indexer version from `indexer/Cargo.toml`.
+ * This is the single source of truth for the indexer version; the indexer
+ * binary exposes no `--version` flag. Returns `null` when unavailable so the
+ * UI can fail gracefully rather than showing a wrong value.
+ */
+function readIndexerVersion(): string | null {
+  try {
+    const cargoToml = path.join(getRepoRoot(), 'indexer', 'Cargo.toml');
+    const contents = fs.readFileSync(cargoToml, 'utf8');
+    // Match the first `version = "..."` in the [package] section. The package
+    // version is declared before [dependencies], so the first match is correct.
+    const match = contents.match(/^\s*version\s*=\s*"([^"]+)"/m);
+    return match ? match[1] : null;
+  } catch (err) {
+    log(LogLevel.WARN, 'VERSION', `Failed to read indexer version: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 // ==================== IPC Registration ====================
 
 function emitLogToRenderer(event: any, logEntry: { level: string; step?: string; message: string }) {
@@ -647,6 +667,10 @@ ipcMain.handle('get-repo-root', async (event) => {
   const repoRoot = getRepoRoot();
   emitLogToRenderer(event, { level: 'INFO', step: 'PATH', message: `Repository root: ${repoRoot}` });
   return repoRoot;
+});
+
+ipcMain.handle('get-indexer-version', async () => {
+  return readIndexerVersion();
 });
 
 ipcMain.handle('join-paths', async (_event, parts: string[]) => {

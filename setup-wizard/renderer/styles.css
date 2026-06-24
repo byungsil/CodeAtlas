@@ -20,9 +20,35 @@ body {
 
 /* ==================== Header ==================== */
 .wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 20px 32px;
   background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
   color: white;
+}
+
+.header-version {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.version-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.8;
+}
+
+.version-value {
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .logo-area {

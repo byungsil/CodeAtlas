@@ -1425,12 +1425,29 @@ window.addLogEntry = addLogEntry;
 
 document.addEventListener('DOMContentLoaded', () => {
   showStep(0);
-  
+
   // Set up log entry listener from main process
   window.codeatlas.onLogEntry((log) => {
     addLogEntry(log.level, log.step || '', log.message);
   });
-  
+
   // Load initial logs
   loadLogs();
+
+  // Show the Rust indexer version in the header.
+  loadIndexerVersion();
 });
+
+// Fetch the indexer version (from indexer/Cargo.toml via main process) and
+// render it in the header chip. Falls back to "—" when unavailable.
+async function loadIndexerVersion() {
+  const valueEl = document.getElementById('indexerVersionValue');
+  if (!valueEl) return;
+  try {
+    const version = await window.codeatlas.getIndexerVersion();
+    valueEl.textContent = version ? `v${version}` : '—';
+  } catch (err) {
+    valueEl.textContent = '—';
+    addLogEntry('WARN', 'VERSION', `Failed to load indexer version: ${err.message}`);
+  }
+}

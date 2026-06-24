@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('codeatlas', {
   
   // Paths
   getRepoRoot: () => ipcRenderer.invoke('get-repo-root'),
+  getIndexerVersion: () => ipcRenderer.invoke('get-indexer-version'),
   joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', [...parts]),
   fileExists: (filePath: string) => ipcRenderer.invoke('file-exists', filePath),
   getFileMtime: (filePath: string) => ipcRenderer.invoke('file-mtime', filePath),
