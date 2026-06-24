@@ -1,0 +1,67 @@
+[
+  {
+    "path": "ai_system.cpp",
+    "contentHash": "15cd91a4fd63c8ff0b3d0e22a9a36a902ae17b22ee7b37edaaef5d66a0f4c8e3",
+    "lastIndexed": "2026-06-24T04:43:06.257565900+00:00",
+    "symbolCount": 9,
+    "module": "ai_system.cpp",
+    "subsystem": "ai_system.cpp",
+    "projectArea": "ai",
+    "artifactKind": "runtime",
+    "parseFragility": "low",
+    "macroSensitivity": "low",
+    "includeHeaviness": "light"
+  },
+  {
+    "path": "ai_system.h",
+    "contentHash": "45b8a7bda7c80382bfad8317052b920ec03045e51ff7620624403e0722e5de47",
+    "lastIndexed": "2026-06-24T04:43:06.257710800+00:00",
+    "symbolCount": 15,
+    "module": "ai_system.h",
+    "subsystem": "ai_system.h",
+    "projectArea": "ai",
+    "artifactKind": "runtime",
+    "headerRole": "internal",
+    "parseFragility": "low",
+    "macroSensitivity": "low",
+    "includeHeaviness": "light"
+  },
+  {
+    "path": "game_object.cpp",
+    "contentHash": "75c2fe4e1e9b287bd7a2c42376f01f1746b811b8e57289ecce70cc51c77e830a",
+    "lastIndexed": "2026-06-24T04:43:06.257798900+00:00",
+    "symbolCount": 11,
+    "module": "game_object.cpp",
+    "subsystem": "game_object.cpp",
+    "artifactKind": "runtime",
+    "parseFragility": "low",
+    "macroSensitivity": "low",
+    "includeHeaviness": "light"
+  },
+  {
+    "path": "game_object.h",
+    "contentHash": "32b8ac22ca9336188d27e5d249fe5a24e632c084e12a4474d7a315ea23afbb03",
+    "lastIndexed": "2026-06-24T04:43:06.257933700+00:00",
+    "symbolCount": 15,
+    "module": "game_object.h",
+    "subsystem": "game_object.h",
+    "artifactKind": "runtime",
+    "headerRole": "internal",
+    "parseFragility": "low",
+    "macroSensitivity": "low",
+    "includeHeaviness": "light"
+  },
+  {
+    "path": "main.cpp",
+    "contentHash": "dd3865d53d582badeb0fcff71c200538e459f41de0ae600f58f9a4a990e78ec8",
+    "lastIndexed": "2026-06-24T04:43:06.258094900+00:00",
+    "symbolCount": 2,
+    "module": "main.cpp",
+    "subsystem": "main.cpp",
+    "projectArea": "ai",
+    "artifactKind": "runtime",
+    "parseFragility": "low",
+    "macroSensitivity": "low",
+    "includeHeaviness": "light"
+  }
+]

@@ -1,0 +1,163 @@
+[
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessIdle",
+    "filePath": "ai_system.cpp",
+    "line": 9,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessPatrol",
+    "filePath": "ai_system.cpp",
+    "line": 10,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessChase",
+    "filePath": "ai_system.cpp",
+    "line": 11,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::UpdateAI",
+    "calleeId": "Game::AIComponent::ProcessAttack",
+    "filePath": "ai_system.cpp",
+    "line": 12,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessIdle",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "ai_system.cpp",
+    "line": 25,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessPatrol",
+    "calleeId": "Game::GameObject::SetPosition",
+    "filePath": "ai_system.cpp",
+    "line": 29,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessPatrol",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "ai_system.cpp",
+    "line": 30,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessChase",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "ai_system.cpp",
+    "line": 34,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::AIComponent::ProcessAttack",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "ai_system.cpp",
+    "line": 38,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::InitializeAISystem",
+    "calleeId": "Game::GameWorld::FindObject",
+    "filePath": "ai_system.cpp",
+    "line": 42,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::InitializeAISystem",
+    "calleeId": "Game::GameObject::SetPosition",
+    "filePath": "ai_system.cpp",
+    "line": 44,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::GameWorld::RemoveObject",
+    "calleeId": "Game::GameObject::GetName",
+    "filePath": "game_object.cpp",
+    "line": 35,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::GameWorld::UpdateAll",
+    "calleeId": "Game::GameObject::Update",
+    "filePath": "game_object.cpp",
+    "line": 41,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::GameWorld::RenderAll",
+    "calleeId": "Game::GameObject::Render",
+    "filePath": "game_object.cpp",
+    "line": 47,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "Game::GameWorld::FindObject",
+    "calleeId": "Game::GameObject::GetName",
+    "filePath": "game_object.cpp",
+    "line": 53,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "RunGameLoop",
+    "calleeId": "Game::GameWorld::UpdateAll",
+    "filePath": "main.cpp",
+    "line": 7,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "RunGameLoop",
+    "calleeId": "Game::GameWorld::RenderAll",
+    "filePath": "main.cpp",
+    "line": 8,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::GameWorld::AddObject",
+    "filePath": "main.cpp",
+    "line": 17,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::GameWorld::AddObject",
+    "filePath": "main.cpp",
+    "line": 18,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::InitializeAISystem",
+    "filePath": "main.cpp",
+    "line": 20,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::AIComponent::SetState",
+    "filePath": "main.cpp",
+    "line": 23,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "Game::AIComponent::UpdateAI",
+    "filePath": "main.cpp",
+    "line": 26,
+    "resolutionTier": "heuristic"
+  },
+  {
+    "callerId": "main",
+    "calleeId": "RunGameLoop",
+    "filePath": "main.cpp",
+    "line": 27,
+    "resolutionTier": "heuristic"
+  }
+]

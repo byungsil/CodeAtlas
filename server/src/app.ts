@@ -1,6 +1,7 @@
 import * as path from "path";
 import express from "express";
 import { SourceLanguage, Symbol as CodeSymbol } from "./models/symbol";
+import { ResolutionTier } from "./models/call";
 import { Store } from "./storage/store";
 import { MetadataFilters, RawCallCandidateRecord } from "./storage/store";
 import {
@@ -149,7 +150,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
   function makeCallRefForStore(
     activeStore: Store,
-    call: { callerId?: string; calleeId?: string; filePath: string; line: number },
+    call: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier },
     targetField: "callerId" | "calleeId",
     symbolMap?: Map<string, CodeSymbol>,
   ): CallReference | null {
@@ -161,11 +162,12 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
       symbol: sym,
       filePath: call.filePath,
       line: call.line,
+      ...(call.resolutionTier ? { resolutionTier: call.resolutionTier } : {}),
     });
   }
 
   function makeCallRef(
-    call: { callerId?: string; calleeId?: string; filePath: string; line: number },
+    call: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier },
     targetField: "callerId" | "calleeId",
     symbolMap?: Map<string, CodeSymbol>,
   ): CallReference | null {
@@ -601,7 +603,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
     };
   }
 
-  function buildCallRefs(calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[], targetField: "callerId" | "calleeId"): CallReference[] {
+  function buildCallRefs(calls: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier }[], targetField: "callerId" | "calleeId"): CallReference[] {
     const symbolMap = buildSymbolMap(
       calls
         .map((call) => call[targetField])
@@ -613,7 +615,7 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   }
 
   function buildUniqueCallRefs(
-    calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
+    calls: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier }[],
     targetField: "callerId" | "calleeId",
     limit: number,
     metadataFilters?: MetadataFilters,

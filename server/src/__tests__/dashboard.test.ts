@@ -85,7 +85,7 @@ describe("Dashboard consumes same API contracts as agents", () => {
   it("overview endpoints expose compact summary-first payloads", async () => {
     const fileSymbols = await request(app)
       .get("/file-symbols")
-      .query({ filePath: "src/game_object.h", limit: 3 })
+      .query({ filePath: "game_object.h", limit: 3 })
       .expect(200);
     expect(fileSymbols.body).toHaveProperty("summary");
     expect(fileSymbols.body).toHaveProperty("window");

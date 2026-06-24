@@ -9,14 +9,14 @@ use crate::models::{
     Call, CallableFlowSummary, CircularDependency, ConditionalSymbol, FileRecord, IncludeChain,
     IncludeDependency, MacroType, NormalizedReference, PropagationAnchorKind, PropagationEvent,
     PropagationKind, RawExtractionConfidence, RawCallKind, RawCallSite, RawQualifierKind,
-    RawReceiverKind, ReferenceCategory, Symbol,
+    RawReceiverKind, ReferenceCategory, ResolutionTier, Symbol,
 };
 #[cfg(test)]
 use crate::models::InheritanceEdge;
 use crate::constants::{ACTIVE_DB_POINTER_FILENAME, DB_FILENAME};
 use crate::resolver;
 
-const DB_SCHEMA_VERSION: i64 = 2;
+const DB_SCHEMA_VERSION: i64 = 3;
 const INDEX_FORMAT_VERSION: u32 = 1;
 
 const SYMBOL_SELECT_COLUMNS: &str = "id, name, qualified_name, type, file_path, line, end_line, signature, parameter_count, scope_qualified_name, scope_kind, symbol_role, declaration_file_path, declaration_line, declaration_end_line, definition_file_path, definition_line, definition_end_line, parent_id, module, subsystem, project_area, artifact_kind, header_role, parse_fragility, macro_sensitivity, include_heaviness";
@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS calls (
     caller_id   TEXT NOT NULL,
     callee_id   TEXT NOT NULL,
     file_path   TEXT NOT NULL,
-    line        INTEGER NOT NULL
+    line        INTEGER NOT NULL,
+    resolution_tier TEXT NOT NULL DEFAULT 'heuristic'
 );
 
 CREATE TABLE IF NOT EXISTS raw_calls (
@@ -398,6 +399,15 @@ impl Database {
         Self::ensure_column(conn, "files", "macro_sensitivity", "TEXT")?;
         Self::ensure_column(conn, "files", "include_heaviness", "TEXT")?;
 
+        // MS21: confidence tier for resolved call edges. Existing rows default to
+        // 'heuristic' (the safe "needs verification" assumption).
+        Self::ensure_column(
+            conn,
+            "calls",
+            "resolution_tier",
+            "TEXT NOT NULL DEFAULT 'heuristic'",
+        )?;
+
         Ok(())
     }
 
@@ -533,10 +543,16 @@ impl Database {
 
     pub fn write_calls(&self, calls: &[Call]) -> SqlResult<()> {
         let mut stmt = self.conn.prepare(
-            "INSERT INTO calls (caller_id, callee_id, file_path, line) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO calls (caller_id, callee_id, file_path, line, resolution_tier) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for c in calls {
-            stmt.execute(params![c.caller_id, c.callee_id, c.file_path, c.line])?;
+            stmt.execute(params![
+                c.caller_id,
+                c.callee_id,
+                c.file_path,
+                c.line,
+                c.resolution_tier.as_str()
+            ])?;
         }
         Ok(())
     }
@@ -965,7 +981,7 @@ impl Database {
 
         let placeholders = vec!["?"; file_paths.len()].join(", ");
         let sql = format!(
-            "SELECT caller_id, callee_id, file_path, line
+            "SELECT caller_id, callee_id, file_path, line, resolution_tier
              FROM calls
              WHERE file_path IN ({})
              ORDER BY file_path, line, caller_id, callee_id",
@@ -978,6 +994,7 @@ impl Database {
                 callee_id: row.get(1)?,
                 file_path: row.get(2)?,
                 line: row.get(3)?,
+                resolution_tier: ResolutionTier::from_str(&row.get::<_, String>(4)?),
             })
         })?;
         rows.collect()
@@ -985,7 +1002,7 @@ impl Database {
 
     pub fn read_all_calls(&self) -> SqlResult<Vec<Call>> {
         let mut stmt = self.conn.prepare(
-            "SELECT caller_id, callee_id, file_path, line
+            "SELECT caller_id, callee_id, file_path, line, resolution_tier
              FROM calls
              ORDER BY file_path, line, caller_id, callee_id",
         )?;
@@ -995,6 +1012,7 @@ impl Database {
                 callee_id: row.get(1)?,
                 file_path: row.get(2)?,
                 line: row.get(3)?,
+                resolution_tier: ResolutionTier::from_str(&row.get::<_, String>(4)?),
             })
         })?;
         rows.collect()
@@ -2233,6 +2251,7 @@ mod tests {
         let calls = vec![Call {
             caller_id: "foo".into(), callee_id: "bar".into(),
             file_path: "test.cpp".into(), line: 3,
+            resolution_tier: ResolutionTier::Heuristic,
         }];
         let files = vec![FileRecord {
             path: "test.cpp".into(), content_hash: "abc".into(),
@@ -2253,6 +2272,58 @@ mod tests {
         assert_eq!(propagation_count, 0);
         let file_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
         assert_eq!(file_count, 1);
+    }
+
+    #[test]
+    fn resolution_tier_round_trips() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let calls = vec![
+            Call {
+                caller_id: "a".into(), callee_id: "b".into(),
+                file_path: "t.cpp".into(), line: 1,
+                resolution_tier: ResolutionTier::CompilerConfirmed,
+            },
+            Call {
+                caller_id: "a".into(), callee_id: "c".into(),
+                file_path: "t.cpp".into(), line: 2,
+                resolution_tier: ResolutionTier::Heuristic,
+            },
+        ];
+        db.write_calls(&calls).unwrap();
+
+        let read = db.read_all_calls().unwrap();
+        assert_eq!(read.len(), 2);
+        let confirmed = read.iter().find(|c| c.callee_id == "b").unwrap();
+        assert_eq!(confirmed.resolution_tier, ResolutionTier::CompilerConfirmed);
+        let heuristic = read.iter().find(|c| c.callee_id == "c").unwrap();
+        assert_eq!(heuristic.resolution_tier, ResolutionTier::Heuristic);
+    }
+
+    #[test]
+    fn pre_ms21_calls_backfill_to_heuristic() {
+        // Simulate a pre-MS21 DB: a calls table without the resolution_tier column.
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.conn.execute("DROP TABLE calls", []).unwrap();
+        db.conn
+            .execute(
+                "CREATE TABLE calls (caller_id TEXT NOT NULL, callee_id TEXT NOT NULL, \
+                 file_path TEXT NOT NULL, line INTEGER NOT NULL)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO calls (caller_id, callee_id, file_path, line) VALUES ('a','b','t.cpp',1)",
+                [],
+            )
+            .unwrap();
+
+        // Re-run the additive migration; the existing row must default to 'heuristic'.
+        Database::migrate_symbol_metadata(&db.conn).unwrap();
+
+        let read = db.read_all_calls().unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].resolution_tier, ResolutionTier::Heuristic);
     }
 
     #[test]
@@ -2501,6 +2572,7 @@ mod tests {
             callee_id: "Foo::Bar".into(),
             file_path: "game.cpp".into(),
             line: 42,
+            resolution_tier: ResolutionTier::Heuristic,
         }]).unwrap();
 
         db.delete_raw_symbols_for_file("foo.cpp").unwrap();

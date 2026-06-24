@@ -1,0 +1,590 @@
+[
+  {
+    "ownerSymbolId": "Game::AIComponent::AIComponent",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::AIComponent::param:owner@5",
+      "expressionText": "owner",
+      "anchorKind": "parameter"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::field:m_owner",
+      "expressionText": "m_owner",
+      "anchorKind": "field"
+    },
+    "propagationKind": "fieldWrite",
+    "filePath": "ai_system.cpp",
+    "line": 5,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::ProcessIdle",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::UpdateAI::arg0@9",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::ProcessIdle::param:deltaTime@24",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 9,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::ProcessPatrol",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::UpdateAI::arg0@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::ProcessPatrol::param:deltaTime@28",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 10,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::ProcessChase",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::UpdateAI::arg0@11",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::ProcessChase::param:deltaTime@33",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 11,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::ProcessAttack",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::UpdateAI::arg0@12",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::ProcessAttack::param:deltaTime@37",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 12,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::Update",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessIdle::arg0@25",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::Update::param:deltaTime@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 25,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessPatrol::arg0@29",
+      "expressionText": "1.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:x@22",
+      "expressionText": "x",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 29,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessPatrol::arg1@29",
+      "expressionText": "0.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:y@22",
+      "expressionText": "y",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 29,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessPatrol::arg2@29",
+      "expressionText": "0.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:z@22",
+      "expressionText": "z",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 29,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::Update",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessPatrol::arg0@30",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::Update::param:deltaTime@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 30,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::Update",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessChase::arg0@34",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::Update::param:deltaTime@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 34,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::Update",
+    "sourceAnchor": {
+      "anchorId": "Game::AIComponent::ProcessAttack::arg0@38",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::Update::param:deltaTime@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 38,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameWorld::FindObject",
+    "sourceAnchor": {
+      "anchorId": "Game::InitializeAISystem::arg0@42",
+      "expressionText": "\"AI_Agent\"",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameWorld::FindObject::param:name@51",
+      "expressionText": "name",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 42,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::InitializeAISystem",
+    "sourceAnchor": {
+      "anchorId": "Game::InitializeAISystem::expr:world_FindObject_AI_Agent_@42",
+      "expressionText": "world->FindObject(\"AI_Agent\")",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::InitializeAISystem::local:obj@42",
+      "expressionText": "obj",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "initializerBinding",
+    "filePath": "ai_system.cpp",
+    "line": 42,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "Game::GameWorld::FindObject",
+    "sourceAnchor": {
+      "anchorId": "Game::GameWorld::FindObject::expr:nullptr@57",
+      "expressionText": "nullptr",
+      "anchorKind": "returnValue"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::InitializeAISystem::local:obj@42",
+      "expressionText": "obj",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "returnValue",
+    "filePath": "ai_system.cpp",
+    "line": 42,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::InitializeAISystem::arg0@44",
+      "expressionText": "0.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:x@22",
+      "expressionText": "x",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 44,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::InitializeAISystem::arg1@44",
+      "expressionText": "0.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:y@22",
+      "expressionText": "y",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 44,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::SetPosition",
+    "sourceAnchor": {
+      "anchorId": "Game::InitializeAISystem::arg2@44",
+      "expressionText": "0.0f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::SetPosition::param:z@22",
+      "expressionText": "z",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "ai_system.cpp",
+    "line": 44,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::GameObject",
+    "sourceAnchor": {
+      "anchorId": "Game::GameObject::GameObject::param:name@6",
+      "expressionText": "name",
+      "anchorKind": "parameter"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::field:m_name",
+      "expressionText": "m_name",
+      "anchorKind": "field"
+    },
+    "propagationKind": "fieldWrite",
+    "filePath": "game_object.cpp",
+    "line": 6,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "Game::GameObject::Update",
+    "sourceAnchor": {
+      "anchorId": "Game::GameWorld::UpdateAll::arg0@41",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameObject::Update::param:deltaTime@10",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "game_object.cpp",
+    "line": 41,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameWorld::UpdateAll",
+    "sourceAnchor": {
+      "anchorId": "RunGameLoop::arg0@7",
+      "expressionText": "deltaTime",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameWorld::UpdateAll::param:deltaTime@39",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 7,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "main",
+    "sourceAnchor": {
+      "anchorId": "main::expr:_Player_@14",
+      "expressionText": "(\"Player\")",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "main::local:player@14",
+      "expressionText": "player",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "initializerBinding",
+    "filePath": "main.cpp",
+    "line": 14,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "main",
+    "sourceAnchor": {
+      "anchorId": "main::expr:_AI_Agent_@15",
+      "expressionText": "(\"AI_Agent\")",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "main::local:enemy@15",
+      "expressionText": "enemy",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "initializerBinding",
+    "filePath": "main.cpp",
+    "line": 15,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::GameWorld::AddObject",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@17",
+      "expressionText": "&player",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameWorld::AddObject::param:obj@28",
+      "expressionText": "obj",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 17,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "Game::GameWorld::AddObject",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@18",
+      "expressionText": "&enemy",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::GameWorld::AddObject::param:obj@28",
+      "expressionText": "obj",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 18,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "Game::InitializeAISystem",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@20",
+      "expressionText": "&world",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::InitializeAISystem::param:world@41",
+      "expressionText": "world",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 20,
+    "confidence": "partial",
+    "risks": [
+      "pointerHeavyFlow"
+    ]
+  },
+  {
+    "ownerSymbolId": "main",
+    "sourceAnchor": {
+      "anchorId": "main::expr:_enemy_@22",
+      "expressionText": "(&enemy)",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "main::local:ai@22",
+      "expressionText": "ai",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "initializerBinding",
+    "filePath": "main.cpp",
+    "line": 22,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::SetState",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@23",
+      "expressionText": "AIState::Patrol",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::SetState::param:state@16",
+      "expressionText": "state",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 23,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "main",
+    "sourceAnchor": {
+      "anchorId": "main::expr:0@25",
+      "expressionText": "0",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "main::local:i@25",
+      "expressionText": "i",
+      "anchorKind": "localVariable"
+    },
+    "propagationKind": "initializerBinding",
+    "filePath": "main.cpp",
+    "line": 25,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "Game::AIComponent::UpdateAI",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@26",
+      "expressionText": "0.016f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "Game::AIComponent::UpdateAI::param:deltaTime@7",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 26,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "RunGameLoop",
+    "sourceAnchor": {
+      "anchorId": "main::arg0@27",
+      "expressionText": "world",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "RunGameLoop::param:world@6",
+      "expressionText": "world",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 27,
+    "confidence": "high",
+    "risks": []
+  },
+  {
+    "ownerSymbolId": "RunGameLoop",
+    "sourceAnchor": {
+      "anchorId": "main::arg1@27",
+      "expressionText": "0.016f",
+      "anchorKind": "expression"
+    },
+    "targetAnchor": {
+      "anchorId": "RunGameLoop::param:deltaTime@6",
+      "expressionText": "deltaTime",
+      "anchorKind": "parameter"
+    },
+    "propagationKind": "argumentToParameter",
+    "filePath": "main.cpp",
+    "line": 27,
+    "confidence": "high",
+    "risks": []
+  }
+]

@@ -1,0 +1,106 @@
+[
+  {
+    "sourceSymbolId": "Game::AIComponent::SetState",
+    "targetSymbolId": "Game::AIState",
+    "category": "typeUsage",
+    "filePath": "ai_system.cpp",
+    "line": 16,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::AIComponent::GetState",
+    "targetSymbolId": "Game::AIState",
+    "category": "typeUsage",
+    "filePath": "ai_system.cpp",
+    "line": 20,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::InitializeAISystem",
+    "targetSymbolId": "Game::GameWorld",
+    "category": "typeUsage",
+    "filePath": "ai_system.cpp",
+    "line": 41,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::AIComponent::SetState",
+    "targetSymbolId": "Game::AIState",
+    "category": "typeUsage",
+    "filePath": "ai_system.h",
+    "line": 19,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::AIComponent::GetState",
+    "targetSymbolId": "Game::AIState",
+    "category": "typeUsage",
+    "filePath": "ai_system.h",
+    "line": 20,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::AIComponent",
+    "targetSymbolId": "Game::GameObject",
+    "category": "typeUsage",
+    "filePath": "ai_system.h",
+    "line": 28,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::AIComponent",
+    "targetSymbolId": "Game::AIState",
+    "category": "typeUsage",
+    "filePath": "ai_system.h",
+    "line": 29,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::InitializeAISystem",
+    "targetSymbolId": "Game::GameWorld",
+    "category": "typeUsage",
+    "filePath": "ai_system.h",
+    "line": 32,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::GameObject",
+    "targetSymbolId": "Game::IUpdatable",
+    "category": "inheritanceMention",
+    "filePath": "game_object.h",
+    "line": 16,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "Game::GameWorld",
+    "targetSymbolId": "Game::GameObject",
+    "category": "typeUsage",
+    "filePath": "game_object.h",
+    "line": 41,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "RunGameLoop",
+    "targetSymbolId": "Game::GameWorld",
+    "category": "typeUsage",
+    "filePath": "main.cpp",
+    "line": 6,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "main",
+    "targetSymbolId": "Game::GameWorld",
+    "category": "typeUsage",
+    "filePath": "main.cpp",
+    "line": 12,
+    "confidence": "partial"
+  },
+  {
+    "sourceSymbolId": "main",
+    "targetSymbolId": "Game::AIState::Patrol",
+    "category": "enumValueUsage",
+    "filePath": "main.cpp",
+    "line": 23,
+    "confidence": "partial"
+  }
+]

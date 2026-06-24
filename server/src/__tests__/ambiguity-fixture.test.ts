@@ -283,7 +283,7 @@ function fixtureSymbols(): Symbol[] {
 }
 
 function fixtureCalls(): Call[] {
-  return [
+  return ([
     {
       callerId: "AI::Controller::Update",
       calleeId: "Gameplay::Update",
@@ -320,7 +320,7 @@ function fixtureCalls(): Call[] {
       filePath: "samples/ambiguity/src/path_trace.cpp",
       line: 5,
     },
-  ];
+  ] as Omit<Call, "resolutionTier">[]).map((c) => ({ ...c, resolutionTier: "heuristic" as const }));
 }
 
 function fixtureFiles(): FileRecord[] {

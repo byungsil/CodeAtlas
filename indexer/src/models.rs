@@ -55,6 +55,42 @@ pub struct Symbol {
     pub include_heaviness: Option<String>,
 }
 
+/// How confidently a call edge's callee was resolved.
+///
+/// `CompilerConfirmed` edges come from the libclang USR fast-path
+/// (`RawCallSite.pre_resolved_callee_id`): the compiler resolved the callee and
+/// the named symbol is known. `Heuristic` edges come from name-based scoring
+/// (overload/disambiguation), including ambiguous-but-chosen resolutions.
+///
+/// This mirrors Kythe's separation of observed (`completedby`) relationships
+/// from inferred ones, letting MCP consumers tell which edges warrant extra
+/// verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResolutionTier {
+    CompilerConfirmed,
+    Heuristic,
+}
+
+impl ResolutionTier {
+    /// Stable string used for SQLite storage (snake_case, schema-facing).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ResolutionTier::CompilerConfirmed => "compiler_confirmed",
+            ResolutionTier::Heuristic => "heuristic",
+        }
+    }
+
+    /// Parses the stored string. Unknown values fall back to `Heuristic`, the
+    /// safe "needs verification" assumption (also used as the column default).
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "compiler_confirmed" => ResolutionTier::CompilerConfirmed,
+            _ => ResolutionTier::Heuristic,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Call {
@@ -62,6 +98,7 @@ pub struct Call {
     pub callee_id: String,
     pub file_path: String,
     pub line: usize,
+    pub resolution_tier: ResolutionTier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 import { SourceLanguage, Symbol } from "./symbol";
-import { Call } from "./call";
+import { Call, ResolutionTier } from "./call";
 
 export type LookupMode = "exact" | "heuristic";
 
@@ -263,6 +263,11 @@ export interface CallReference {
   ambiguity?: AmbiguityInfo;
   resolutionKind?: CallResolutionKind;
   provenanceKind?: CallProvenanceKind;
+  /**
+   * Confidence tier of the underlying call edge (MS21).
+   * `compilerConfirmed` = libclang USR; `heuristic` = name-based scoring.
+   */
+  resolutionTier?: ResolutionTier;
 }
 
 export interface CompactCallReference {

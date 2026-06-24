@@ -192,7 +192,7 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
 
         // IncludeDirectories
         if trimmed.starts_with("<AdditionalIncludeDirectories>") {
-            let after_tag = &raw[trimmed.find(">").unwrap() + 1..];
+            let after_tag = &trimmed[trimmed.find(">").unwrap() + 1..];
             if let Some(end) = after_tag.find("</AdditionalIncludeDirectories>") {
                 let value = after_tag[..end].trim();
                 // Find which configuration this belongs to
@@ -210,7 +210,7 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
 
         // PreprocessorDefinitions
         if trimmed.starts_with("<PreprocessorDefinitions>") {
-            let after_tag = &raw[trimmed.find(">").unwrap() + 1..];
+            let after_tag = &trimmed[trimmed.find(">").unwrap() + 1..];
             if let Some(end) = after_tag.find("</PreprocessorDefinitions>") {
                 let value = after_tag[..end].trim();
                 let config = find_current_config(&raw, trimmed);
@@ -227,7 +227,7 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
 
         // OutDir
         if trimmed.starts_with("<OutDir>") {
-            let after_tag = &raw[trimmed.find(">").unwrap() + 1..];
+            let after_tag = &trimmed[trimmed.find(">").unwrap() + 1..];
             if let Some(end) = after_tag.find("</OutDir>") {
                 let value = after_tag[..end].trim().to_string();
                 let config = find_current_config(&raw, trimmed);
@@ -237,7 +237,7 @@ fn parse_vcxproj(path: &Path) -> Option<VcxProject> {
 
         // TargetName / OutputFileName
         if trimmed.starts_with("<TargetName>") {
-            let after_tag = &raw[trimmed.find(">").unwrap() + 1..];
+            let after_tag = &trimmed[trimmed.find(">").unwrap() + 1..];
             if let Some(end) = after_tag.find("</TargetName>") {
                 let value = after_tag[..end].trim().to_string();
                 let config = find_current_config(&raw, trimmed);
@@ -615,6 +615,50 @@ EndGlobal
         let ctx = ctx.unwrap();
         assert_eq!(ctx.projects.len(), 1);
         assert_eq!(ctx.projects[0].project_name, "CppProj");
+    }
+
+    // Regression: the include/define/outdir/targetname extractors previously
+    // sliced the *whole file* (`raw`) using a `>` offset computed from the
+    // current *line* (`trimmed`). That made every extracted value start right
+    // after the file's first `>` (the `<?xml ... ?>` declaration), so values
+    // were polluted with the leading XML text instead of holding the tag body.
+    // These assertions check the *exact* extracted values, not a `contains`.
+    #[test]
+    fn extracts_clean_tag_values_without_leading_xml_pollution() {
+        let dir = tempdir().unwrap();
+
+        let vcx_content = r#"<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <AdditionalIncludeDirectories>src;include</AdditionalIncludeDirectories>
+    <PreprocessorDefinitions>NDEBUG;DEMO_BUILD=1</PreprocessorDefinitions>
+    <OutDir>build\out\</OutDir>
+    <TargetName>app</TargetName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+  </ItemGroup>
+</Project>
+"#;
+        let vcx_path = dir.path().join("app.vcxproj");
+        fs::write(&vcx_path, vcx_content).unwrap();
+
+        let proj = parse_vcxproj_file(&vcx_path).expect("Expected vcxproj to parse");
+
+        let dirs = proj.include_dirs.get("Release").expect("Release include dirs");
+        assert_eq!(dirs, &vec!["src".to_string(), "include".to_string()]);
+
+        let defs = proj.defines.get("Release").expect("Release defines");
+        assert_eq!(defs, &vec!["NDEBUG".to_string(), "DEMO_BUILD=1".to_string()]);
+
+        assert_eq!(proj.output_dir.get("Release").map(String::as_str), Some("build\\out\\"));
+        assert_eq!(proj.target_name.get("Release").map(String::as_str), Some("app"));
+
+        // No value may contain leaked XML markup from the file header.
+        for value in dirs.iter().chain(defs.iter()) {
+            assert!(!value.contains('<'), "value leaked XML markup: {value:?}");
+            assert!(!value.contains("xml"), "value leaked XML declaration: {value:?}");
+        }
     }
 }
 

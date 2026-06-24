@@ -137,6 +137,11 @@ export class SqliteStore {
     return row.cnt > 0;
   }
 
+  private hasColumn(table: string, column: string): boolean {
+    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return rows.some((r) => r.name === column);
+  }
+
   private searchWithFts(query: string, type: string | undefined, limit: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number } {
     const ftsQuery = `"${query.replace(/"/g, '""')}"`;
     const whereClauses = ["symbols_fts MATCH ?"];
@@ -180,16 +185,26 @@ export class SqliteStore {
     return { results: rows.map(toSymbol), totalCount };
   }
 
-  getCallers(symbolId: string): Call[] {
+  getCallers(symbolId: string, confirmedOnly = false): Call[] {
+    if (confirmedOnly && !this.hasColumn("calls", "resolution_tier")) {
+      // Pre-MS21 DB: no tier column means no compiler-confirmed edges exist.
+      return [];
+    }
+    const tierFilter = confirmedOnly ? " AND resolution_tier = 'compiler_confirmed'" : "";
     const rows = this.db
-      .prepare("SELECT * FROM calls WHERE callee_id = ?")
+      .prepare(`SELECT * FROM calls WHERE callee_id = ?${tierFilter}`)
       .all(symbolId) as RawCallRow[];
     return rows.map(toCall);
   }
 
-  getCallees(symbolId: string): Call[] {
+  getCallees(symbolId: string, confirmedOnly = false): Call[] {
+    if (confirmedOnly && !this.hasColumn("calls", "resolution_tier")) {
+      // Pre-MS21 DB: no tier column means no compiler-confirmed edges exist.
+      return [];
+    }
+    const tierFilter = confirmedOnly ? " AND resolution_tier = 'compiler_confirmed'" : "";
     const rows = this.db
-      .prepare("SELECT * FROM calls WHERE caller_id = ?")
+      .prepare(`SELECT * FROM calls WHERE caller_id = ?${tierFilter}`)
       .all(symbolId) as RawCallRow[];
     return rows.map(toCall);
   }
@@ -753,6 +768,7 @@ interface RawCallRow {
   callee_id: string;
   file_path: string;
   line: number;
+  resolution_tier: string | null;
 }
 
 interface RawRecoveredCallRow {
@@ -830,6 +846,9 @@ function toCall(row: RawCallRow): Call {
     calleeId: row.callee_id,
     filePath: row.file_path,
     line: row.line,
+    // Pre-MS21 DBs (or rows lacking the column) default to "heuristic", the
+    // safe "needs verification" assumption.
+    resolutionTier: row.resolution_tier === "compiler_confirmed" ? "compilerConfirmed" : "heuristic",
   };
 }
 

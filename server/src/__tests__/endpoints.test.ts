@@ -498,8 +498,8 @@ describe("Heuristic ambiguity metadata", () => {
     ];
 
     const calls = [
-      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7 },
-      { callerId: "Game::Editor::RefreshShotPreview", calleeId: "Game::Editor::UpdateShot", filePath: "editor/panel.cpp", line: 9 },
+      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7, resolutionTier: "heuristic" as const },
+      { callerId: "Game::Editor::RefreshShotPreview", calleeId: "Game::Editor::UpdateShot", filePath: "editor/panel.cpp", line: 9, resolutionTier: "heuristic" as const },
     ];
 
     const recentAwareStore: Store = {
@@ -759,7 +759,7 @@ describe("Heuristic ambiguity metadata", () => {
     ];
 
     const calls = [
-      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7 },
+      { callerId: "Game::Runtime::TickRuntimeShot", calleeId: "Game::Runtime::UpdateShot", filePath: "runtime/tick_runtime_shot.cpp", line: 7, resolutionTier: "heuristic" as const },
     ];
 
     const neighborAwareStore: Store = {
@@ -840,8 +840,9 @@ describe("GET /search", () => {
     expect(res.body.window.totalCount).toBe(res.body.totalCount);
     expect(res.body.window.returnedCount).toBe(res.body.results.length);
     expect(res.body.results).toBeInstanceOf(Array);
-    expect(res.body.results.length).toBe(3);
-    expect(res.body.totalCount).toBe(3);
+    // UpdateAI, GameObject::Update, GameWorld::UpdateAll, IUpdatable::Update
+    expect(res.body.results.length).toBe(4);
+    expect(res.body.totalCount).toBe(4);
     expect(res.body.truncated).toBe(false);
   });
 
@@ -2054,9 +2055,9 @@ describe("Overview queries", () => {
   it("returns file overview in stable order", async () => {
     const res = await request(app)
       .get("/file-symbols")
-      .query({ filePath: "src/game_object.h" })
+      .query({ filePath: "game_object.h" })
       .expect(200);
-    expect(res.body.filePath).toBe("src/game_object.h");
+    expect(res.body.filePath).toBe("game_object.h");
     expect(res.body.summary.totalCount).toBe(res.body.symbols.length);
     expect(res.body.window.totalCount).toBe(res.body.summary.totalCount);
     expect(res.body.window.returnedCount).toBe(res.body.symbols.length);
@@ -2066,7 +2067,7 @@ describe("Overview queries", () => {
   it("returns compact file overview when requested", async () => {
     const res = await request(app)
       .get("/file-symbols")
-      .query({ filePath: "src/game_object.h", compact: "true" })
+      .query({ filePath: "game_object.h", compact: "true" })
       .expect(200);
     expect(res.body.responseMode).toBe("compact");
     expect(res.body.symbols.length).toBeGreaterThan(0);

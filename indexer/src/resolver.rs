@@ -5,7 +5,8 @@ use rayon::prelude::*;
 use crate::models::{
     Call, CallableFlowSummary, PropagationAnchor, PropagationAnchorKind, PropagationEvent,
     PropagationKind, PropagationRisk, RawCallKind, RawCallSite, RawExtractionConfidence,
-    RawQualifierKind, RepresentativeSelectionReason, Symbol, compact_propagation_event,
+    RawQualifierKind, RepresentativeSelectionReason, ResolutionTier, Symbol,
+    compact_propagation_event,
 };
 #[cfg(test)]
 use crate::models::{InheritanceEdge, OverrideCandidate, OverrideMatchReason};
@@ -108,6 +109,7 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
                             callee_id: callee_id.clone(),
                             file_path: raw.file_path.clone(),
                             line: raw.line,
+                            resolution_tier: ResolutionTier::CompilerConfirmed,
                         });
                     }
                     continue;
@@ -145,6 +147,7 @@ pub fn resolve_calls(raw_calls: &[RawCallSite], symbols: &[Symbol]) -> Vec<Call>
                     callee_id: callee.id.clone(),
                     file_path: raw.file_path.clone(),
                     line: raw.line,
+                    resolution_tier: ResolutionTier::Heuristic,
                 });
             }
         }
@@ -1076,6 +1079,7 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
                         callee_id: callee_id.clone(),
                         file_path: raw.file_path.clone(),
                         line: raw.line,
+                        resolution_tier: ResolutionTier::CompilerConfirmed,
                     }));
                 }
                 return None;
@@ -1121,6 +1125,7 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
                     callee_id: callee.id.clone(),
                     file_path: raw.file_path.clone(),
                     line: raw.line,
+                    resolution_tier: ResolutionTier::Heuristic,
                 }));
             }
             None
@@ -1581,6 +1586,58 @@ mod tests {
             pre_resolved_callee_id: None,
             file_path: "test.cpp".to_string(),
             line: 5,
+        }
+    }
+
+    #[test]
+    fn usr_pre_resolved_call_is_compiler_confirmed() {
+        // libclang resolved the callee directly via USR -> compiler_confirmed.
+        let symbols = vec![
+            make_sym("caller", "caller", "function", None),
+            make_sym("callee::id", "callee", "function", None),
+        ];
+        let mut raw = make_raw("caller", "callee");
+        raw.pre_resolved_callee_id = Some("callee::id".to_string());
+
+        let calls = resolve_calls(&[raw], &symbols);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].callee_id, "callee::id");
+        assert_eq!(calls[0].resolution_tier, ResolutionTier::CompilerConfirmed);
+    }
+
+    #[test]
+    fn name_resolved_call_is_heuristic() {
+        // No USR; a single unambiguous name candidate resolves via scoring -> heuristic.
+        let symbols = vec![
+            make_sym("caller", "caller", "function", None),
+            make_sym("target::id", "target", "function", None),
+        ];
+        let raw = make_raw("caller", "target");
+
+        let calls = resolve_calls(&[raw], &symbols);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].callee_id, "target::id");
+        assert_eq!(calls[0].resolution_tier, ResolutionTier::Heuristic);
+    }
+
+    #[test]
+    fn ambiguous_but_chosen_call_is_heuristic() {
+        // Two same-named candidates; tie-break may keep a top-ranked candidate.
+        // Any edge that survives the name-based path is tagged heuristic, never confirmed.
+        let symbols = vec![
+            make_sym("caller", "caller", "function", Some("A")),
+            make_sym("A::dup", "dup", "method", Some("A")),
+            make_sym("B::dup", "dup", "method", Some("B")),
+        ];
+        let raw = make_member_raw("caller", "dup", RawCallKind::MemberAccess);
+
+        let calls = resolve_calls(&[raw], &symbols);
+        for c in &calls {
+            assert_eq!(
+                c.resolution_tier,
+                ResolutionTier::Heuristic,
+                "name-based resolution must never be compiler_confirmed"
+            );
         }
     }
 

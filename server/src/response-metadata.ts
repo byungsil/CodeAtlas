@@ -21,6 +21,7 @@ import {
   SymbolLookupResponse,
 } from "./models/responses";
 import { Symbol } from "./models/symbol";
+import { ResolutionTier } from "./models/call";
 
 type LookupMetadata = Pick<FunctionResponse, "lookupMode" | "confidence" | "matchReasons" | "ambiguity"> & HeuristicSelectionMetadata;
 
@@ -291,6 +292,7 @@ export function makeResolvedCallReference(params: {
   line: number;
   confidence?: ConfidenceLevel;
   matchReasons?: MatchReason[];
+  resolutionTier?: ResolutionTier;
 }): CallReference {
   return {
     symbolId: params.symbol.id,
@@ -302,6 +304,7 @@ export function makeResolvedCallReference(params: {
     matchReasons: params.matchReasons ?? [],
     resolutionKind: "resolved",
     provenanceKind: "resolved_call_edge",
+    ...(params.resolutionTier ? { resolutionTier: params.resolutionTier } : {}),
   };
 }
 

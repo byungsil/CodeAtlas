@@ -967,7 +967,7 @@ function fixtureSymbols(): Symbol[] {
 }
 
 function fixtureCalls(): Call[] {
-  return [
+  return ([
     {
       callerId: "Game::Investigation::QueueShot",
       calleeId: "Game::Investigation::ReadInputPower",
@@ -1238,7 +1238,7 @@ function fixtureCalls(): Call[] {
       filePath: "samples/investigation/src/partial_flow.cpp",
       line: 28,
     },
-  ];
+  ] as Omit<Call, "resolutionTier">[]).map((c) => ({ ...c, resolutionTier: "heuristic" as const }));
 }
 
 function fixtureReferences(): ReferenceRecord[] {

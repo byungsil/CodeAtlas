@@ -13,6 +13,7 @@ import {
 import { Store } from "./storage/store";
 import { MetadataFilters, RawCallCandidateRecord } from "./storage/store";
 import { SourceLanguage } from "./models/symbol";
+import { ResolutionTier } from "./models/call";
 import { resolveActiveDatabasePath, SqliteStore } from "./storage/sqlite-store";
 import { JsonStore } from "./storage/json-store";
 import {
@@ -167,7 +168,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   }
 
   function buildCallReferences(
-    calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
+    calls: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier }[],
     targetField: "callerId" | "calleeId",
   ): CallReference[] {
     const symbolMap = buildSymbolMap(
@@ -185,6 +186,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
           symbol: s,
           filePath: c.filePath,
           line: c.line,
+          ...(c.resolutionTier ? { resolutionTier: c.resolutionTier } : {}),
         });
       })
       .filter((r): r is CallReference => r !== null);
@@ -483,7 +485,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
   }
 
   function buildUniqueCallReferences(
-    calls: { callerId?: string; calleeId?: string; filePath: string; line: number }[],
+    calls: { callerId?: string; calleeId?: string; filePath: string; line: number; resolutionTier?: ResolutionTier }[],
     targetField: "callerId" | "calleeId",
     limit: number,
     metadataFilters?: MetadataFilters,
@@ -1143,6 +1145,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     source: NonNullable<ReturnType<Store["getSymbolById"]>>,
     target: NonNullable<ReturnType<Store["getSymbolById"]>>,
     maxDepth: number,
+    confirmedOnly = false,
   ): TraceCallPathResponse {
     type QueueItem = { symbolId: string; depth: number; steps: TraceCallPathResponse["steps"] };
     const visited = new Set<string>([source.id]);
@@ -1152,13 +1155,13 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     while (queue.length > 0) {
       const current = queue.shift()!;
       if (current.depth >= maxDepth) {
-        if (current.symbolId !== target.id && store.getCallees(current.symbolId).length > 0) {
+        if (current.symbolId !== target.id && store.getCallees(current.symbolId, confirmedOnly).length > 0) {
           truncated = true;
         }
         continue;
       }
 
-      const outgoing = store.getCallees(current.symbolId)
+      const outgoing = store.getCallees(current.symbolId, confirmedOnly)
         .slice()
         .sort((a, b) => a.line - b.line || a.calleeId.localeCompare(b.calleeId));
 
@@ -1352,8 +1355,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       artifactKind: z.enum(["runtime", "editor", "tool", "test", "generated"]).optional().describe("Optional artifact-kind filter applied to caller symbols"),
       anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
       recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
+      confirmedOnly: z.boolean().optional().describe("When true, return only compiler-confirmed call edges (resolved via libclang USR), excluding heuristic name-based matches"),
     },
-    async ({ name, compact, limit, offset, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName }) => {
+    async ({ name, compact, limit, offset, language, subsystem, module, projectArea, artifactKind, anchorQualifiedName, recentQualifiedName, confirmedOnly }) => {
       const metadataFilters: MetadataFilters | undefined = language || subsystem || module || projectArea || artifactKind
         ? { language, subsystem, module, projectArea, artifactKind }
         : undefined;
@@ -1364,8 +1368,10 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         return notFoundPayload();
       }
 
-      const resolvedCallers = buildUniqueCallReferences(store.getCallers(sym.id), "callerId", limit, metadataFilters, offset);
-      const recoveredCallers = resolvedCallers.totalCount === 0
+      const resolvedCallers = buildUniqueCallReferences(store.getCallers(sym.id, confirmedOnly), "callerId", limit, metadataFilters, offset);
+      // Recovered (raw_call) edges are unconfirmed by definition, so skip them when
+      // the caller asked for compiler-confirmed edges only.
+      const recoveredCallers = resolvedCallers.totalCount === 0 && !confirmedOnly
         ? buildRecoveredCallerReferences(sym, limit, metadataFilters, context)
         : { results: [], totalCount: 0, truncated: false };
       const callers = resolvedCallers.totalCount > 0 ? resolvedCallers : recoveredCallers;
@@ -1884,8 +1890,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       sourceQualifiedName: z.string().describe("Exact source function or method qualified name"),
       targetQualifiedName: z.string().describe("Exact target function or method qualified name"),
       maxDepth: z.number().int().min(1).max(CALLGRAPH_MAX_DEPTH).default(CALLGRAPH_DEFAULT_DEPTH).describe("Maximum call-path depth to explore"),
+      confirmedOnly: z.boolean().optional().describe("When true, traverse only compiler-confirmed call edges (resolved via libclang USR), excluding heuristic matches"),
     },
-    async ({ sourceQualifiedName, targetQualifiedName, maxDepth }) => {
+    async ({ sourceQualifiedName, targetQualifiedName, maxDepth, confirmedOnly }) => {
       const source = store.getSymbolByQualifiedName(sourceQualifiedName);
       const target = store.getSymbolByQualifiedName(targetQualifiedName);
       if (!source || !target) {
@@ -1896,7 +1903,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       }
 
       return {
-        content: [{ type: "text", text: JSON.stringify(traceShortestCallPath(source, target, maxDepth), null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(traceShortestCallPath(source, target, maxDepth, confirmedOnly), null, 2) }],
       };
     },
   );
@@ -1985,6 +1992,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     visited: Set<string>,
     state: { remainingNodeBudget: number },
     direction: "callers" | "callees",
+    confirmedOnly = false,
   ): { edges: CallGraphEdge[]; truncated: boolean } {
     type CallGraphEdgeCandidate = {
       target: NonNullable<ReturnType<Store["getSymbolById"]>>;
@@ -1993,8 +2001,11 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       resolutionKind?: CallReference["resolutionKind"];
       provenanceKind?: CallReference["provenanceKind"];
     };
-    const resolvedCalls = direction === "callers" ? store.getCallers(symbol.id) : store.getCallees(symbol.id);
-    const recoveredCallers = direction === "callers" && resolvedCalls.length === 0
+    const resolvedCalls = direction === "callers"
+      ? store.getCallers(symbol.id, confirmedOnly)
+      : store.getCallees(symbol.id, confirmedOnly);
+    // Recovered (raw_call) edges are unconfirmed, so skip them under confirmedOnly.
+    const recoveredCallers = direction === "callers" && resolvedCalls.length === 0 && !confirmedOnly
       ? buildRecoveredCallerReferences(symbol, CALLERS_MAX_LIMIT).results
       : [];
     if (currentDepth >= maxDepth || visited.has(symbol.id)) {
@@ -2055,6 +2066,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
         new Set(visited),
         state,
         direction,
+        confirmedOnly,
       );
       if (truncated) anyTruncated = true;
       edges.push({
@@ -2077,6 +2089,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     maxDepth: number,
     direction: CallGraphDirection,
     nodeCap: number,
+    confirmedOnly = false,
   ) {
     const state = { remainingNodeBudget: Math.max(0, nodeCap - 1) };
     const root = {
@@ -2087,12 +2100,12 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
     let truncated = false;
 
     if (direction === "callees" || direction === "both") {
-      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callees");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callees", confirmedOnly);
       root.callees = result.edges;
       truncated = truncated || result.truncated;
     }
     if (direction === "callers" || direction === "both") {
-      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callers");
+      const result = expandCallDirection(symbol, 0, maxDepth, new Set<string>(), state, "callers", confirmedOnly);
       root.callers = result.edges;
       truncated = truncated || result.truncated;
     }
@@ -2197,8 +2210,9 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       nodeCap: z.number().int().min(1).max(CALLGRAPH_MAX_NODE_CAP).default(CALLGRAPH_DEFAULT_NODE_CAP).describe("Maximum total nodes to expand before truncation"),
       anchorQualifiedName: z.string().optional().describe("Optional exact anchor symbol whose metadata should seed ranking context"),
       recentQualifiedName: z.string().optional().describe("Optional recently inspected symbol used to derive anchor context when no exact anchor is provided"),
+      confirmedOnly: z.boolean().optional().describe("When true, traverse only compiler-confirmed call edges (resolved via libclang USR), excluding heuristic and recovered matches"),
     },
-    async ({ name, depth: maxDepth, nodeCap, anchorQualifiedName, recentQualifiedName }) => {
+    async ({ name, depth: maxDepth, nodeCap, anchorQualifiedName, recentQualifiedName, confirmedOnly }) => {
       const context = buildCallerLookupContext({ anchorQualifiedName, recentQualifiedName });
       const { symbol: sym } = resolveFunctionSymbol(name, context);
 
@@ -2207,7 +2221,7 @@ export function createMcpServer(dataDir: string = DEFAULT_DATA_DIR): {
       }
 
       return {
-        content: [{ type: "text", text: JSON.stringify(buildCallGraphPayload(sym, maxDepth, "callers", nodeCap), null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(buildCallGraphPayload(sym, maxDepth, "callers", nodeCap, confirmedOnly), null, 2) }],
       };
     },
   );

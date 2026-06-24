@@ -398,11 +398,11 @@ describe("MCP payload contracts", () => {
   it("list_file_symbols returns stable overview for one file", async () => {
     const responses = await mcpCall([
       INIT, INITIALIZED,
-      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "src/game_object.h" } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "game_object.h" } } },
     ], DATA_DIR);
     const res = responses.find((r) => r.id === 3);
     const payload = JSON.parse(res.result.content[0].text);
-    expect(payload.filePath).toBe("src/game_object.h");
+    expect(payload.filePath).toBe("game_object.h");
     expect(payload.summary.totalCount).toBe(payload.symbols.length);
     expect(payload.window.totalCount).toBe(payload.summary.totalCount);
     expect(payload.window.returnedCount).toBe(payload.symbols.length);
@@ -413,7 +413,7 @@ describe("MCP payload contracts", () => {
   it("list_file_symbols supports compact mode", async () => {
     const responses = await mcpCall([
       INIT, INITIALIZED,
-      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "src/game_object.h", compact: true } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_file_symbols", arguments: { filePath: "game_object.h", compact: true } } },
     ], DATA_DIR);
     const res = responses.find((r) => r.id === 3);
     const payload = JSON.parse(res.result.content[0].text);

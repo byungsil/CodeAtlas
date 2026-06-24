@@ -71,8 +71,8 @@ export interface Store {
   searchSymbols(query: string, type?: string, limit?: number, metadataFilters?: MetadataFilters): { results: Symbol[]; totalCount: number };
   getFileSymbols(filePath: string): Symbol[];
   getNamespaceSymbols(namespaceQualifiedName: string): Symbol[];
-  getCallers(symbolId: string): Call[];
-  getCallees(symbolId: string): Call[];
+  getCallers(symbolId: string, confirmedOnly?: boolean): Call[];
+  getCallees(symbolId: string, confirmedOnly?: boolean): Call[];
   getRawCallersByCalledName?(calledName: string): RawCallCandidateRecord[];
   getRawCallsByCallerId?(callerId: string): RawCallCandidateRecord[];
   getReferences(targetSymbolId: string, category?: ReferenceCategory, filePath?: string): ReferenceRecord[];

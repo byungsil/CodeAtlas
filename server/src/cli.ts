@@ -84,6 +84,9 @@ function resolveCallSites(rawCalls: RawCallSite[], symbols: Symbol[], localTypes
           calleeId: callee.id,
           filePath: raw.filePath,
           line: raw.line,
+          // This CLI fallback resolver is purely name-based, so every edge it
+          // produces is heuristic (no libclang USR available on this path).
+          resolutionTier: "heuristic",
         });
       }
     }
