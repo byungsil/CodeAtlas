@@ -500,6 +500,7 @@ ipcMain.handle('apply-mcp-config', async (_event, opts: {
   workspacePath: string;
   dataDir: string;
   port: string;
+  extensions?: string[];
 }) => {
   const fs = require('fs') as typeof import('fs');
   const pathMod = require('path') as typeof import('path');
@@ -529,6 +530,15 @@ ipcMain.handle('apply-mcp-config', async (_event, opts: {
         CODEATLAS_INDEXER_STACK_BYTES:'134217728',
       },
     };
+
+    // Pin the extension set the wizard indexed with so the MCP-spawned watcher
+    // reuses exactly those extensions on every incremental run. Without this the
+    // watcher falls back to the indexer's hard-coded default set, which can differ
+    // from the user's selection and silently force a full rebuild.
+    const exts = (opts.extensions ?? []).map((e) => e.trim()).filter(Boolean);
+    if (exts.length > 0) {
+      (mcpEntry.env as Record<string, string>).CODEATLAS_INDEX_EXTENSIONS = exts.join(',');
+    }
 
     // Merge into <workspace>/.vscode/mcp.json
     const vscodeDir  = pathMod.join(opts.workspacePath, '.vscode');

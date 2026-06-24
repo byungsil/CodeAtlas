@@ -180,6 +180,31 @@ fn main() {
     mark_codeatlas_artifacts(&data_dir, None);
     let current_active_db_path = storage::resolve_active_database_path(&data_dir)
         .unwrap_or(None);
+    // Extension-set precedence: an explicit `--extensions` flag (which already
+    // populated INDEX_EXTENSIONS_ENV above) or an externally-set
+    // CODEATLAS_INDEX_EXTENSIONS wins. When neither is present, fall back to the
+    // extension set recorded in the active database's metadata so that
+    // incremental/watch runs reuse exactly the extensions chosen at the initial
+    // index — otherwise the metadata guard would see a mismatch against the
+    // hard-coded default set and silently force a full rebuild.
+    let extensions_already_specified = std::env::var(INDEX_EXTENSIONS_ENV)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !extensions_already_specified {
+        if let Some(db_path) = current_active_db_path.as_deref() {
+            if let Ok(db) = storage::Database::open(db_path) {
+                if let Ok(Some(metadata)) = db.read_index_metadata() {
+                    if !metadata.extensions_csv.trim().is_empty() {
+                        std::env::set_var(INDEX_EXTENSIONS_ENV, &metadata.extensions_csv);
+                        println!(
+                            "Index extensions (from DB metadata): {}",
+                            metadata.extensions_csv
+                        );
+                    }
+                }
+            }
+        }
+    }
     let resolved_workspace_name = resolve_workspace_name(
         &workspace_root,
         workspace_name.as_deref(),

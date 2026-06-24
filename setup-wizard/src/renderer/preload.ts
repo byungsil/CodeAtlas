@@ -29,7 +29,7 @@ contextBridge.exposeInMainWorld('codeatlas', {
   joinPaths: (...parts: string[]) => ipcRenderer.invoke('join-paths', [...parts]),
   fileExists: (filePath: string) => ipcRenderer.invoke('file-exists', filePath),
   getFileMtime: (filePath: string) => ipcRenderer.invoke('file-mtime', filePath),
-  applyMcpConfig: (opts: { workspacePath: string; dataDir: string; port: string }) =>
+  applyMcpConfig: (opts: { workspacePath: string; dataDir: string; port: string; extensions?: string[] }) =>
     ipcRenderer.invoke('apply-mcp-config', opts),
 
   // Log operations

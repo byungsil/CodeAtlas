@@ -1213,11 +1213,21 @@ async function applyMcpConfig(target) {
     }
     const port = document.getElementById('serverPort')?.value?.trim() || '8090';
 
+    // Collect the extensions the user selected for indexing so the watcher
+    // spawned by the MCP server reuses exactly this set (matches the initial index).
+    const mcpExts = [];
+    for (const lang of LANGUAGES) {
+      if (setupData.selectedLangs.has(lang.key)) {
+        mcpExts.push(...lang.extensions);
+      }
+    }
+
     addLogEntry('INFO', 'MCP', `Applying MCP config (target=${target}) workspace=${setupData.workspacePath}`);
     const result = await window.codeatlas.applyMcpConfig({
       workspacePath: setupData.workspacePath,
       dataDir,
       port,
+      extensions: mcpExts,
     });
 
     if (result.success) {
