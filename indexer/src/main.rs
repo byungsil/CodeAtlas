@@ -1,3 +1,4 @@
+mod activity_log;
 mod build_metadata;
 mod compile_commands;
 mod cpp_context;

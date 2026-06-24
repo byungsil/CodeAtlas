@@ -1,5 +1,7 @@
 import * as path from "path";
+import * as fs from "fs";
 import express from "express";
+import { ActivityLogTailer, readRecentLogEntries, ActivityLogEntry } from "./activity-log";
 import { SourceLanguage, Symbol as CodeSymbol } from "./models/symbol";
 import { ResolutionTier } from "./models/call";
 import { Store } from "./storage/store";
@@ -126,6 +128,8 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
   }]).find((workspace) => workspace.isPrimary)?.store ?? store;
   const dashboardStatsPath = (options?.dashboardWorkspaces ?? [])
     .find((workspace) => workspace.isPrimary)?.statsPath;
+  const dashboardDataDir = (options?.dashboardWorkspaces ?? [])
+    .find((workspace) => workspace.isPrimary)?.dataDir;
 
   app.get("/", (_req, res) => res.redirect("/dashboard/"));
   app.use("/dashboard", express.static(path.join(__dirname, "../public"), { index: "index.html" }));
@@ -1743,6 +1747,86 @@ export function createApp(store: Store, options?: AppOptions): express.Express {
 
   app.get("/dashboard/api/overview", (req, res) => {
     return res.json(buildDashboardOverview());
+  });
+
+  // ── Indexer activity log (live-log dashboard tab) ────────────────────────
+  // The watch-mode indexer appends structured JSONL lines to
+  // <dataDir>/indexer.log.  These two endpoints expose it: a one-shot backfill
+  // of recent history, and an SSE stream that pushes new lines as they land.
+  function indexerStatusSummary(): { active: boolean; runs: Array<{ pid: number; mode: string; acquiredAt: string }> } {
+    const runs: Array<{ pid: number; mode: string; acquiredAt: string }> = [];
+    if (dashboardDataDir) {
+      try {
+        for (const entry of fs.readdirSync(dashboardDataDir)) {
+          if (entry.startsWith("indexer-status-") && entry.endsWith(".json")) {
+            try {
+              const raw = fs.readFileSync(path.join(dashboardDataDir, entry), "utf8");
+              const parsed = JSON.parse(raw) as { pid?: number; mode?: string; acquired_at?: string };
+              if (typeof parsed.pid === "number") {
+                runs.push({ pid: parsed.pid, mode: parsed.mode ?? "unknown", acquiredAt: parsed.acquired_at ?? "" });
+              }
+            } catch {
+              // ignore malformed status file
+            }
+          }
+        }
+      } catch {
+        // data dir not readable — treat as no active runs
+      }
+    }
+    return { active: runs.length > 0, runs };
+  }
+
+  app.get("/dashboard/api/logs", (req, res) => {
+    if (!dashboardDataDir) {
+      return res.json({ supported: false, entries: [], status: { active: false, runs: [] } });
+    }
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || "200", 10) || 200, 1), 1000);
+    return res.json({
+      supported: true,
+      entries: readRecentLogEntries(dashboardDataDir, limit),
+      status: indexerStatusSummary(),
+    });
+  });
+
+  app.get("/dashboard/api/logs/stream", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    if (!dashboardDataDir) {
+      res.write(`event: unsupported\ndata: {}\n\n`);
+      // Keep the connection open but idle; client may close.
+      return;
+    }
+
+    const send = (event: string, payload: unknown) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    // Initial backfill so a freshly-opened tab is not empty.
+    send("backfill", { entries: readRecentLogEntries(dashboardDataDir, 200), status: indexerStatusSummary() });
+
+    const tailer = new ActivityLogTailer(dashboardDataDir, (entry: ActivityLogEntry) => {
+      send("log", entry);
+    });
+    tailer.start();
+
+    // Periodic status + heartbeat so the client can show "indexer active" and
+    // proxies do not drop an idle connection.
+    const statusTimer = setInterval(() => {
+      send("status", indexerStatusSummary());
+    }, 3000);
+    if (typeof statusTimer.unref === "function") statusTimer.unref();
+
+    const cleanup = () => {
+      tailer.stop();
+      clearInterval(statusTimer);
+    };
+    req.on("close", cleanup);
+    res.on("error", cleanup);
   });
 
   app.get("/dashboard/api/search", (req, res) => {

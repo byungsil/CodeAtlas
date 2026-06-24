@@ -8,6 +8,7 @@ use std::fs;
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::activity_log;
 use crate::build_metadata;
 use crate::compile_commands;
 use crate::constants::{DATA_DIR_NAME, DB_FILENAME, is_indexed_extension};
@@ -372,12 +373,17 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
 
     let data_dir = workspace_root.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    activity_log::init(&data_dir);
     let expected_index_metadata = storage::expected_index_metadata(&workspace_root, workspace_name);
 
     let ignore_rules = IgnoreRules::load(&workspace_root);
 
     println!("Watch mode: {}", workspace_root.display());
     println!("Press Ctrl-C to stop.\n");
+    activity_log::info(
+        "watch_start",
+        format!("Watch mode started for {}", workspace_root.display()),
+    );
 
     let active_db_path = match storage::resolve_active_database_path(&data_dir) {
         Ok(path) => path,
@@ -490,6 +496,10 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                                     chrono::Utc::now().format("%H:%M:%S"),
                                     proj_name
                                 );
+                                activity_log::info(
+                                    "vcxproj_changed",
+                                    format!("{} changed, re-extracting compile items...", proj_name),
+                                );
                                 let entries = compile_commands::extract_entries_for_vcxproj(
                                     &msbuild, vcxproj, &config, &platform,
                                     &targets_path, &workspace_root,
@@ -541,11 +551,20 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                 Utc::now().format("%H:%M:%S"),
                 changed.len()
             );
+            let reindex_started = Instant::now();
+            activity_log::info(
+                "reindex_start",
+                format!("{} file(s) changed, re-indexing...", changed.len()),
+            );
             let burst_decision = watcher_burst_decision(changed.len(), recent_window_total, cached_total_files);
 
             let result = if burst_decision.rebuild_from_scratch {
                 if let Some(reason) = &burst_decision.reason {
                     println!("  Escalation: {}, rebuilding from scratch", reason);
+                    activity_log::warn(
+                        "escalation",
+                        format!("{}, rebuilding from scratch", reason),
+                    );
                 }
                 let r = run_full_index(&workspace_root, workspace_name, &data_dir, verbose);
                 if r.is_ok() {
@@ -562,8 +581,22 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                 run_incremental_index(&workspace_root, workspace_name, &data_dir, verbose, Some(&changed))
             };
 
-            if let Err(e) = result {
-                eprintln!("  Indexing error: {}", e);
+            match &result {
+                Ok(()) => {
+                    let elapsed_ms = reindex_started.elapsed().as_millis();
+                    let total_files = cached_total_files;
+                    activity_log::info(
+                        "reindex_done",
+                        format!(
+                            "Re-index complete in {}ms ({} file(s) tracked)",
+                            elapsed_ms, total_files
+                        ),
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  Indexing error: {}", e);
+                    activity_log::error("reindex_error", format!("Indexing error: {}", e));
+                }
             }
 
             drain_queued_events(
@@ -579,6 +612,13 @@ pub fn watch(workspace_root: &Path, workspace_name: &str, verbose: bool) -> Resu
                 println!(
                     "  Watch follow-up: {} file(s) changed during indexing, scheduling compressed rerun",
                     dirty_count
+                );
+                activity_log::info(
+                    "watch_followup",
+                    format!(
+                        "{} file(s) changed during indexing, scheduling compressed rerun",
+                        dirty_count
+                    ),
                 );
             }
         }

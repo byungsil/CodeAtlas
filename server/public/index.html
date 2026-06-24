@@ -113,6 +113,71 @@ a:hover { text-decoration: underline; }
 }
 .view { display: none; }
 .view.active { display: block; }
+.logbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.log-toggle {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.log-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.log-status.idle { color: var(--muted); }
+.log-status.active {
+  color: #b9f6c8;
+  border-color: rgba(80, 220, 130, 0.45);
+  background: rgba(80, 220, 130, 0.12);
+}
+.log-stream {
+  font-family: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-height: 70vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.log-line {
+  display: flex;
+  gap: 10px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-line:hover { background: rgba(255, 255, 255, 0.04); }
+.log-line .log-ts { color: var(--muted); flex-shrink: 0; }
+.log-line .log-event {
+  flex-shrink: 0;
+  min-width: 118px;
+  font-weight: 600;
+  color: #8fb7ff;
+}
+.log-line .log-msg { color: #d7e2f4; }
+.log-line.level-warn .log-msg { color: #ffd479; }
+.log-line.level-warn .log-event { color: #ffd479; }
+.log-line.level-error .log-msg { color: #ff9b9b; }
+.log-line.level-error .log-event { color: #ff9b9b; }
 .hero {
   display: grid;
   grid-template-columns: 1.4fr 1fr;
@@ -354,10 +419,12 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
       <div class="tabbar" style="margin-top: 12px;">
         <button class="tab-button active" type="button" data-view-target="overviewView">Overview</button>
         <button class="tab-button" type="button" data-view-target="explorerView">Explorer</button>
+        <button class="tab-button" type="button" data-view-target="liveLogView">Live Log</button>
       </div>
       <div class="search-note">
         `Overview` focuses on DB health, coverage, and MCP runtime signals.
         `Explorer` is for symbol search, callers, callees, and call graph inspection.
+        `Live Log` streams the incremental indexer's activity in real time.
       </div>
     </section>
   </aside>
@@ -448,6 +515,28 @@ th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spa
         </div>
       </section>
     </section>
+
+    <section id="liveLogView" class="view">
+      <section class="panel" style="margin-bottom:16px;">
+        <div class="logbar">
+          <div>
+            <div class="section-title">Incremental Indexer — Live Log</div>
+            <div class="search-note" style="margin-top:4px;">
+              Streams <code>.codeatlas/indexer.log</code> from the watch-mode indexer. Start it with
+              <code>codeatlas-indexer watch &lt;workspace&gt;</code>.
+            </div>
+          </div>
+          <div class="log-controls">
+            <span id="logStatus" class="log-status idle">indexer idle</span>
+            <label class="log-toggle"><input type="checkbox" id="logAutoscroll" checked> Auto-scroll</label>
+            <button class="tab-button" type="button" id="logClearBtn">Clear</button>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div id="logStream" class="log-stream"><div class="empty">Connecting to indexer log stream...</div></div>
+      </section>
+    </section>
   </main>
 </div>
 
@@ -469,6 +558,11 @@ tabButtons.forEach((button) => {
     const target = button.getAttribute("data-view-target");
     tabButtons.forEach((item) => item.classList.toggle("active", item === button));
     views.forEach((view) => view.classList.toggle("active", view.id === target));
+    if (target === "liveLogView") {
+      startLogStream();
+    } else {
+      stopLogStream();
+    }
   });
 });
 
@@ -798,6 +892,100 @@ function escHtml(s) {
 
 function escAttr(s) {
   return escHtml(s);
+}
+
+// ── Live Log tab ───────────────────────────────────────────────────────────
+const logStream = document.getElementById("logStream");
+const logStatus = document.getElementById("logStatus");
+const logAutoscroll = document.getElementById("logAutoscroll");
+const logClearBtn = document.getElementById("logClearBtn");
+const LOG_MAX_LINES = 2000;
+let logSource = null;
+let logCleared = false;
+
+function setLogStatus(active) {
+  if (!logStatus) return;
+  logStatus.textContent = active ? "indexer active" : "indexer idle";
+  logStatus.className = "log-status " + (active ? "active" : "idle");
+}
+
+function appendLogEntry(entry) {
+  if (!logStream) return;
+  if (logCleared) {
+    logStream.innerHTML = "";
+    logCleared = false;
+  }
+  const placeholder = logStream.querySelector(".empty");
+  if (placeholder) placeholder.remove();
+
+  const line = document.createElement("div");
+  line.className = "log-line level-" + (entry.level || "info");
+  let ts = entry.ts;
+  try { ts = new Date(entry.ts).toLocaleTimeString(); } catch {}
+  line.innerHTML =
+    '<span class="log-ts">' + escHtml(ts) + '</span>' +
+    '<span class="log-event">' + escHtml(entry.event) + '</span>' +
+    '<span class="log-msg">' + escHtml(entry.message) + '</span>';
+  logStream.appendChild(line);
+
+  while (logStream.childElementCount > LOG_MAX_LINES) {
+    logStream.removeChild(logStream.firstChild);
+  }
+  if (logAutoscroll && logAutoscroll.checked) {
+    logStream.scrollTop = logStream.scrollHeight;
+  }
+}
+
+function startLogStream() {
+  if (logSource) return;
+  if (logStream) logStream.innerHTML = '<div class="empty">Connecting to indexer log stream...</div>';
+  try {
+    logSource = new EventSource(API + "/dashboard/api/logs/stream");
+  } catch {
+    if (logStream) logStream.innerHTML = '<div class="empty">Live log streaming is not available.</div>';
+    return;
+  }
+  logSource.addEventListener("backfill", (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (logStream) logStream.innerHTML = "";
+      (data.entries || []).forEach(appendLogEntry);
+      if (logStream && logStream.childElementCount === 0) {
+        logStream.innerHTML = '<div class="empty">No indexer activity recorded yet. Start <code>codeatlas-indexer watch</code> and edit a file.</div>';
+      }
+      setLogStatus(data.status && data.status.active);
+    } catch {}
+  });
+  logSource.addEventListener("log", (ev) => {
+    try { appendLogEntry(JSON.parse(ev.data)); } catch {}
+  });
+  logSource.addEventListener("status", (ev) => {
+    try { const s = JSON.parse(ev.data); setLogStatus(s && s.active); } catch {}
+  });
+  logSource.addEventListener("unsupported", () => {
+    if (logStream) logStream.innerHTML = '<div class="empty">This server has no workspace data directory configured; live log is unavailable.</div>';
+  });
+  logSource.onerror = () => {
+    setLogStatus(false);
+    // EventSource auto-reconnects; surface a transient note only when empty.
+    if (logStream && logStream.childElementCount === 0) {
+      logStream.innerHTML = '<div class="empty">Log stream disconnected. Reconnecting...</div>';
+    }
+  };
+}
+
+function stopLogStream() {
+  if (logSource) {
+    logSource.close();
+    logSource = null;
+  }
+}
+
+if (logClearBtn) {
+  logClearBtn.addEventListener("click", () => {
+    if (logStream) logStream.innerHTML = '<div class="empty">Cleared. New activity will appear here.</div>';
+    logCleared = true;
+  });
 }
 
 loadOverview();
