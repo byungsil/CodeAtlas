@@ -169,6 +169,7 @@ pub enum RepresentativeSelectionReason {
     NonGeneratedPathPreferred,
     ScopeCanonicalityPreferred,
     DuplicateClusterWeakCanonicality,
+    InlineHeaderPenalty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

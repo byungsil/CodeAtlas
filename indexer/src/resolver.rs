@@ -877,6 +877,10 @@ fn representative_selection_reasons(symbol: &Symbol) -> Vec<RepresentativeSelect
         reasons.push(RepresentativeSelectionReason::NonGeneratedPathPreferred);
     }
 
+    if looks_like_inline_header_path(symbol.file_path.as_str()) {
+        reasons.push(RepresentativeSelectionReason::InlineHeaderPenalty);
+    }
+
     reasons
 }
 
@@ -891,6 +895,12 @@ fn reason_score(reason: RepresentativeSelectionReason) -> i32 {
         RepresentativeSelectionReason::NonGeneratedPathPreferred => 10,
         RepresentativeSelectionReason::ScopeCanonicalityPreferred => 10,
         RepresentativeSelectionReason::DuplicateClusterWeakCanonicality => -20,
+        // Demotes .inl.hpp / .inl.h / .inl.hxx within a same-USR cluster.
+        // 30 keeps an inline def in an .inl.hpp (280 - 30 = 250) above a
+        // declaration-only fallback (160), preserving MS9-E2 tier ordering,
+        // while letting an inline def in a regular .hpp (280) win over one
+        // in an inline-impl header.
+        RepresentativeSelectionReason::InlineHeaderPenalty => -30,
     }
 }
 
@@ -984,6 +994,11 @@ fn looks_like_header_path(path: &str) -> bool {
         || lower.ends_with(".hxx")
         || lower.ends_with(".inl")
         || lower.ends_with(".inc")
+}
+
+fn looks_like_inline_header_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".inl.hpp") || lower.ends_with(".inl.h") || lower.ends_with(".inl.hxx")
 }
 
 fn looks_like_implementation_path(path: &str) -> bool {
@@ -3087,5 +3102,109 @@ mod tests {
         assert!(!candidates[0]
             .reasons
             .contains(&OverrideMatchReason::ParameterCountMatch));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MS24: InlineHeaderPenalty — demote .inl.hpp / .inl.h / .inl.hxx
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn definition_at(file_path: &str) -> Symbol {
+        Symbol {
+            id: "cv::Mat::Mat".into(),
+            name: "Mat".into(),
+            qualified_name: "cv::Mat::Mat".into(),
+            symbol_type: "method".into(),
+            file_path: file_path.into(),
+            line: 10,
+            end_line: 20,
+            signature: Some("Mat()".into()),
+            parameter_count: Some(0),
+            scope_qualified_name: None,
+            scope_kind: None,
+            symbol_role: Some("definition".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: Some(file_path.into()),
+            definition_line: Some(10),
+            definition_end_line: Some(20),
+            parent_id: Some("cv::Mat".into()),
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: Some("runtime".into()),
+            header_role: Some("public".into()),
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        }
+    }
+
+    #[test]
+    fn inline_header_penalty_demotes_inl_below_primary_hpp() {
+        let inl = definition_at("modules/core/include/opencv2/core/cuda.inl.hpp");
+        let primary = definition_at("modules/core/include/opencv2/core/mat.hpp");
+
+        let merged = merge_symbols(&[inl.clone(), primary.clone()]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].file_path,
+            "modules/core/include/opencv2/core/mat.hpp",
+            "primary .hpp should outrank .inl.hpp for the same definition role"
+        );
+
+        let inl_rank = representative_rank(&inl);
+        let primary_rank = representative_rank(&primary);
+        assert!(
+            primary_rank - inl_rank >= 30,
+            "expected ≥30-point gap from InlineHeaderPenalty, got {} (primary={}, inl={})",
+            primary_rank - inl_rank,
+            primary_rank,
+            inl_rank,
+        );
+    }
+
+    #[test]
+    fn inline_header_penalty_does_not_drop_below_declaration() {
+        // An .inl.hpp definition is still informative — it must outrank a
+        // declaration-only fallback. Tier ordering from MS9-E2 stays intact.
+        let inl_def = definition_at("modules/core/include/opencv2/core/cuda.inl.hpp");
+
+        let mut decl_only = definition_at("modules/core/include/opencv2/core/forward.hpp");
+        decl_only.symbol_role = Some("declaration".into());
+        decl_only.definition_file_path = None;
+        decl_only.definition_line = None;
+        decl_only.definition_end_line = None;
+        decl_only.declaration_file_path = Some(decl_only.file_path.clone());
+        decl_only.declaration_line = Some(10);
+        decl_only.declaration_end_line = Some(20);
+
+        let inl_rank = representative_rank(&inl_def);
+        let decl_rank = representative_rank(&decl_only);
+        assert!(
+            inl_rank > decl_rank,
+            ".inl.hpp inline definition ({}) must still outrank a declaration-only fallback ({})",
+            inl_rank,
+            decl_rank,
+        );
+    }
+
+    #[test]
+    fn looks_like_inline_header_path_matches_cuda_inl_variants() {
+        assert!(looks_like_inline_header_path(
+            "modules/core/include/opencv2/core/cuda.inl.hpp"
+        ));
+        assert!(looks_like_inline_header_path("foo/bar.inl.h"));
+        assert!(looks_like_inline_header_path("foo/bar.inl.hxx"));
+        // Case fold — Windows-style paths often arrive lowercased downstream,
+        // but the predicate must hold for either casing.
+        assert!(looks_like_inline_header_path(
+            "MODULES/CORE/INCLUDE/CUDA.INL.HPP"
+        ));
+        // Negative cases:
+        assert!(!looks_like_inline_header_path("foo/bar.hpp"));
+        assert!(!looks_like_inline_header_path("foo/bar.inl")); // bare .inl is a header but not the impl-specialization pattern
+        assert!(!looks_like_inline_header_path("foo/bar.cpp"));
     }
 }
