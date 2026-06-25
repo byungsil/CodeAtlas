@@ -18,7 +18,7 @@ use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 /// scheme tweaks, etc.). The parse cache (MS22) folds this tag into its
 /// content-addressable key so a version bump transparently invalidates every
 /// previously cached entry — old-format keys simply never match again.
-pub const PARSER_VERSION_TAG: &str = "cpp-clang-v1";
+pub const PARSER_VERSION_TAG: &str = "cpp-clang-v2";
 
 // ─── Global Clang instance ────────────────────────────────────────────────────
 // We keep exactly ONE `Clang` guard alive for the process lifetime, initialised
@@ -60,6 +60,68 @@ fn is_system_path(path: &str) -> bool {
         || p.contains("/lib/clang")
         || p.contains("/usr/include")
         || p.contains("/usr/lib")
+}
+
+/// Normalize a path for case-fold comparison: backslashes → slashes, lowercase,
+/// strip any Windows extended-length prefix (`\\?\` / `//?/`), trim trailing
+/// slashes. Used only for the workspace-membership predicate below; not a
+/// substitute for `metadata::normalize_path` which carries more semantics.
+fn normalize_for_compare(path: &str) -> String {
+    let stripped = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path);
+    stripped
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// True when `path` is inside `workspace_root` (or equal to it). Uses the
+/// case-insensitive form of the path because libclang returns mixed-case
+/// Windows paths and the workspace_root may have different casing than the
+/// entity location libclang reports.
+fn is_inside_workspace(path: &str, workspace_root: Option<&std::path::Path>) -> bool {
+    let Some(root) = workspace_root else { return false; };
+    let root_norm = normalize_for_compare(&root.to_string_lossy());
+    if root_norm.is_empty() {
+        return false;
+    }
+    let path_norm = normalize_for_compare(path);
+    path_norm == root_norm || path_norm.starts_with(&format!("{}/", root_norm))
+}
+
+/// Return a POSIX-style workspace-relative path string when `path` is inside
+/// `workspace_root`, mirroring the casing of the original `path` (so the
+/// stored Symbol.file_path matches what the indexer's files table holds for
+/// the same on-disk file). Returns None when the path is outside the
+/// workspace or `workspace_root` is None.
+fn workspace_relative(path: &str, workspace_root: Option<&std::path::Path>) -> Option<String> {
+    let root = workspace_root?;
+    let root_norm = normalize_for_compare(&root.to_string_lossy());
+    if root_norm.is_empty() {
+        return None;
+    }
+    // Preserve original casing in the suffix; lowercase only for the prefix
+    // match length. Strip any \\?\ prefix from the raw path first so we line
+    // up with how root_norm was computed.
+    let path_clean = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path)
+        .replace('\\', "/");
+    let path_lower = path_clean.to_ascii_lowercase();
+    let prefix = format!("{}/", root_norm);
+    if path_lower == root_norm {
+        return Some(String::new());
+    }
+    if !path_lower.starts_with(&prefix) {
+        return None;
+    }
+    // Trim the same number of bytes off the original-cased string. Because we
+    // only lowercased ASCII letters, byte lengths line up.
+    Some(path_clean[prefix.len()..].trim_start_matches('/').to_string())
 }
 
 // ─── Scope-stack helpers ──────────────────────────────────────────────────────
@@ -156,6 +218,11 @@ struct VisitorState {
     /// Phase D: deduplicate call sites that libclang visits more than once
     /// (same CallExpr exposed both as sibling of LambdaExpr and as its child).
     seen_call_sites: std::collections::HashSet<(u32, u32)>,  // (line, col)
+    /// MS25: workspace root, used to admit symbols declared in workspace
+    /// headers that the current TU includes (e.g. `cv::Mat` defined in
+    /// mat.hpp while parsing matrix.cpp). When None, the visitor falls back
+    /// to the legacy "TU-only" emission policy.
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 // ─── Phase D: Pre-scan — collect lambda ranges ──────────────────────────────
@@ -223,6 +290,21 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
             || ep.ends_with(&format!("/{}", indexed_path))
     }).unwrap_or(false);
 
+    // MS25: also admit symbols whose entity location is a workspace-internal
+    // header that the current TU includes. The same merge_symbols pass that
+    // already collapses MS24-determined representatives will fold the per-TU
+    // duplicates back to a single row keyed by USR.
+    //
+    // Call sites, propagation events, and other TU-attributed rows stay gated
+    // on in_indexed_file alone — those are observation-bound to the TU and
+    // must not be re-anchored to header paths.
+    let in_workspace_header = !in_indexed_file
+        && entity_path.as_deref().map(|ep| {
+            !is_system_path(ep)
+                && is_inside_workspace(ep, state.workspace_root.as_deref())
+        }).unwrap_or(false);
+    let emittable_location = in_indexed_file || in_workspace_header;
+
     let kind = entity.get_kind();
 
     // Kinds that open a new scope frame (affect scope_stack / current_function_usr).
@@ -241,7 +323,11 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
     );
 
     // Kinds that produce a Symbol entry.
-    let is_emittable = in_indexed_file
+    // MS25: emittable_location admits workspace-header entities too, so a
+    // .cpp TU's parse of `#include "mat.hpp"` now contributes mat.hpp's
+    // class/method symbols. Calls and relation events below remain on
+    // in_indexed_file alone.
+    let is_emittable = emittable_location
         && matches!(
             kind,
             EntityKind::Namespace
@@ -334,6 +420,20 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
             //   • declaration_file_path/line/end_line = current file + range
             //   • Try get_definition() to cross-link; only use the result when
             //     the definition is in a non-system file.
+            // MS25: when the entity lives in a workspace header (not the TU
+            // itself), anchor file_path / decl_file / def_file to that
+            // workspace-relative header path rather than to the TU. For
+            // in-TU entities the legacy behavior is preserved bit-for-bit so
+            // existing tests and call/propagation joins are unaffected.
+            let emit_file_path: String = if in_workspace_header {
+                entity_path
+                    .as_deref()
+                    .and_then(|ep| workspace_relative(ep, state.workspace_root.as_deref()))
+                    .unwrap_or_else(|| indexed_path.to_string())
+            } else {
+                indexed_path.to_string()
+            };
+
             let is_def = entity.is_definition();
             let (decl_file, decl_line, decl_end_line, def_file, def_line, def_end_line) = if is_def {
                 // This entity is the definition.
@@ -341,7 +441,7 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                     None,
                     None,
                     None,
-                    Some(indexed_path.to_string()),
+                    Some(emit_file_path.clone()),
                     Some(start_line as usize),
                     Some(end_line as usize),
                 )
@@ -358,14 +458,19 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                     }
                     let def_start = def_range.get_start().get_file_location().line as usize;
                     let def_end   = def_range.get_end().get_file_location().line as usize;
-                    Some((def_file_path, def_start, def_end))
+                    // Normalize cross-linked definition path to workspace-relative
+                    // form when it falls inside the workspace, matching the
+                    // file_path convention applied to header symbols above.
+                    let def_path_rel = workspace_relative(&def_file_path, state.workspace_root.as_deref())
+                        .unwrap_or(def_file_path);
+                    Some((def_path_rel, def_start, def_end))
                 });
                 let (df, dl, de) = match maybe_def {
                     Some((f, l, e)) => (Some(f), Some(l), Some(e)),
                     None            => (None, None, None),
                 };
                 (
-                    Some(indexed_path.to_string()),
+                    Some(emit_file_path.clone()),
                     Some(start_line as usize),
                     Some(end_line as usize),
                     df, dl, de,
@@ -377,7 +482,7 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                 name,
                 qualified_name,
                 symbol_type,
-                file_path: indexed_path.to_string(),
+                file_path: emit_file_path.clone(),
                 line: start_line as usize,
                 end_line: end_line as usize,
                 signature,
@@ -716,6 +821,7 @@ pub fn parse_cpp_file(
         current_function_usr: None,
         lambda_ranges,
         seen_call_sites: std::collections::HashSet::new(),
+        workspace_root: workspace_root.map(|r| r.to_path_buf()),
     };
 
     let root = tu.get_entity();
@@ -1011,6 +1117,138 @@ void outer() {
             lambda_sym.parent_id.as_deref(),
             Some(outer_sym.id.as_str()),
             "lambda's parent_id should be outer function's USR"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MS25: workspace-aware emission helpers + integration
+    // ─────────────────────────────────────────────────────────────────────
+
+    use std::path::PathBuf;
+
+    #[test]
+    fn is_inside_workspace_accepts_paths_under_root() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert!(is_inside_workspace("F:/dev/opencv/modules/core/include/opencv2/core/mat.hpp", Some(&root)));
+        // Same path, equal to root.
+        assert!(is_inside_workspace("F:/dev/opencv", Some(&root)));
+        // Backslash form from libclang.
+        assert!(is_inside_workspace(r"F:\dev\opencv\modules\core\include\opencv2\core\mat.hpp", Some(&root)));
+        // Case fold (libclang sometimes lower-cases drive letters).
+        assert!(is_inside_workspace("f:/dev/OpenCV/modules/core/mat.hpp", Some(&root)));
+    }
+
+    #[test]
+    fn is_inside_workspace_rejects_unrelated_or_sibling_paths() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert!(!is_inside_workspace("F:/dev/other/file.hpp", Some(&root)));
+        // Sibling whose path starts with the same prefix string but is a
+        // different directory at the boundary.
+        assert!(!is_inside_workspace("F:/dev/opencv-extras/file.hpp", Some(&root)));
+        // No workspace → always false.
+        assert!(!is_inside_workspace("F:/dev/opencv/mat.hpp", None));
+    }
+
+    #[test]
+    fn is_inside_workspace_handles_extended_length_prefix() {
+        let root = PathBuf::from(r"\\?\F:\dev\opencv");
+        // Either side may carry the \\?\ prefix.
+        assert!(is_inside_workspace("F:/dev/opencv/modules/core/mat.hpp", Some(&root)));
+        assert!(is_inside_workspace(r"\\?\F:\dev\opencv\modules\core\mat.hpp", Some(&root)));
+    }
+
+    #[test]
+    fn workspace_relative_strips_root_and_uses_forward_slashes() {
+        let root = PathBuf::from("F:/dev/opencv");
+        let rel = workspace_relative("F:/dev/opencv/modules/core/mat.hpp", Some(&root));
+        assert_eq!(rel.as_deref(), Some("modules/core/mat.hpp"));
+        // Backslash input normalized.
+        let rel = workspace_relative(r"F:\dev\opencv\modules\core\mat.hpp", Some(&root));
+        assert_eq!(rel.as_deref(), Some("modules/core/mat.hpp"));
+    }
+
+    #[test]
+    fn workspace_relative_returns_none_when_outside_or_unset() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert_eq!(workspace_relative("F:/dev/other/foo.hpp", Some(&root)), None);
+        assert_eq!(workspace_relative("F:/dev/opencv/foo.hpp", None), None);
+    }
+
+    #[test]
+    fn clang_emits_header_class_when_workspace_root_admits_include() {
+        // Drive a 2-file scenario through libclang: write a header and a TU
+        // that includes it under a temporary workspace_root. Verify the
+        // header's class becomes a Symbol anchored at the header file_path.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        let header_rel = "include/header.hpp";
+        let tu_rel = "main.cpp";
+
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join(header_rel),
+            "namespace ns { class HeaderClass { public: void method(); }; }\n",
+        ).unwrap();
+        let tu_source = format!("#include \"{}\"\nvoid use_it(ns::HeaderClass& h) {{ h.method(); }}\n", header_rel);
+        std::fs::write(workspace.join(tu_rel), &tu_source).unwrap();
+
+        let result = parse_cpp_file(
+            tu_rel,
+            &tu_source,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+        ).expect("parse failed");
+
+        let header_class = result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass")
+            .expect("ns::HeaderClass must be emitted from the included header");
+        assert_eq!(
+            header_class.file_path.replace('\\', "/"),
+            header_rel,
+            "header class file_path must be the workspace-relative header path"
+        );
+        assert_eq!(header_class.symbol_type, "class");
+
+        let method_sym = result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass::method")
+            .expect("ns::HeaderClass::method must be emitted from the header");
+        assert_eq!(
+            method_sym.file_path.replace('\\', "/"),
+            header_rel,
+            "method file_path must be the workspace-relative header path"
+        );
+        assert_eq!(method_sym.parent_id.as_deref(), Some(header_class.id.as_str()),
+            "method's parent_id must be HeaderClass's USR");
+    }
+
+    #[test]
+    fn clang_does_not_emit_header_symbols_when_workspace_root_is_none() {
+        // Legacy behavior: without a workspace_root, the indexer must NOT
+        // start picking up symbols from included headers — pre-MS25 tests
+        // and the strict TU-only contract continue to hold.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join("include/header.hpp"),
+            "namespace ns { class HeaderClass { void method(); }; }\n",
+        ).unwrap();
+        let tu_source = "#include \"include/header.hpp\"\nvoid use_it(ns::HeaderClass& h) {}\n";
+        std::fs::write(workspace.join("main.cpp"), tu_source).unwrap();
+
+        // Pass an absolute TU path so libclang can resolve the include even
+        // though we are NOT passing workspace_root (None).
+        let abs_tu = workspace.join("main.cpp").to_string_lossy().replace('\\', "/");
+        let result = parse_cpp_file(
+            &abs_tu,
+            tu_source,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            None,
+        ).expect("parse failed");
+
+        assert!(
+            result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass").is_none(),
+            "header symbols must stay suppressed when workspace_root is None"
         );
     }
 }
