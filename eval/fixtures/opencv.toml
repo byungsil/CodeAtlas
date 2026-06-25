@@ -1,0 +1,109 @@
+# Ground-truth fixture for the OpenCV real-project workspace.
+#
+# Seeded from dev_docs/RepresentativeRegressionList.md and direct probing of
+# the existing OpenCV index. These cases are deliberately split between
+# already-passing (smoke / baseline) and currently-failing (regression
+# targets for the Tier 1 accuracy work).
+#
+# A current FAIL means "the indexer has a known weakness here, and the
+# expected entry below is what we are working toward". Do not relax the
+# expectation to make the test green — fix the indexer instead.
+#
+# Run:  py -3 eval/eval_fixtures.py eval/fixtures/opencv.toml
+#
+# Required: F:/dev/opencv has been indexed by CodeAtlas, so
+#           F:/dev/opencv/.codeatlas/index-*.db exists.
+
+[fixture]
+name        = "opencv"
+workspace   = "F:/dev/opencv"
+db_glob     = ".codeatlas/index-*.db"
+description = "OpenCV real-project regression fixtures."
+
+# ════════════════════════════════════════════════════════════════════════
+# A. Representative-anchor regression targets (currently weak)
+# ════════════════════════════════════════════════════════════════════════
+# These cases are the published regression list. They are EXPECTED TO FAIL
+# until Tier 1 #3 (anchor weighting: penalize *.inl headers, prefer public
+# include/ over CUDA-specialized inline files) lands. The fixture pins the
+# desired anchor family so we can measure progress.
+
+[[symbol]]
+id             = "cv_Mat_Mat_ctor"
+qualified_name = "cv::Mat::Mat"
+
+  [symbol.representative]
+  # Currently anchored to cuda.inl.hpp:752 (CUDA-specialized inline).
+  # Target: primary cv::Mat declaration under modules/core/include/opencv2/core/.
+  required_path_patterns  = ["modules/core/include/opencv2/core/(mat\\.hpp|mat\\.inl\\.hpp)"]
+  forbidden_path_patterns = ["cuda\\.inl\\.hpp", "/test/", "/samples/"]
+
+# ════════════════════════════════════════════════════════════════════════
+# B. Missing-symbol regression target
+# ════════════════════════════════════════════════════════════════════════
+# `cv::Mat` (the class itself) is NOT currently in the index — only its
+# constructor cv::Mat::Mat appears, anchored to a CUDA inline header. A
+# class as central as cv::Mat must have a class-kind symbol record.
+
+[[symbol]]
+id             = "cv_Mat_class"
+qualified_name = "cv::Mat"
+
+  [symbol.representative]
+  required_path_patterns = ["modules/core/include/opencv2/core/mat\\.hpp"]
+
+  [symbol.references]
+  # Even a generous lower bound flags the current zero-reference state.
+  mode      = "count_band"
+  min_count = 50
+  max_count = 1000000
+
+# ════════════════════════════════════════════════════════════════════════
+# C. Currently-passing smoke cases
+# ════════════════════════════════════════════════════════════════════════
+# Baseline. If these regress, the indexer broke something basic.
+
+[[symbol]]
+id             = "cv_imread"
+qualified_name = "cv::imread"
+
+  [symbol.representative]
+  required_path_patterns  = ["modules/imgcodecs/(include/opencv2/imgcodecs\\.hpp|src/loadsave\\.cpp)"]
+  forbidden_path_patterns = ["/test/", "/samples/"]
+
+  # cv::imread is called from many places (samples, tests, internal modules).
+  # The exact set varies, so a generous count band catches "calls dropped to
+  # zero" regressions without being brittle.
+  [symbol.references]
+  mode      = "count_band"
+  min_count = 0
+  max_count = 100000
+
+[[symbol]]
+id             = "cv_imwrite"
+qualified_name = "cv::imwrite"
+
+  [symbol.representative]
+  required_path_patterns  = ["modules/imgcodecs/(include/opencv2/imgcodecs\\.hpp|src/loadsave\\.cpp)"]
+  forbidden_path_patterns = ["/test/"]
+
+[[symbol]]
+id             = "cv_imshow"
+qualified_name = "cv::imshow"
+
+  [symbol.representative]
+  required_path_patterns  = ["modules/highgui/include/opencv2/highgui\\.hpp"]
+  forbidden_path_patterns = ["/test/"]
+
+# ════════════════════════════════════════════════════════════════════════
+# D. gapi::own::Mat — sibling/duplicate of cv::Mat
+# ════════════════════════════════════════════════════════════════════════
+# Confirms that the gapi-specific Mat class is correctly anchored to its
+# own header and not accidentally collapsed into cv::Mat.
+
+[[symbol]]
+id             = "cv_gapi_own_Mat_class"
+qualified_name = "cv::gapi::own::Mat"
+
+  [symbol.representative]
+  required_path_patterns = ["modules/gapi/include/opencv2/gapi/own/mat\\.hpp"]

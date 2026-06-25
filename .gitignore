@@ -38,3 +38,6 @@ samples/.codeatlas/mcp-runtime-stats.json
 # Temporary local scripts and debug artifacts
 _parse_check.ps1
 indexer/stats
+
+# Eval harness runtime outputs (regenerated per run; fixtures themselves are tracked)
+eval/fixtures/*.eval.json

@@ -1,0 +1,126 @@
+# Ground-truth fixture for the in-repo `samples/` workspace.
+#
+# This is the deterministic baseline — every expected entry below is verified
+# against the actual sources in samples/src. Use this fixture to detect any
+# regression in basic symbol extraction, caller/callee edge construction, and
+# representative selection on a workspace small enough that a human can hold
+# the entire call graph in their head.
+#
+# Run:  py -3 eval/eval_fixtures.py eval/fixtures/samples.toml
+
+[fixture]
+name        = "samples"
+workspace   = "F:/dev/CodeAtlas/samples"
+db_glob     = ".codeatlas/index-*.db"
+description = "Deterministic in-repo C++ sample workspace (Game::* + ::main)."
+
+# ─────────────────────────────────────────────────────── case 1: UpdateAI ──
+# Tests:
+#   - basic representative selection (definition in .cpp, no .inl/test paths)
+#   - exact callee set (4 dispatch branches in a switch statement)
+#   - exact caller set (called only from ::main)
+
+[[symbol]]
+id             = "updateAI"
+qualified_name = "Game::AIComponent::UpdateAI"
+
+  [symbol.representative]
+  required_path_patterns  = ["ai_system\\.cpp"]
+  forbidden_path_patterns = ["/test/", "\\.inl\\."]
+
+  [symbol.callers]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "main" },
+  ]
+
+  [symbol.callees]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Game::AIComponent::ProcessIdle"   },
+    { qualified_name = "Game::AIComponent::ProcessPatrol" },
+    { qualified_name = "Game::AIComponent::ProcessChase"  },
+    { qualified_name = "Game::AIComponent::ProcessAttack" },
+  ]
+
+# ──────────────────────────────────────────────── case 2: GameObject::Update ──
+# Tests virtual-dispatch caller surface: GameObject::Update is called via the
+# IUpdatable interface from GameWorld::UpdateAll and directly from the four
+# AIComponent::Process* methods (m_owner->Update()).
+
+[[symbol]]
+id             = "gameobject_update"
+qualified_name = "Game::GameObject::Update"
+
+  [symbol.representative]
+  required_path_patterns = ["game_object\\.cpp"]
+
+  [symbol.callers]
+  # min_recall instead of exact: virtual-dispatch resolution to the concrete
+  # override is the property we want to track, but heuristic tier may also
+  # over-attribute the call to IUpdatable::Update. Tighten to "exact" once
+  # the indexer reliably resolves virtual calls.
+  mode       = "min_recall"
+  match      = "qualified_name"
+  min_recall = 0.8
+  expected = [
+    { qualified_name = "Game::AIComponent::ProcessIdle"   },
+    { qualified_name = "Game::AIComponent::ProcessPatrol" },
+    { qualified_name = "Game::AIComponent::ProcessChase"  },
+    { qualified_name = "Game::AIComponent::ProcessAttack" },
+    { qualified_name = "Game::GameWorld::UpdateAll"       },
+  ]
+
+# ────────────────────────────────────────────────────────── case 3: main ──
+# Free function with mixed callee kinds: method calls, constructor calls,
+# namespaced free function, and a free function in the global namespace.
+
+[[symbol]]
+id             = "main"
+qualified_name = "main"
+
+  [symbol.representative]
+  required_path_patterns = ["main\\.cpp"]
+
+  [symbol.callees]
+  mode  = "superset"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Game::GameWorld::AddObject"     },
+    { qualified_name = "Game::InitializeAISystem"       },
+    { qualified_name = "Game::AIComponent::SetState"    },
+    { qualified_name = "Game::AIComponent::UpdateAI"    },
+    { qualified_name = "RunGameLoop"                    },
+  ]
+
+# ────────────────────────────────────────────── case 4: AIComponent class ──
+# Class with a known fixed membership — list_class_members regression target.
+
+[[symbol]]
+id             = "aiComponent_class"
+qualified_name = "Game::AIComponent"
+
+  [symbol.representative]
+  required_path_patterns = ["ai_system\\.h"]
+
+  [symbol.references]
+  mode      = "count_band"
+  min_count = 0
+  max_count = 50
+
+# ───────────────────────────────────────────────── case 5: GameWorld class ──
+# Tests references rather than calls: type usage in parameters and locals.
+
+[[symbol]]
+id             = "gameWorld_class"
+qualified_name = "Game::GameWorld"
+
+  [symbol.representative]
+  required_path_patterns = ["game_object\\.h"]
+
+  [symbol.references]
+  mode      = "count_band"
+  min_count = 1
+  max_count = 200
