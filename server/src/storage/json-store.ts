@@ -87,8 +87,17 @@ export class JsonStore {
   }
 
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
+    // MS24: mirror sqlite-store's REPRESENTATIVE_LOOKUP_SQL priority so the
+    // JSON fallback store returns the same anchor as the SQLite path. See
+    // sqlite-store.ts for the rationale; keep the two implementations in
+    // lockstep when changing either side.
     const data = this.load();
-    return data.symbols.find((s) => s.qualifiedName === qualifiedName);
+    const matches = data.symbols.filter((s) => s.qualifiedName === qualifiedName);
+    if (matches.length === 0) {
+      return undefined;
+    }
+    matches.sort(compareRepresentative);
+    return matches[0];
   }
 
   getSymbolsByType(type: string): Symbol[] {
@@ -376,6 +385,30 @@ function matchesPropagationDirection(
   return event.sourceAnchor.symbolId === symbolId
     || event.sourceAnchor.anchorId?.startsWith(ownedAnchorPrefix)
     || event.ownerSymbolId === symbolId;
+}
+
+function representativeSortKey(s: Symbol): readonly [number, number, number, number, number, string, number] {
+  const path = s.filePath.toLowerCase();
+  const declPublic = s.symbolRole === "declaration" && s.headerRole === "public" ? 0 : 1;
+  const isDef = s.symbolRole === "definition" ? 0 : 1;
+  const publicHdr = s.headerRole === "public" ? 0 : 1;
+  const inlImpl =
+    path.endsWith(".inl.hpp") || path.endsWith(".inl.h") || path.endsWith(".inl.hxx") ? 1 : 0;
+  const testish = /\/(test|tests|sample|samples|generated)\//.test(path) ? 1 : 0;
+  return [declPublic, isDef, publicHdr, inlImpl, testish, s.filePath, s.line] as const;
+}
+
+function compareRepresentative(left: Symbol, right: Symbol): number {
+  const a = representativeSortKey(left);
+  const b = representativeSortKey(right);
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i];
+    const bv = b[i];
+    if (av === bv) continue;
+    if (typeof av === "number" && typeof bv === "number") return av - bv;
+    if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv);
+  }
+  return 0;
 }
 
 function comparePropagationEvents(left: PropagationEventRecord, right: PropagationEventRecord): number {

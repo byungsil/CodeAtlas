@@ -22,6 +22,39 @@ import {
 import { SEARCH_DEFAULT_LIMIT, SEARCH_MIN_QUERY_LENGTH, REFERENCE_QUERY_CAP } from "../constants";
 import { IndexDetailsRecord, MetadataFilters, RawCallCandidateRecord, WorkspaceLanguageSummaryRecord } from "./store";
 
+// MS24: cross-USR representative ordering for `getSymbolByQualifiedName`.
+//
+// Priority (lowest tuple wins per ASC sort):
+//   1. declaration + public_header — the "what the user looks up first" anchor
+//      for real overloads / decl-only-in-header patterns
+//   2. definition over anything else
+//   3. public header role over private/internal
+//   4. not-an-inline-impl-header (.inl.hpp/.inl.h/.inl.hxx demoted)
+//   5. not-a-test/sample/generated path
+//   6. lexical file_path then line — stable across runs
+//
+// `json-store.ts:getSymbolByQualifiedName` mirrors the same priority in
+// `representativeSortKey` for parity with the JSON fallback store.
+export const REPRESENTATIVE_LOOKUP_SQL = `
+  SELECT * FROM symbols
+  WHERE qualified_name = ?
+  ORDER BY
+    CASE WHEN symbol_role = 'declaration' AND header_role = 'public' THEN 0 ELSE 1 END,
+    CASE WHEN symbol_role = 'definition' THEN 0 ELSE 1 END,
+    CASE WHEN header_role = 'public' THEN 0 ELSE 1 END,
+    CASE WHEN LOWER(file_path) LIKE '%.inl.hpp'
+           OR LOWER(file_path) LIKE '%.inl.h'
+           OR LOWER(file_path) LIKE '%.inl.hxx' THEN 1 ELSE 0 END,
+    CASE WHEN LOWER(file_path) LIKE '%/test/%'
+           OR LOWER(file_path) LIKE '%/tests/%'
+           OR LOWER(file_path) LIKE '%/sample/%'
+           OR LOWER(file_path) LIKE '%/samples/%'
+           OR LOWER(file_path) LIKE '%/generated/%' THEN 1 ELSE 0 END,
+    file_path ASC,
+    line ASC
+  LIMIT 1
+`;
+
 export class SqliteStore {
   private db: Database.Database;
   private snapshotPath?: string;
@@ -77,8 +110,16 @@ export class SqliteStore {
   }
 
   getSymbolByQualifiedName(qualifiedName: string): Symbol | undefined {
+    // MS24: a qualified_name can resolve to multiple USR clusters (real
+    // overloads, declaration/definition splits). Without ORDER BY, sqlite
+    // returns whichever row it found first — effectively random. Apply a
+    // deterministic, declaration-preferring policy so lookup_function is
+    // stable across runs and picks the anchor a human would read first.
+    //
+    // The indexer's representative_rank handles same-USR merges; this
+    // ORDER BY only fires when distinct USRs share a qualified_name.
     const row = this.db
-      .prepare("SELECT * FROM symbols WHERE qualified_name = ?")
+      .prepare(REPRESENTATIVE_LOOKUP_SQL)
       .get(qualifiedName) as RawRow | undefined;
     return row ? toSymbol(row) : undefined;
   }

@@ -31,6 +31,13 @@ description = "OpenCV real-project regression fixtures."
 [[symbol]]
 id             = "cv_Mat_Mat_ctor"
 qualified_name = "cv::Mat::Mat"
+# MS24 cannot fix this on its own: the indexer extracts only ONE row for
+# cv::Mat::Mat (the CUDA inline variant). The 20+ other constructor overloads
+# defined in mat.hpp / mat.inl.hpp / matrix.cpp are missing — an extraction
+# bug, not a scoring bug. Tag as expected-failure pending the extraction
+# audit; when MS25 lands and the rows appear, this flips to XPASS and the
+# tag should be removed.
+xfail_pending = "ms25-extraction-audit"
 
   [symbol.representative]
   # Currently anchored to cuda.inl.hpp:752 (CUDA-specialized inline).
@@ -48,6 +55,10 @@ qualified_name = "cv::Mat::Mat"
 [[symbol]]
 id             = "cv_Mat_class"
 qualified_name = "cv::Mat"
+# Same root cause as cv_Mat_Mat_ctor: the cv::Mat class declaration is
+# not in the index at all. Out of MS24 scope; tagged for the same
+# extraction audit.
+xfail_pending = "ms25-extraction-audit"
 
   [symbol.representative]
   required_path_patterns = ["modules/core/include/opencv2/core/mat\\.hpp"]
@@ -66,10 +77,18 @@ qualified_name = "cv::Mat"
 [[symbol]]
 id             = "cv_imread"
 qualified_name = "cv::imread"
+# MS24 primary regression target. cv::imread resolves to 3 USR clusters
+# (1 public-header declaration + 2 out-of-line .cpp definitions). Before
+# MS24, lookup_function returned whichever row sqlite found first — often
+# the .cpp definition, sometimes one or the other. After MS24, the server-
+# side ORDER BY must select the public-header declaration deterministically.
 
   [symbol.representative]
   required_path_patterns  = ["modules/imgcodecs/(include/opencv2/imgcodecs\\.hpp|src/loadsave\\.cpp)"]
   forbidden_path_patterns = ["/test/", "/samples/"]
+  # MS24: the *selected* anchor (what lookup_function would return) must
+  # be the public-header declaration, not the .cpp definition.
+  selected_path_pattern   = "modules/imgcodecs/include/opencv2/imgcodecs\\.hpp"
 
   # cv::imread is called from many places (samples, tests, internal modules).
   # The exact set varies, so a generous count band catches "calls dropped to

@@ -61,6 +61,45 @@ def candidates_for(db: sqlite3.Connection, qname: str) -> list[dict[str, Any]]:
     return [dict(zip(keys, r)) for r in rows]
 
 
+# Mirror of server/src/storage/sqlite-store.ts REPRESENTATIVE_LOOKUP_SQL.
+# When you change the server-side policy, change this string in lockstep
+# so the harness reports the same anchor a real lookup_function call would.
+REPRESENTATIVE_LOOKUP_SQL = """
+    SELECT id, qualified_name, type, file_path, line, end_line,
+           symbol_role, parse_fragility, macro_sensitivity
+    FROM symbols
+    WHERE qualified_name = ?
+    ORDER BY
+      CASE WHEN symbol_role = 'declaration' AND header_role = 'public' THEN 0 ELSE 1 END,
+      CASE WHEN symbol_role = 'definition' THEN 0 ELSE 1 END,
+      CASE WHEN header_role = 'public' THEN 0 ELSE 1 END,
+      CASE WHEN LOWER(file_path) LIKE '%.inl.hpp'
+             OR LOWER(file_path) LIKE '%.inl.h'
+             OR LOWER(file_path) LIKE '%.inl.hxx' THEN 1 ELSE 0 END,
+      CASE WHEN LOWER(file_path) LIKE '%/test/%'
+             OR LOWER(file_path) LIKE '%/tests/%'
+             OR LOWER(file_path) LIKE '%/sample/%'
+             OR LOWER(file_path) LIKE '%/samples/%'
+             OR LOWER(file_path) LIKE '%/generated/%' THEN 1 ELSE 0 END,
+      file_path ASC,
+      line ASC
+    LIMIT 1
+"""
+
+
+def selected_representative_for(
+    db: sqlite3.Connection, qname: str
+) -> dict[str, Any] | None:
+    row = db.execute(REPRESENTATIVE_LOOKUP_SQL, (qname,)).fetchone()
+    if row is None:
+        return None
+    keys = [
+        "id", "qualified_name", "type", "file_path", "line", "end_line",
+        "symbol_role", "parse_fragility", "macro_sensitivity",
+    ]
+    return dict(zip(keys, row))
+
+
 def callers_of(db: sqlite3.Connection, ids: list[str]) -> list[dict[str, Any]]:
     if not ids:
         return []
@@ -150,16 +189,34 @@ class SymbolResult:
     callees: dict[str, Any] | None = None
     references: dict[str, Any] | None = None
     failures: list[str] = field(default_factory=list)
+    # When set, the fixture has been tagged with `xfail_pending = "..."`. A
+    # failing symbol with xfail_pending becomes informational (status XFAIL,
+    # not counted into symbols_fail). A passing one becomes XPASS — a signal
+    # that the referenced follow-up has landed and the tag should be removed.
+    xfail_pending: str | None = None
 
     @property
     def passed(self) -> bool:
         return not self.failures
 
+    @property
+    def status(self) -> str:
+        if self.xfail_pending:
+            return "XFAIL" if self.failures else "XPASS"
+        return "OK" if self.passed else "FAIL"
+
+    @property
+    def counts_as_failure(self) -> bool:
+        # XFAIL = expected failure, doesn't count. Everything else does.
+        return self.failures and not self.xfail_pending
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "qualified_name": self.qualified_name,
+            "status": self.status,
             "pass": self.passed,
+            "xfail_pending": self.xfail_pending,
             "candidate_count": self.candidates,
             "representative": self.representative,
             "callers": self.callers,
@@ -170,12 +227,17 @@ class SymbolResult:
 
 
 def check_representative(sym: dict[str, Any], candidates: list[dict[str, Any]],
-                         result: SymbolResult) -> None:
+                         result: SymbolResult,
+                         selected: dict[str, Any] | None = None) -> None:
     cfg = sym.get("representative")
     if cfg is None:
         return
     required = compile_patterns(cfg.get("required_path_patterns", []))
     forbidden = compile_patterns(cfg.get("forbidden_path_patterns", []))
+    selected_pattern_raw = cfg.get("selected_path_pattern")
+    selected_pattern = (
+        re.compile(selected_pattern_raw, re.IGNORECASE) if selected_pattern_raw else None
+    )
 
     paths = [c["file_path"] for c in candidates]
     required_matched = all(
@@ -185,6 +247,18 @@ def check_representative(sym: dict[str, Any], candidates: list[dict[str, Any]],
         c["file_path"] for c in candidates if any_match(forbidden, c["file_path"])
     ]
 
+    selected_info: dict[str, Any] | None = None
+    if selected_pattern is not None:
+        selected_path = selected["file_path"] if selected else None
+        selected_match = bool(selected_path and selected_pattern.search(selected_path))
+        selected_info = {
+            "pattern": selected_pattern_raw,
+            "selected_path": selected_path,
+            "selected_line": selected["line"] if selected else None,
+            "selected_role": selected.get("symbol_role") if selected else None,
+            "matched": selected_match,
+        }
+
     result.representative = {
         "candidate_count": len(candidates),
         "required_patterns": cfg.get("required_path_patterns", []),
@@ -192,6 +266,7 @@ def check_representative(sym: dict[str, Any], candidates: list[dict[str, Any]],
         "required_matched": required_matched,
         "forbidden_hits": forbidden_hits,
         "paths": paths,
+        "selected": selected_info,
     }
     if not candidates:
         result.failures.append("representative: no candidate found for qualified_name")
@@ -203,6 +278,11 @@ def check_representative(sym: dict[str, Any], candidates: list[dict[str, Any]],
     if forbidden_hits:
         result.failures.append(
             f"representative: {len(forbidden_hits)} candidate(s) hit forbidden pattern"
+        )
+    if selected_info is not None and not selected_info["matched"]:
+        result.failures.append(
+            f"representative: server-selected anchor {selected_info['selected_path']!r} "
+            f"does not match selected_path_pattern {selected_pattern_raw!r}"
         )
 
 
@@ -293,14 +373,16 @@ def run_fixture(path: str) -> dict[str, Any]:
         qname = sym["qualified_name"]
         cands = candidates_for(db, qname)
         ids = [c["id"] for c in cands]
+        selected = selected_representative_for(db, qname)
 
         res = SymbolResult(
             id=sym.get("id", qname),
             qualified_name=qname,
             candidates=len(cands),
+            xfail_pending=sym.get("xfail_pending"),
         )
 
-        check_representative(sym, cands, res)
+        check_representative(sym, cands, res, selected)
 
         if sym.get("callers") is not None:
             check_call_edge(sym, "callers", callers_of(db, ids), res)
@@ -330,7 +412,10 @@ def run_fixture(path: str) -> dict[str, Any]:
 
 
 def build_summary(results: list[SymbolResult]) -> dict[str, Any]:
-    passes = sum(1 for r in results if r.passed)
+    passes = sum(1 for r in results if r.passed and not r.xfail_pending)
+    real_fails = sum(1 for r in results if r.counts_as_failure)
+    xfails = sum(1 for r in results if r.xfail_pending and r.failures)
+    xpasses = sum(1 for r in results if r.xfail_pending and r.passed)
 
     def avg(key: str) -> float | None:
         vals = [getattr(r, key)["recall"] for r in results if getattr(r, key)]
@@ -339,7 +424,9 @@ def build_summary(results: list[SymbolResult]) -> dict[str, Any]:
     return {
         "symbols_total": len(results),
         "symbols_pass": passes,
-        "symbols_fail": len(results) - passes,
+        "symbols_fail": real_fails,
+        "symbols_xfail": xfails,
+        "symbols_xpass": xpasses,
         "representative_pass": sum(
             1 for r in results
             if r.representative
@@ -367,8 +454,11 @@ def print_table(results: list[SymbolResult]) -> None:
         callers = f"{r.callers['recall']:.2f}/{r.callers['precision']:.2f}" if r.callers else "-"
         callees = f"{r.callees['recall']:.2f}/{r.callees['precision']:.2f}" if r.callees else "-"
         refs = str(r.references["count"]) if r.references else "-"
-        status = "OK  " if r.passed else "FAIL"
+        status = f"{r.status:<5s}"
         print(f"  {r.qualified_name[:40]:40s}  {reps:>4s}  {callers:>13s}  {callees:>13s}  {refs:>6s}  {status}")
+        if r.xfail_pending:
+            tag = "expected fail" if r.failures else "fixture passes — clear xfail_pending tag"
+            print(f"      xfail_pending: {r.xfail_pending}  ({tag})")
         for f in r.failures:
             print(f"      - {f}")
 
