@@ -2,8 +2,100 @@
 
 Status:
 
-- Investigation phase (2026-06-25). Plan + implementation deferred to a
-  follow-up session.
+- Investigation complete (2026-06-25). Root cause confirmed; plan +
+  implementation deferred to a follow-up session.
+- **Root cause: tree-sitter-cpp parses mat.hpp as a single ERROR node
+  spanning lines 43-3863.** libclang would parse it correctly, but
+  mat.hpp is never routed to libclang because there's no
+  `compile_commands.json` entry for it (header-only file, no .cpp
+  uses it as a primary TU). The fallback tree-sitter path fails on
+  the macro-heavy non-template class declarations, returning a
+  partial recovery that extracts a few cleaner constructs
+  (enums, template classes, free functions) with a corrupted scope
+  stack — hence the missing `cv::` prefix on the rows that DO
+  appear from mat.hpp.
+
+## Investigation Outcome (added after probes)
+
+Three probes were run from `F:\dev\CodeAtlas\eval\`:
+
+1. **`probe_mat_classes.py`** — libclang.cindex walked
+   `modules/core/src/matrix.cpp`'s full TU. **Result**: libclang reports
+   all 13 missing classes correctly under `parent=NAMESPACE cv` with
+   `is_definition=True`. Including `cv::Mat` at `mat.hpp:839`. So
+   upstream is fine; the bug is purely on the indexer side.
+
+2. **`probe_ts_ns.py`** — tested tree-sitter-cpp on isolated snippets.
+   **Result**:
+   - `namespace cv { ... }` with split brace is recognized correctly
+     (name="cv").
+   - `class CV_EXPORTS Mat { ... }` is **misparsed** as a
+     `function_definition` (CV_EXPORTS read as a type_identifier
+     wrapping `class`, then `Mat` read as the function name, then
+     `{ public: Mat(); }` read as the function body). Non-template
+     classes carrying any export macro are vulnerable to this
+     specific tree-sitter-cpp ambiguity.
+   - Templated forms (`template<typename T> class Mat_ { ... }`) are
+     unambiguous and parse correctly.
+
+3. **Direct tree-sitter parse of the real mat.hpp** —
+   `tree.root_node.children` returns only `[comment(L1-42),
+   ERROR(L43-3863)]`. The entire body of mat.hpp from the include
+   guard through `} // cv` is wrapped in a single ERROR node, which
+   `parser.rs::visit_tree` does not descend into via its
+   `WalkItem::Enter` arm. Tree-sitter's partial-recovery surfaces a
+   handful of inner `class_specifier` / `enum_specifier` /
+   `function_definition` nodes anyway, but they are not children of a
+   `namespace_definition` node — so `enter_namespace` is never called
+   for `cv`, `ns_stack` stays empty, and every recovered symbol is
+   stored with an unqualified `qualified_name`.
+
+## Why the routing is wrong (the deeper issue)
+
+`indexing.rs::CppLanguageAdapter::parse_file` chooses libclang only
+when `build_metadata.entry_for_file(file_path).is_some()`. OpenCV's
+`compile_commands.json` lists 826 `.cpp` TUs and **zero** `.hpp` /
+`.h` entries. For every header CodeAtlas discovers, it falls back to
+`parser::parse_cpp_file` (tree-sitter), even though every header is
+already reachable via at least one .cpp TU's include set that
+libclang DOES parse.
+
+Two clean fixes available:
+
+- **(A) Synthesize header-only TUs.** For each `.hpp` / `.h`
+  discovered that has no `compile_commands.json` entry, find a
+  representative `.cpp` TU that `#include`s it, inherit that
+  cpp's `-I`/`-D` flags, and parse the header itself with libclang
+  as `-x c++-header`. This is exactly the code path
+  `indexing.rs:163-172` already prepares (`is_header && !has_x_flag`
+  → push `-x c++-header`) but currently only fires when the header
+  was in `compile_commands.json` to begin with.
+- **(B) Reuse the symbols already produced when libclang parses
+  including TUs.** Drop the `in_indexed_file` restriction in
+  `clang_parser.rs::visit_entity` for emittable kinds whose entity
+  path lies under the workspace. Cost: duplicate emissions across
+  TUs (each .cpp that includes mat.hpp would re-emit `cv::Mat`);
+  the merge stage already collapses by USR, so duplicates should
+  fold. Benefit: no new TUs added.
+
+(B) is the minimal-change path; (A) is more disciplined but more
+work. Both warrant prototyping in the MS25 plan phase.
+
+## NOT confirmed by this investigation
+
+- Whether the duplicate-emission cost of (B) is acceptable at
+  opencv's scale. Needs a measurement: the parse stage already takes
+  ~30s on opencv full rebuild (post-MS22 cache cold). (B) would
+  multiply emit-side work by ~roughly the inclusion fanout.
+- Whether (A)'s "representative including TU" heuristic is stable
+  across edits. A simpler variant: parse each discovered header
+  with empty `-D`/`-I` flags via libclang; this would still beat
+  tree-sitter on mat.hpp because libclang's recovery is much
+  better, but include resolution would suffer.
+- Whether there are workspace types where (A) or (B) regress
+  (e.g. plain-C headers being parsed in C++ mode adding spurious
+  C++-only symbols). Probably none in the OpenCV/UE-style cases,
+  but should be confirmed via the samples fixture.
 
 ## Origin
 
