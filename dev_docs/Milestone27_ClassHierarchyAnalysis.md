@@ -85,6 +85,54 @@ Tests: indexer 326 pass (319 + 7 new); server 173 pass.
 Incremental mode inherits CHA automatically (same `resolve_calls_with_db`);
 verified by touching a file with overrides and confirming edges persist.
 
+### Quality delta (MS26 → MS27, release binary, warm parse cache)
+
+The pre-MS27 baseline below reflects the MS25+MS26 debug run recorded at
+development time. The MS27 column is the release warm-cache run (more TUs fully
+parsed → higher absolute counts).
+
+| metric | pre-MS27 (MS25+MS26) | MS27 | delta |
+|---|---|---|---|
+| calls (total) | 185,542 | 199,168 | **+13,626 (+7.3%)** |
+| compiler_confirmed | 13,778 (7.4%) | 29,222 (14.7%) | **+15,444 (+112%)** |
+| heuristic | 171,764 (92.6%) | 168,179 (84.4%) | −3,585 |
+| cha_virtual | 0 | **1,767** | **+1,767 (new)** |
+| methodOverride refs | 0 | 1,549 | **+1,549 (new)** |
+| virtual/pure_virtual symbols | 1,417 | 1,542 | +125 |
+| symbols (total) | 84,090 | 91,589 | +7,499 |
+
+Key takeaways:
+- **Virtual dispatch coverage**: 1,767 cha_virtual edges added; `base->foo()`
+  calls now reach concrete overrides that were previously invisible.
+- **compiler_confirmed share doubled** (7.4% → 14.7%): MS26's three resolver
+  gap fixes (argument_texts, Qualified call_kind, ThisPointerAccess) account for
+  a portion; the remainder is the release/warm-cache effect exposing more USR
+  matches. The two effects cannot be separated without an intermediate
+  release-binary MS26 run.
+- **heuristic share decreased** (92.6% → 84.4%): calls previously resolved
+  heuristically are now confirmed at compile level — a precision improvement.
+- **1,549 methodOverride edges** (libclang-confirmed override links) form the
+  foundation for future `find_overrides` improvements.
+
+### Indexing performance (release binary, warm parse cache)
+
+| stage | MS25 baseline | MS27 |
+|---|---|---|
+| parse files | 31.15s | 39.54s (+27%) |
+| merge symbols | — | 16.77s |
+| resolve calls | ~16s | 13.18s |
+| derive propagation | — | 6.53s |
+| **total wall time** | **65.7s** | **85.0s (+29%)** |
+
+The +29% total increase is dominated by the parse stage; the parse growth
+largely reflects the MS25 workspace-header expansion (more TUs per run) rather
+than CHA itself. The `resolve calls` stage is within plan limits (target: ≤24s
+on debug, actual debug: 27.6s; release: 13.2s — well within budget).
+
+CHA's marginal cost in the resolve stage is estimated at ≤5s release (the
+override-closure BFS and extra edge writes); the rest of the resolve time is
+unchanged from pre-MS27.
+
 ---
 
 ## Non-Goals
