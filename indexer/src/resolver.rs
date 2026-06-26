@@ -1011,6 +1011,53 @@ fn looks_like_implementation_path(path: &str) -> bool {
         || lower.ends_with(".mm")
 }
 
+/// MS27: maximum class-hierarchy depth followed when expanding a virtual call
+/// to its overrides. Real hierarchies are shallow; this only guards against a
+/// pathological or cyclic `methodOverride` graph.
+const CHA_MAX_CLOSURE_DEPTH: usize = 16;
+
+/// MS27: build the transitive override closure for a set of (virtual) base
+/// method ids. Returns `base_method_id -> [all transitive overrider ids]`.
+///
+/// `direct_overriders` maps each method id to the methods that *directly*
+/// override it; we expand breadth-first per seed so a call resolved to
+/// `Base::foo` reaches `Derived::foo`, `GrandChild::foo`, etc. Cycles and
+/// runaway depth are bounded by `CHA_MAX_CLOSURE_DEPTH`.
+fn build_override_closure(
+    seeds: &HashSet<String>,
+    direct_overriders: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<String>> {
+    let mut closure: HashMap<String, Vec<String>> = HashMap::new();
+    for seed in seeds {
+        let mut collected: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(seed.clone());
+        let mut frontier: Vec<String> =
+            direct_overriders.get(seed).cloned().unwrap_or_default();
+        let mut depth = 0usize;
+        while !frontier.is_empty() && depth < CHA_MAX_CLOSURE_DEPTH {
+            let mut next: Vec<String> = Vec::new();
+            for id in frontier {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                collected.push(id.clone());
+                if let Some(children) = direct_overriders.get(&id) {
+                    next.extend(children.iter().cloned());
+                }
+            }
+            frontier = next;
+            depth += 1;
+        }
+        if !collected.is_empty() {
+            collected.sort();
+            collected.dedup();
+            closure.insert(seed.clone(), collected);
+        }
+    }
+    closure
+}
+
 pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], db: &Database) -> Vec<Call> {
     if raw_calls.is_empty() {
         return Vec::new();
@@ -1073,77 +1120,176 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
     };
     let db_existing_ids = db.symbol_ids_exist(&unique_pre_resolved).unwrap_or_default();
 
+    // --- MS27: Class Hierarchy Analysis prefetch ---
+    //
+    // Any of these candidate callee ids could be the resolved callee of a call.
+    // We must know which are virtual *before* the parallel pass, since the
+    // heuristic callee is only chosen inside the closure. Gather every potential
+    // callee id, find the virtual ones, then build the transitive override
+    // closure so each virtual call can fan out to its overrides.
+    let mut candidate_callee_ids: Vec<String> = Vec::new();
+    for raw in raw_calls {
+        if let Some(callee_id) = &raw.pre_resolved_callee_id {
+            candidate_callee_ids.push(callee_id.clone());
+        }
+    }
+    for syms in db_candidates_by_name.values() {
+        candidate_callee_ids.extend(syms.iter().map(|s| s.id.clone()));
+    }
+    for syms in new_by_name.values() {
+        candidate_callee_ids.extend(syms.iter().map(|s| s.id.clone()));
+    }
+    candidate_callee_ids.sort();
+    candidate_callee_ids.dedup();
+
+    // Virtual methods: in-memory roles from this batch plus the DB's view.
+    let mut virtual_method_ids: HashSet<String> = new_symbols
+        .iter()
+        .filter(|s| matches!(s.symbol_role.as_deref(), Some("virtual") | Some("pure_virtual")))
+        .map(|s| s.id.clone())
+        .collect();
+    virtual_method_ids.extend(
+        db.find_virtual_method_ids(&candidate_callee_ids)
+            .unwrap_or_default(),
+    );
+
+    // Build the direct-override graph reachable from the virtual seeds by
+    // iteratively querying base -> deriving edges, bounded by closure depth.
+    let overrides_closure: HashMap<String, Vec<String>> = {
+        let mut direct_overriders: HashMap<String, Vec<String>> = HashMap::new();
+        let mut queried: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = virtual_method_ids.iter().cloned().collect();
+        let mut depth = 0usize;
+        while !frontier.is_empty() && depth < CHA_MAX_CLOSURE_DEPTH {
+            let batch: Vec<String> = frontier
+                .drain(..)
+                .filter(|id| queried.insert(id.clone()))
+                .collect();
+            if batch.is_empty() {
+                break;
+            }
+            let direct = db.find_direct_overriders(&batch).unwrap_or_default();
+            for (base, derived_list) in direct {
+                for derived in &derived_list {
+                    frontier.push(derived.clone());
+                }
+                direct_overriders.entry(base).or_default().extend(derived_list);
+            }
+            depth += 1;
+        }
+        build_override_closure(&virtual_method_ids, &direct_overriders)
+    };
+
     // --- Parallel resolution (no DB access inside the closure) ---
     //
     // Each raw call resolves independently using the pre-fetched indexes.
     // Results are collected as (dedup-key, Call) pairs and deduped sequentially.
-    let raw_results: Vec<Option<(String, Call)>> = raw_calls
+    // Each call yields a primary edge plus any CHA-expanded virtual overrides.
+    let raw_results: Vec<Vec<(String, Call)>> = raw_calls
         .par_iter()
         .map(|raw| {
-            // Fast path: libclang USR pre-resolved callee
-            if let Some(callee_id) = &raw.pre_resolved_callee_id {
-                if callee_id == &raw.caller_id {
-                    return None; // self-call
-                }
-                let exists = new_symbol_ids.contains(callee_id.as_str())
-                    || db_existing_ids.contains(callee_id.as_str());
-                if exists {
-                    let key = format!("{}->{}@{}:{}", raw.caller_id, callee_id, raw.file_path, raw.line);
-                    return Some((key, Call {
-                        caller_id: raw.caller_id.clone(),
-                        callee_id: callee_id.clone(),
-                        file_path: raw.file_path.clone(),
-                        line: raw.line,
-                        resolution_tier: ResolutionTier::CompilerConfirmed,
-                    }));
-                }
-                return None;
-            }
+            let mut edges: Vec<(String, Call)> = Vec::new();
 
-            // Name-based resolution using pre-fetched candidate cache
-            let caller_parent = new_parent_of
-                .get(raw.caller_id.as_str())
-                .copied()
-                .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|p| p.as_str()));
+            // Determine the primary callee id and its tier.
+            let primary: Option<(String, ResolutionTier)> =
+                if let Some(callee_id) = &raw.pre_resolved_callee_id {
+                    // Fast path: libclang USR pre-resolved callee
+                    if callee_id == &raw.caller_id {
+                        None // self-call
+                    } else {
+                        let exists = new_symbol_ids.contains(callee_id.as_str())
+                            || db_existing_ids.contains(callee_id.as_str());
+                        if exists {
+                            Some((callee_id.clone(), ResolutionTier::CompilerConfirmed))
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    // Name-based resolution using pre-fetched candidate cache
+                    let caller_parent = new_parent_of
+                        .get(raw.caller_id.as_str())
+                        .copied()
+                        .or_else(|| db_parent_of.get(raw.caller_id.as_str()).map(|p| p.as_str()));
 
-            let owned_candidates =
-                collect_candidates_from_cache(raw, &new_by_name, &db_candidates_by_name);
-            let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
-            let caller_base_ids: Vec<&str> = caller_parent
-                .and_then(|parent| db_bases_by_parent.get(parent))
-                .map(|base_ids| base_ids.iter().map(|id| id.as_str()).collect())
-                .unwrap_or_default();
+                    let owned_candidates =
+                        collect_candidates_from_cache(raw, &new_by_name, &db_candidates_by_name);
+                    let candidates: Vec<&Symbol> = owned_candidates.iter().collect();
+                    let caller_base_ids: Vec<&str> = caller_parent
+                        .and_then(|parent| db_bases_by_parent.get(parent))
+                        .map(|base_ids| base_ids.iter().map(|id| id.as_str()).collect())
+                        .unwrap_or_default();
 
-            let callee_files: Vec<&str> =
-                owned_candidates.iter().map(|s| s.file_path.as_str()).collect();
-            let file_relationship = compute_file_relationship(&raw.file_path, &callee_files);
-            let macro_signals =
-                build_macro_context_signals(&candidates, raw.caller_id.as_str(), None);
+                    let callee_files: Vec<&str> =
+                        owned_candidates.iter().map(|s| s.file_path.as_str()).collect();
+                    let file_relationship = compute_file_relationship(&raw.file_path, &callee_files);
+                    let macro_signals =
+                        build_macro_context_signals(&candidates, raw.caller_id.as_str(), None);
 
-            let context = ResolutionContext {
-                caller_parent,
-                caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
-                caller_bases: caller_base_ids.as_slice(),
-                caller_file: Some(raw.file_path.as_str()),
-                file_relationship,
-                macro_context: macro_signals,
+                    let context = ResolutionContext {
+                        caller_parent,
+                        caller_namespace: namespace_scope(raw.caller_id.as_str(), caller_parent),
+                        caller_bases: caller_base_ids.as_slice(),
+                        caller_file: Some(raw.file_path.as_str()),
+                        file_relationship,
+                        macro_context: macro_signals,
+                    };
+                    let decision = resolve_one(raw, candidates, context);
+                    decision.chosen.and_then(|callee| {
+                        if callee.id == raw.caller_id {
+                            None
+                        } else {
+                            Some((callee.id.clone(), ResolutionTier::Heuristic))
+                        }
+                    })
+                };
+
+            let Some((primary_callee_id, primary_tier)) = primary else {
+                return edges;
             };
-            let decision = resolve_one(raw, candidates, context);
 
-            if let Some(callee) = decision.chosen {
-                if callee.id == raw.caller_id {
-                    return None;
-                }
-                let key = format!("{}->{}@{}:{}", raw.caller_id, callee.id, raw.file_path, raw.line);
-                return Some((key, Call {
+            let primary_key = format!(
+                "{}->{}@{}:{}",
+                raw.caller_id, primary_callee_id, raw.file_path, raw.line
+            );
+            edges.push((
+                primary_key,
+                Call {
                     caller_id: raw.caller_id.clone(),
-                    callee_id: callee.id.clone(),
+                    callee_id: primary_callee_id.clone(),
                     file_path: raw.file_path.clone(),
                     line: raw.line,
-                    resolution_tier: ResolutionTier::Heuristic,
-                }));
+                    resolution_tier: primary_tier,
+                },
+            ));
+
+            // MS27: CHA expansion. If the primary callee is a virtual method,
+            // also emit an edge to every transitive override in its subtree.
+            if virtual_method_ids.contains(&primary_callee_id) {
+                if let Some(targets) = overrides_closure.get(&primary_callee_id) {
+                    for target in targets {
+                        if target == &primary_callee_id || target == &raw.caller_id {
+                            continue;
+                        }
+                        let key = format!(
+                            "{}->{}@{}:{}",
+                            raw.caller_id, target, raw.file_path, raw.line
+                        );
+                        edges.push((
+                            key,
+                            Call {
+                                caller_id: raw.caller_id.clone(),
+                                callee_id: target.clone(),
+                                file_path: raw.file_path.clone(),
+                                line: raw.line,
+                                resolution_tier: ResolutionTier::ChaVirtual,
+                            },
+                        ));
+                    }
+                }
             }
-            None
+
+            edges
         })
         .collect();
 
@@ -1151,8 +1297,7 @@ pub fn resolve_calls_with_db(raw_calls: &[RawCallSite], new_symbols: &[Symbol], 
     // matching the ordering guarantee of the original sequential loop.
     let mut seen = HashSet::new();
     let mut calls = Vec::new();
-    for item in raw_results.into_iter().flatten() {
-        let (key, call) = item;
+    for (key, call) in raw_results.into_iter().flatten() {
         if seen.insert(key) {
             calls.push(call);
         }
@@ -2463,6 +2608,128 @@ mod tests {
         let calls = resolve_calls_with_db(&raw, &new_symbols, &db);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee_id, "Gameplay::ShotSubSystem::SetShotFlags");
+    }
+
+    // ── MS27: Class Hierarchy Analysis expansion ─────────────────────────────
+
+    /// A virtual method with the given id; sets symbol_role so CHA recognizes it.
+    fn make_virtual_method(id: &str, name: &str, parent: Option<&str>) -> Symbol {
+        Symbol {
+            symbol_role: Some("virtual".into()),
+            ..make_sym(id, name, "method", parent)
+        }
+    }
+
+    /// A pre-resolved (compiler-confirmed) call to a known callee USR.
+    fn make_pre_resolved_raw(caller_id: &str, callee_id: &str) -> RawCallSite {
+        RawCallSite {
+            pre_resolved_callee_id: Some(callee_id.to_string()),
+            ..make_raw(caller_id, callee_id)
+        }
+    }
+
+    fn override_ref(derived_id: &str, base_id: &str) -> crate::models::NormalizedReference {
+        crate::models::NormalizedReference {
+            source_symbol_id: derived_id.into(),
+            target_symbol_id: base_id.into(),
+            category: crate::models::ReferenceCategory::MethodOverride,
+            file_path: "h.cpp".into(),
+            line: 1,
+            confidence: RawExtractionConfidence::High,
+        }
+    }
+
+    #[test]
+    fn cha_expands_virtual_call_to_overrides() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.write_symbols(&[
+            make_sym("Caller", "Caller", "method", None),
+            make_virtual_method("Base::foo", "foo", Some("Base")),
+            make_virtual_method("Derived::foo", "foo", Some("Derived")),
+            make_virtual_method("GrandChild::foo", "foo", Some("GrandChild")),
+        ])
+        .unwrap();
+        // Derived::foo overrides Base::foo; GrandChild::foo overrides Derived::foo.
+        db.write_references(&[
+            override_ref("Derived::foo", "Base::foo"),
+            override_ref("GrandChild::foo", "Derived::foo"),
+        ])
+        .unwrap();
+
+        // A call statically resolved to Base::foo.
+        let raw = vec![make_pre_resolved_raw("Caller", "Base::foo")];
+        let calls = resolve_calls_with_db(&raw, &[], &db);
+
+        // Primary edge to Base::foo (compiler_confirmed) + two cha_virtual edges.
+        assert_eq!(calls.len(), 3, "calls: {:?}", calls);
+        let primary = calls
+            .iter()
+            .find(|c| c.callee_id == "Base::foo")
+            .expect("primary edge missing");
+        assert_eq!(primary.resolution_tier, ResolutionTier::CompilerConfirmed);
+
+        let cha: HashSet<&str> = calls
+            .iter()
+            .filter(|c| c.resolution_tier == ResolutionTier::ChaVirtual)
+            .map(|c| c.callee_id.as_str())
+            .collect();
+        assert_eq!(
+            cha,
+            HashSet::from(["Derived::foo", "GrandChild::foo"]),
+            "expected transitive override closure"
+        );
+    }
+
+    #[test]
+    fn cha_skips_non_virtual_callee() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.write_symbols(&[
+            make_sym("Caller", "Caller", "method", None),
+            // Non-virtual target (no symbol_role) plus a same-named "override".
+            make_sym("Base::foo", "foo", "method", Some("Base")),
+            make_sym("Derived::foo", "foo", "method", Some("Derived")),
+        ])
+        .unwrap();
+        db.write_references(&[override_ref("Derived::foo", "Base::foo")])
+            .unwrap();
+
+        let raw = vec![make_pre_resolved_raw("Caller", "Base::foo")];
+        let calls = resolve_calls_with_db(&raw, &[], &db);
+
+        // Only the primary edge — Base::foo is not virtual, so no CHA expansion.
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].callee_id, "Base::foo");
+        assert_eq!(calls[0].resolution_tier, ResolutionTier::CompilerConfirmed);
+    }
+
+    #[test]
+    fn cha_virtual_edges_are_deduped() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        db.write_symbols(&[
+            make_sym("Caller", "Caller", "method", None),
+            make_virtual_method("Base::foo", "foo", Some("Base")),
+            make_virtual_method("Derived::foo", "foo", Some("Derived")),
+        ])
+        .unwrap();
+        db.write_references(&[override_ref("Derived::foo", "Base::foo")])
+            .unwrap();
+
+        // Same call site appears twice (e.g. duplicate raw call rows).
+        let raw = vec![
+            make_pre_resolved_raw("Caller", "Base::foo"),
+            make_pre_resolved_raw("Caller", "Base::foo"),
+        ];
+        let calls = resolve_calls_with_db(&raw, &[], &db);
+
+        // One primary + one cha_virtual, deduped by (caller->callee@file:line).
+        assert_eq!(calls.len(), 2, "calls: {:?}", calls);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.resolution_tier == ResolutionTier::ChaVirtual)
+                .count(),
+            1
+        );
     }
 
     #[test]

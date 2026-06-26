@@ -1496,6 +1496,71 @@ impl Database {
         rows.collect()
     }
 
+    /// MS27: reverse override lookup. Given base method ids, returns
+    /// `base_method_id -> [derived_method_id, ...]` for the directly-overriding
+    /// methods recorded as `category = 'methodOverride'` (source = derived,
+    /// target = base). This is the base→deriving direction needed to expand a
+    /// virtual call down to its overrides during Class Hierarchy Analysis.
+    pub fn find_direct_overriders(
+        &self,
+        base_method_ids: &[String],
+    ) -> SqlResult<HashMap<String, Vec<String>>> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        let mut overriders_by_base: HashMap<String, Vec<String>> = HashMap::new();
+        if base_method_ids.is_empty() {
+            return Ok(overriders_by_base);
+        }
+        for chunk in base_method_ids.chunks(SQLITE_VARIABLE_LIMIT) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT target_symbol_id, source_symbol_id
+                 FROM symbol_references
+                 WHERE category = 'methodOverride' AND target_symbol_id IN ({})
+                 ORDER BY target_symbol_id ASC, source_symbol_id ASC",
+                placeholders,
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (base_id, derived_id) = row?;
+                overriders_by_base
+                    .entry(base_id)
+                    .or_default()
+                    .push(derived_id);
+            }
+        }
+        Ok(overriders_by_base)
+    }
+
+    /// MS27: returns the subset of `symbol_ids` whose `symbol_role` marks them
+    /// virtual or pure-virtual — i.e. methods whose calls are candidates for
+    /// CHA expansion.
+    pub fn find_virtual_method_ids(&self, symbol_ids: &[String]) -> SqlResult<HashSet<String>> {
+        const SQLITE_VARIABLE_LIMIT: usize = 900;
+        let mut result = HashSet::new();
+        if symbol_ids.is_empty() {
+            return Ok(result);
+        }
+        for chunk in symbol_ids.chunks(SQLITE_VARIABLE_LIMIT) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT id FROM symbols
+                 WHERE symbol_role IN ('virtual', 'pure_virtual') AND id IN ({})",
+                placeholders,
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+                row.get::<_, String>(0)
+            })?;
+            for id in rows {
+                result.insert(id?);
+            }
+        }
+        Ok(result)
+    }
+
     #[cfg(test)]
     pub fn get_direct_base_edges(&self, derived_symbol_id: &str) -> SqlResult<Vec<InheritanceEdge>> {
         let mut stmt = self.conn.prepare(
@@ -1980,6 +2045,7 @@ fn reference_category_key(category: &ReferenceCategory) -> &'static str {
         ReferenceCategory::TypeUsage => "typeUsage",
         ReferenceCategory::InheritanceMention => "inheritanceMention",
         ReferenceCategory::EnumValueUsage => "enumValueUsage",
+        ReferenceCategory::MethodOverride => "methodOverride",
     }
 }
 
@@ -1991,6 +2057,7 @@ fn reference_category_from_key(value: &str) -> ReferenceCategory {
         "typeUsage" => ReferenceCategory::TypeUsage,
         "inheritanceMention" => ReferenceCategory::InheritanceMention,
         "enumValueUsage" => ReferenceCategory::EnumValueUsage,
+        "methodOverride" => ReferenceCategory::MethodOverride,
         _ => ReferenceCategory::FunctionCall,
     }
 }
@@ -2272,6 +2339,55 @@ mod tests {
         assert_eq!(propagation_count, 0);
         let file_count: i64 = db.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
         assert_eq!(file_count, 1);
+    }
+
+    #[test]
+    fn find_direct_overriders_groups_by_base() {
+        let db = Database::open(Path::new(":memory:")).unwrap();
+        let mut virtual_base = make_sym("usr#Base@foo", "foo");
+        virtual_base.symbol_role = Some("virtual".into());
+        let derived_a = make_sym("usr#DerivedA@foo", "foo");
+        let derived_b = make_sym("usr#DerivedB@foo", "foo");
+        let unrelated = make_sym("usr#Other@bar", "bar");
+        db.write_symbols(&[virtual_base, derived_a, derived_b, unrelated]).unwrap();
+        db.write_references(&[
+            NormalizedReference {
+                source_symbol_id: "usr#DerivedA@foo".into(),
+                target_symbol_id: "usr#Base@foo".into(),
+                category: ReferenceCategory::MethodOverride,
+                file_path: "a.cpp".into(),
+                line: 3,
+                confidence: RawExtractionConfidence::High,
+            },
+            NormalizedReference {
+                source_symbol_id: "usr#DerivedB@foo".into(),
+                target_symbol_id: "usr#Base@foo".into(),
+                category: ReferenceCategory::MethodOverride,
+                file_path: "b.cpp".into(),
+                line: 4,
+                confidence: RawExtractionConfidence::High,
+            },
+        ]).unwrap();
+
+        let overriders = db
+            .find_direct_overriders(&["usr#Base@foo".to_string()])
+            .unwrap();
+        let mut derived = overriders.get("usr#Base@foo").cloned().unwrap_or_default();
+        derived.sort();
+        assert_eq!(
+            derived,
+            vec!["usr#DerivedA@foo".to_string(), "usr#DerivedB@foo".to_string()]
+        );
+
+        // Virtual-method detection: only the base method carries a virtual role.
+        let all_ids = vec![
+            "usr#Base@foo".to_string(),
+            "usr#DerivedA@foo".to_string(),
+            "usr#Other@bar".to_string(),
+        ];
+        let virtual_ids = db.find_virtual_method_ids(&all_ids).unwrap();
+        assert_eq!(virtual_ids.len(), 1);
+        assert!(virtual_ids.contains("usr#Base@foo"));
     }
 
     #[test]

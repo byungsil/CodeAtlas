@@ -70,6 +70,12 @@ pub struct Symbol {
 pub enum ResolutionTier {
     CompilerConfirmed,
     Heuristic,
+    /// MS27: an edge synthesized by Class Hierarchy Analysis. The primary call
+    /// resolved to a virtual method; this edge points at a concrete override in
+    /// the static type's subtree. It is a sound over-approximation (the runtime
+    /// dispatch may or may not reach this target), kept in its own tier so
+    /// consumers can opt in/out of CHA-expanded edges.
+    ChaVirtual,
 }
 
 impl ResolutionTier {
@@ -78,6 +84,7 @@ impl ResolutionTier {
         match self {
             ResolutionTier::CompilerConfirmed => "compiler_confirmed",
             ResolutionTier::Heuristic => "heuristic",
+            ResolutionTier::ChaVirtual => "cha_virtual",
         }
     }
 
@@ -86,6 +93,7 @@ impl ResolutionTier {
     pub fn from_str(value: &str) -> Self {
         match value {
             "compiler_confirmed" => ResolutionTier::CompilerConfirmed,
+            "cha_virtual" => ResolutionTier::ChaVirtual,
             _ => ResolutionTier::Heuristic,
         }
     }
@@ -220,6 +228,10 @@ pub enum RawRelationKind {
     TypeUsage,
     Inheritance,
     EnumValueUsage,
+    /// MS27: a derived method overrides a base virtual method. `caller_id` holds
+    /// the derived method USR and `target_name` holds the base method USR (the
+    /// override target is libclang-resolved, so it is already a USR, not a name).
+    MethodOverride,
 }
 
 #[allow(dead_code)]
@@ -233,6 +245,9 @@ pub enum ReferenceCategory {
     TypeUsage,
     InheritanceMention,
     EnumValueUsage,
+    /// MS27: a derived method overrides a base virtual method. `source` is the
+    /// derived method id, `target` is the base method id.
+    MethodOverride,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
