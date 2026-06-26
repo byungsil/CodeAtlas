@@ -41,3 +41,11 @@ indexer/stats
 
 # Eval harness runtime outputs (regenerated per run; fixtures themselves are tracked)
 eval/fixtures/*.eval.json
+eval/__pycache__/
+
+# Sample workspace index artifacts
+samples/**/.codeatlas/
+
+# Temporary analysis / one-off scripts
+compare_dbs*.py
+eval_*.py
