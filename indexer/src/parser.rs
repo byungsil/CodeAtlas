@@ -121,6 +121,9 @@ pub fn execute_graph_rules(
                 RawRelationKind::Inheritance => RawExtractionConfidence::Partial,
                 RawRelationKind::TypeUsage => RawExtractionConfidence::Partial,
                 RawRelationKind::EnumValueUsage => RawExtractionConfidence::Partial,
+                // MS27: MethodOverride is libclang-only; never reaches this
+                // tree-sitter graph path, but the arm is required for exhaustiveness.
+                RawRelationKind::MethodOverride => RawExtractionConfidence::High,
                 RawRelationKind::Call => match read_attr_str(attrs, "call_kind") {
                     Some("qualified") => RawExtractionConfidence::Partial,
                     _ => {
@@ -1092,6 +1095,9 @@ fn extract_graph_relation_events(
                 RawRelationKind::Inheritance => RawExtractionConfidence::Partial,
                 RawRelationKind::TypeUsage => RawExtractionConfidence::Partial,
                 RawRelationKind::EnumValueUsage => RawExtractionConfidence::Partial,
+                // MS27: MethodOverride is libclang-only; never reaches this
+                // tree-sitter graph path, but the arm is required for exhaustiveness.
+                RawRelationKind::MethodOverride => RawExtractionConfidence::High,
                 RawRelationKind::Call => match read_attr_str(attrs, "call_kind") {
                     Some("qualified") => RawExtractionConfidence::Partial,
                     _ => {
@@ -1224,6 +1230,7 @@ pub fn normalize_relation_events(
             RawRelationKind::TypeUsage => ReferenceCategory::TypeUsage,
             RawRelationKind::Inheritance => ReferenceCategory::InheritanceMention,
             RawRelationKind::EnumValueUsage => ReferenceCategory::EnumValueUsage,
+            RawRelationKind::MethodOverride => ReferenceCategory::MethodOverride,
             RawRelationKind::Call => continue,
         };
 
@@ -1231,9 +1238,26 @@ pub fn normalize_relation_events(
             Some(id) => id,
             None => continue,
         };
-        let target_symbol_id = match resolve_reference_target_id(event, source_symbol_id, &symbol_index) {
-            Some(id) => id,
-            None => continue,
+        // MS27: MethodOverride targets are libclang USRs, not display names, so
+        // resolve directly by id rather than via name-based candidate scoring.
+        // Drop the edge if the base method isn't in the indexed symbol set (it
+        // may live in an unindexed system header).
+        let target_symbol_id = if event.relation_kind == RawRelationKind::MethodOverride {
+            match event.target_name.as_deref() {
+                Some(target_usr)
+                    if symbol_index
+                        .get(target_usr)
+                        .is_some_and(|syms| syms.iter().any(|s| s.id == target_usr)) =>
+                {
+                    target_usr.to_string()
+                }
+                _ => continue,
+            }
+        } else {
+            match resolve_reference_target_id(event, source_symbol_id, &symbol_index) {
+                Some(id) => id,
+                None => continue,
+            }
         };
 
         let normalized = NormalizedReference {
@@ -3051,7 +3075,9 @@ fn reference_target_allowed(event: &RawRelationEvent, symbol: &Symbol) -> bool {
     match event.relation_kind {
         RawRelationKind::Inheritance => is_type_like_symbol(symbol),
         RawRelationKind::EnumValueUsage => is_enum_member_symbol(symbol),
-        RawRelationKind::TypeUsage | RawRelationKind::Call => true,
+        // MS27: MethodOverride resolves by USR directly (it never uses this
+        // name-based candidate path), so any matched symbol is acceptable.
+        RawRelationKind::TypeUsage | RawRelationKind::Call | RawRelationKind::MethodOverride => true,
     }
 }
 
@@ -4249,6 +4275,7 @@ mod tests {
                 RawRelationKind::TypeUsage => "type_usage",
                 RawRelationKind::Inheritance => "inheritance",
                 RawRelationKind::EnumValueUsage => "enum_value_usage",
+                RawRelationKind::MethodOverride => "method_override",
             },
             event.caller_id.as_deref().unwrap_or_default(),
             event.target_name.as_deref().unwrap_or_default(),
@@ -5226,6 +5253,82 @@ class Player : public Actor {};
                 confidence: RawExtractionConfidence::Partial,
             }
         );
+    }
+
+    /// Minimal method symbol for normalize tests; only id/name matter here.
+    fn method_symbol_for_normalize(id: &str, name: &str) -> Symbol {
+        Symbol {
+            id: id.into(),
+            name: name.into(),
+            qualified_name: id.into(),
+            symbol_type: "method".into(),
+            file_path: "ov.cpp".into(),
+            line: 1,
+            end_line: 1,
+            signature: None,
+            parameter_count: None,
+            scope_qualified_name: None,
+            scope_kind: Some("class".into()),
+            symbol_role: Some("virtual".into()),
+            declaration_file_path: None,
+            declaration_line: None,
+            declaration_end_line: None,
+            definition_file_path: None,
+            definition_line: None,
+            definition_end_line: None,
+            parent_id: None,
+            module: None,
+            subsystem: None,
+            project_area: None,
+            artifact_kind: None,
+            header_role: None,
+            parse_fragility: None,
+            macro_sensitivity: None,
+            include_heaviness: None,
+        }
+    }
+
+    #[test]
+    fn normalize_method_override_resolves_by_usr() {
+        // Targets are libclang USRs (here stand-in ids), resolved directly.
+        let symbols = vec![
+            method_symbol_for_normalize("usr#Base@foo", "foo"),
+            method_symbol_for_normalize("usr#Derived@foo", "foo"),
+        ];
+        let make_event = |target: &str| RawRelationEvent {
+            relation_kind: RawRelationKind::MethodOverride,
+            source: RawEventSource::LegacyAst,
+            confidence: RawExtractionConfidence::High,
+            caller_id: Some("usr#Derived@foo".into()),
+            target_name: Some(target.into()),
+            call_kind: None,
+            argument_count: None,
+            receiver: None,
+            receiver_kind: None,
+            qualifier: None,
+            qualifier_kind: None,
+            file_path: "ov.cpp".into(),
+            line: 7,
+        };
+
+        // Known base USR -> a MethodOverride reference is produced.
+        let normalized = normalize_relation_events(&[make_event("usr#Base@foo")], &symbols);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0],
+            NormalizedReference {
+                source_symbol_id: "usr#Derived@foo".into(),
+                target_symbol_id: "usr#Base@foo".into(),
+                category: ReferenceCategory::MethodOverride,
+                file_path: "ov.cpp".into(),
+                line: 7,
+                confidence: RawExtractionConfidence::High,
+            }
+        );
+
+        // Unknown base USR (e.g. in an unindexed system header) -> dropped.
+        let dropped = normalize_relation_events(&[make_event("usr#Unindexed@foo")], &symbols);
+        assert!(dropped.is_empty());
     }
 
     #[test]

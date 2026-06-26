@@ -19,7 +19,7 @@ use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 /// scheme tweaks, etc.). The parse cache (MS22) folds this tag into its
 /// content-addressable key so a version bump transparently invalidates every
 /// previously cached entry — old-format keys simply never match again.
-pub const PARSER_VERSION_TAG: &str = "cpp-clang-v3";
+pub const PARSER_VERSION_TAG: &str = "cpp-clang-v4";
 
 // ─── MS25 hotfix: cross-TU header-symbol claim set ──────────────────────────
 //
@@ -625,6 +625,45 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                     include_heaviness: None,
                 });
             }
+
+            // ── MS27: Emit method-override relation events ──────────────────────
+            // For a method/destructor, libclang exposes the base method(s) it
+            // overrides via clang_getOverriddenCursors. We record derived→base
+            // USR edges (category MethodOverride at normalize time) so the
+            // resolver can expand virtual calls down the class subtree (CHA).
+            // Emitted regardless of dedup_skip: relation events are deduped by
+            // (source, target, category, file, line) in normalize_relation_events.
+            if matches!(kind, EntityKind::Method | EntityKind::Destructor) {
+                if let Some(overridden) = entity.get_overridden_methods() {
+                    let override_line = entity
+                        .get_location()
+                        .map(|l| l.get_file_location().line)
+                        .unwrap_or(0);
+                    for base in overridden {
+                        if let Some(base_usr) = base.get_usr().map(|u| u.0) {
+                            if base_usr.is_empty() || base_usr == id {
+                                continue;
+                            }
+                            state.relation_events.push(RawRelationEvent {
+                                relation_kind: RawRelationKind::MethodOverride,
+                                source: RawEventSource::LegacyAst,
+                                // libclang resolves the override link exactly.
+                                confidence: RawExtractionConfidence::High,
+                                caller_id: Some(id.clone()), // derived method USR
+                                target_name: Some(base_usr), // base method USR
+                                call_kind: None,
+                                argument_count: None,
+                                receiver: None,
+                                receiver_kind: None,
+                                qualifier: None,
+                                qualifier_kind: None,
+                                file_path: indexed_path.to_string(),
+                                line: override_line as usize,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1076,6 +1115,54 @@ mod tests {
             .filter(|e| e.relation_kind == RawRelationKind::Inheritance)
             .count();
         assert_eq!(inh_count, 0);
+    }
+
+    // ── MS27: method-override extraction ─────────────────────────────────────
+
+    #[test]
+    fn clang_emits_method_override_edge() {
+        let result = parse(
+            "struct Base { virtual void foo(); }; \
+             struct Derived : Base { void foo() override; };",
+        );
+        let overrides: Vec<_> = result
+            .relation_events
+            .iter()
+            .filter(|e| e.relation_kind == RawRelationKind::MethodOverride)
+            .collect();
+        assert_eq!(
+            overrides.len(),
+            1,
+            "expected exactly one override edge, got {}",
+            overrides.len()
+        );
+
+        let derived_foo = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.qualified_name.contains("Derived"))
+            .expect("Derived::foo symbol not found");
+        let base_foo = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.qualified_name.contains("Base"))
+            .expect("Base::foo symbol not found");
+
+        // Source is the derived method USR; target is the base method USR.
+        assert_eq!(overrides[0].caller_id.as_deref(), Some(derived_foo.id.as_str()));
+        assert_eq!(overrides[0].target_name.as_deref(), Some(base_foo.id.as_str()));
+        assert_eq!(overrides[0].confidence, RawExtractionConfidence::High);
+    }
+
+    #[test]
+    fn clang_no_override_events_for_non_overriding_method() {
+        let result = parse("struct Standalone { virtual void foo(); void bar(); };");
+        let override_count = result
+            .relation_events
+            .iter()
+            .filter(|e| e.relation_kind == RawRelationKind::MethodOverride)
+            .count();
+        assert_eq!(override_count, 0);
     }
 
     // ── Phase B: missing symbol types ────────────────────────────────────────

@@ -42,6 +42,7 @@ function makeTempDb(withTierColumn: boolean): string {
   sym.run("caller", "caller", "ns::caller", "function", "a.cpp", 1, 2);
   sym.run("confirmed", "confirmed", "ns::confirmed", "function", "a.cpp", 10, 11);
   sym.run("heuristic", "heuristic", "ns::heuristic", "function", "a.cpp", 20, 21);
+  sym.run("chaTarget", "chaTarget", "ns::chaTarget", "function", "a.cpp", 30, 31);
 
   if (withTierColumn) {
     const ins = db.prepare(
@@ -49,6 +50,7 @@ function makeTempDb(withTierColumn: boolean): string {
     );
     ins.run("caller", "confirmed", "a.cpp", 3, "compiler_confirmed");
     ins.run("caller", "heuristic", "a.cpp", 4, "heuristic");
+    ins.run("caller", "chaTarget", "a.cpp", 5, "cha_virtual");
   } else {
     const ins = db.prepare(
       "INSERT INTO calls (caller_id, callee_id, file_path, line) VALUES (?,?,?,?)",
@@ -66,10 +68,12 @@ describe("SqliteStore resolution tier", () => {
     const store = new SqliteStore(makeTempDb(true));
     try {
       const callees = store.getCallees("caller");
-      expect(callees).toHaveLength(2);
+      expect(callees).toHaveLength(3);
       const byId = new Map(callees.map((c) => [c.calleeId, c]));
       expect(byId.get("confirmed")?.resolutionTier).toBe("compilerConfirmed");
       expect(byId.get("heuristic")?.resolutionTier).toBe("heuristic");
+      // MS27: cha_virtual rows map onto the chaVirtual tier.
+      expect(byId.get("chaTarget")?.resolutionTier).toBe("chaVirtual");
     } finally {
       store.close();
     }
@@ -79,7 +83,7 @@ describe("SqliteStore resolution tier", () => {
     const store = new SqliteStore(makeTempDb(true));
     try {
       const all = store.getCallees("caller");
-      expect(all).toHaveLength(2);
+      expect(all).toHaveLength(3);
 
       const confirmed = store.getCallees("caller", true);
       expect(confirmed).toHaveLength(1);

@@ -888,8 +888,13 @@ function toCall(row: RawCallRow): Call {
     filePath: row.file_path,
     line: row.line,
     // Pre-MS21 DBs (or rows lacking the column) default to "heuristic", the
-    // safe "needs verification" assumption.
-    resolutionTier: row.resolution_tier === "compiler_confirmed" ? "compilerConfirmed" : "heuristic",
+    // safe "needs verification" assumption. MS27 adds the cha_virtual tier.
+    resolutionTier:
+      row.resolution_tier === "compiler_confirmed"
+        ? "compilerConfirmed"
+        : row.resolution_tier === "cha_virtual"
+          ? "chaVirtual"
+          : "heuristic",
   };
 }
 
