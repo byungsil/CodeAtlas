@@ -19,7 +19,7 @@ use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 /// scheme tweaks, etc.). The parse cache (MS22) folds this tag into its
 /// content-addressable key so a version bump transparently invalidates every
 /// previously cached entry — old-format keys simply never match again.
-pub const PARSER_VERSION_TAG: &str = "cpp-clang-v2";
+pub const PARSER_VERSION_TAG: &str = "cpp-clang-v3";
 
 // ─── MS25 hotfix: cross-TU header-symbol claim set ──────────────────────────
 //
@@ -311,6 +311,35 @@ fn pre_scan_lambdas<'tu>(entity: Entity<'tu>, ranges: &mut Vec<(u32, u32, String
 // `clang_path`    = the path Clang used for the TU (may be absolute); used
 //                   only for matching entity locations so we correctly
 //                   filter entities that belong to this file.
+// MS26 Gap 1: extract the leaf identifier text from a CallExpr argument entity.
+// Other parsers (Python, Lua, Rust, TS) call split_arguments() on raw text;
+// C++ builds the same Vec<String> from libclang AST nodes instead.
+fn extract_cpp_argument_text(arg: &Entity<'_>) -> String {
+    let kind = arg.get_kind();
+    if matches!(kind, EntityKind::DeclRefExpr | EntityKind::MemberRefExpr) {
+        if let Some(name) = arg.get_name() {
+            return name;
+        }
+    }
+    let mut found: Option<String> = None;
+    arg.visit_children(|child, _| {
+        if found.is_some() {
+            return EntityVisitResult::Break;
+        }
+        if matches!(child.get_kind(), EntityKind::DeclRefExpr | EntityKind::MemberRefExpr) {
+            if let Some(name) = child.get_name() {
+                found = Some(name);
+                return EntityVisitResult::Break;
+            }
+        }
+        EntityVisitResult::Recurse
+    });
+    if let Some(name) = found {
+        return name;
+    }
+    arg.get_display_name().unwrap_or_default()
+}
+
 fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path: &str, clang_path: &str) {
     // Determine which file this node belongs to.
     let entity_path = entity
@@ -740,16 +769,21 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                         .unwrap_or_default();
 
                     if !called_name.is_empty() {
-                        let arg_count = entity.get_arguments().map(|a| a.len());
-                        let call_kind = match callee.get_kind() {
-                            EntityKind::Method
-                            | EntityKind::Constructor
-                            | EntityKind::Destructor => RawCallKind::MemberAccess,
-                            _ => RawCallKind::Unqualified,
-                        };
+                        // MS26 Gap 1: collect argument texts so push_argument_signature_reasons
+                        // fires (+70/+90). Reuse the same get_arguments() result for arg_count.
+                        let args_vec = entity.get_arguments().unwrap_or_default();
+                        let arg_count = Some(args_vec.len());
+                        let argument_texts: Vec<String> = args_vec.iter()
+                            .map(|arg| extract_cpp_argument_text(arg))
+                            .collect();
+
                         // Extract USR for direct callee resolution (avoids name-based ambiguity)
                         let pre_resolved_callee_id = callee.get_usr().map(|u| u.0);
-                        // Extract qualifier from the callee's semantic parent
+
+                        // MS26 Gap 2: compute qualifier first, then derive call_kind.
+                        // Previously call_kind was set before qualifier was known, so
+                        // Qualified never fired — qualified_type_match (+90) and
+                        // qualified_namespace_match (+70) were always skipped.
                         let (qualifier, qualifier_kind) = callee.get_semantic_parent()
                             .and_then(|parent| {
                                 let parent_name = parent.get_display_name()
@@ -764,12 +798,41 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                                 Some((Some(parent_name), Some(qk)))
                             })
                             .unwrap_or((None, None));
+
+                        // MS26 Gap 3: detect this->method() dispatch.
+                        // When the callee's semantic parent USR matches the enclosing
+                        // class frame, this is a same-class dispatch — not an inherited
+                        // or cross-class call. Scores +80 via this_receiver_match.
+                        let callee_parent_usr: Option<String> = callee
+                            .get_semantic_parent()
+                            .and_then(|p| p.get_usr())
+                            .map(|u| u.0);
+                        let enclosing_class_usr: Option<&str> = state.scope_stack.iter().rev()
+                            .find(|f| f.kind == "class")
+                            .map(|f| f.usr.as_str());
+                        let is_this_dispatch = matches!(callee.get_kind(), EntityKind::Method)
+                            && callee_parent_usr.as_deref().is_some()
+                            && callee_parent_usr.as_deref() == enclosing_class_usr;
+
+                        let call_kind = if is_this_dispatch {
+                            RawCallKind::ThisPointerAccess
+                        } else if qualifier.is_some() {
+                            RawCallKind::Qualified
+                        } else {
+                            match callee.get_kind() {
+                                EntityKind::Method
+                                | EntityKind::Constructor
+                                | EntityKind::Destructor => RawCallKind::MemberAccess,
+                                _ => RawCallKind::Unqualified,
+                            }
+                        };
+
                         state.raw_calls.push(RawCallSite {
                             caller_id,
                             called_name,
                             call_kind,
                             argument_count: arg_count,
-                            argument_texts: Vec::new(),
+                            argument_texts,
                             result_target: None,
                             receiver: None,
                             receiver_kind: None,
@@ -1433,5 +1496,69 @@ void outer() {
             .iter()
             .any(|s| s.qualified_name == "b" || s.name == "b");
         assert!(b_has_local, "second TU's own free function must still be emitted");
+    }
+
+    // ── MS26: call site enrichment tests ─────────────────────────────────────
+
+    fn call_site<'a>(result: &'a ParseResult, name: &str) -> Option<&'a RawCallSite> {
+        result.raw_calls.iter().find(|c| c.called_name == name)
+    }
+
+    #[test]
+    fn clang_argument_texts_extracted_for_decl_ref() {
+        // Simple variable argument: extract_cpp_argument_text should return the
+        // variable's name directly via DeclRefExpr.
+        let src = r#"
+            void target(int x);
+            void caller() { int myVar = 1; target(myVar); }
+        "#;
+        let result = parse(src);
+        let cs = call_site(&result, "target").expect("call site not found");
+        assert_eq!(cs.argument_texts, vec!["myVar".to_string()],
+            "argument text should capture variable name");
+    }
+
+    #[test]
+    fn clang_argument_texts_extracted_for_nested_ref() {
+        // Argument wrapped in implicit cast; subtree walk finds the DeclRefExpr.
+        let src = r#"
+            void target(float x);
+            void caller() { int n = 3; target(n); }
+        "#;
+        let result = parse(src);
+        let cs = call_site(&result, "target").expect("call site not found");
+        assert!(!cs.argument_texts.is_empty(),
+            "argument_texts should be non-empty even for cast-wrapped arg");
+        assert_eq!(cs.argument_texts[0], "n",
+            "should extract leaf name `n` through implicit cast");
+    }
+
+    #[test]
+    fn clang_call_kind_qualified_when_qualifier_present() {
+        // Ns::func() — qualifier is the namespace, so call_kind must be Qualified.
+        let src = r#"
+            namespace Ns { void func(); }
+            void caller() { Ns::func(); }
+        "#;
+        let result = parse(src);
+        let cs = call_site(&result, "func").expect("call site not found");
+        assert_eq!(cs.call_kind, RawCallKind::Qualified,
+            "qualified call should emit Qualified, not {:?}", cs.call_kind);
+    }
+
+    #[test]
+    fn clang_call_kind_this_dispatch_detected() {
+        // this->method() inside the same class — should emit ThisPointerAccess.
+        let src = r#"
+            class Foo {
+            public:
+                void helper();
+                void run() { this->helper(); }
+            };
+        "#;
+        let result = parse(src);
+        let cs = call_site(&result, "helper").expect("call site not found");
+        assert_eq!(cs.call_kind, RawCallKind::ThisPointerAccess,
+            "this->method() should emit ThisPointerAccess, got {:?}", cs.call_kind);
     }
 }

@@ -1,0 +1,104 @@
+# Overload-resolution fixtures for the `samples/ambiguity` workspace.
+#
+# These cases exercise the three structural gaps in clang_parser.rs that
+# prevent the resolver's existing scoring signals from firing on C++.
+# All three start xfail_pending = "ms26-gaps" and flip to OK once the
+# corresponding fix lands.
+#
+# Run:  py -3 eval/eval_fixtures.py eval/fixtures/ambiguity.toml
+
+[fixture]
+name        = "ambiguity"
+workspace   = "F:/dev/CodeAtlas/samples/ambiguity"
+db_glob     = ".codeatlas/index-*.db"
+description = "Overload-resolution baseline for MS26 gap coverage."
+
+# ──────────────────────────────────────────────── case 1: argument_text_overload ──
+# Gap 1: argument_texts is always empty for C++ call sites.
+#
+# Renderer::Blend(int a, int b) calls Math::Blend(a) where `a` has type int.
+# There are two overloads: Math::Blend(int) and Math::Blend(float).
+# With argument_texts populated, push_argument_signature_reasons awards +90
+# for the identifier `a` matching the `int` parameter. Without it the two
+# overloads are tied on arity and the wrong one can win.
+#
+# Expected: Math::Blend(int) is the unique callee of Renderer::Blend.
+
+[[symbol]]
+id             = "renderer_blend"
+qualified_name = "Renderer::Blend"
+
+  [symbol.representative]
+  required_path_patterns = ["overloads\\.cpp"]
+
+  [symbol.callees]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Math::Blend" },
+  ]
+
+# ─────────────────────────────────────────────────── case 2: qualified_call_overload ──
+# Gap 2: call_kind is never set to Qualified even when qualifier is present.
+#
+# AI::Controller::Update calls Gameplay::Update() and UI::Update().
+# Both are free functions named `Update` in different namespaces.
+# With Qualified + qualified_namespace_match (+70), the correct target is
+# unambiguous. Without it, both calls score identically and resolution is
+# arbitrary.
+#
+# Expected: AI::Controller::Update calls both Gameplay::Update and UI::Update.
+
+[[symbol]]
+id             = "ai_controller_update"
+qualified_name = "AI::Controller::Update"
+
+  [symbol.representative]
+  required_path_patterns = ["namespace_dupes\\.cpp"]
+
+  [symbol.callees]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Gameplay::Update" },
+    { qualified_name = "UI::Update"       },
+  ]
+
+# ─────────────────────────────────────────────────── case 3: this_dispatch_overload ──
+# Gap 3: this->method() is never classified as ThisPointerAccess.
+#
+# Player::Process calls this->Run() — should resolve to Player::Run.
+# Enemy::Process calls this->Run() — should resolve to Enemy::Run.
+# With ThisPointerAccess + this_receiver_match (+80), the enclosing class
+# USR matches the callee's semantic parent USR, ruling out the sibling.
+# Without it both calls are MemberAccess and may cross-resolve.
+#
+# Two pinned cases — one per class — to catch any cross-contamination.
+
+[[symbol]]
+id             = "player_process"
+qualified_name = "Game::Player::Process"
+
+  [symbol.representative]
+  required_path_patterns = ["sibling_methods\\.cpp"]
+
+  [symbol.callees]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Game::Player::Run" },
+  ]
+
+[[symbol]]
+id             = "enemy_process"
+qualified_name = "Game::Enemy::Process"
+
+  [symbol.representative]
+  required_path_patterns = ["sibling_methods\\.cpp"]
+
+  [symbol.callees]
+  mode  = "exact"
+  match = "qualified_name"
+  expected = [
+    { qualified_name = "Game::Enemy::Run" },
+  ]
