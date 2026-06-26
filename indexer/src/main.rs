@@ -33,6 +33,7 @@ use std::io;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
 use constants::{DATA_DIR_NAME, DB_FILENAME, EXTENSIONS, INDEX_EXTENSIONS_ENV, parse_extension_list};
@@ -1281,6 +1282,11 @@ fn run_full(
     let parse_start = Instant::now();
     let mut parse_metrics = ParseMetrics::default();
     let mut all_relation_events = Vec::new();
+    // MS25 hotfix: one ownership map for the entire full rebuild so all
+    // batches share a single "header symbol already emitted by some TU?"
+    // set. Cross-batch dedup is the whole point — restarting per batch
+    // would re-allow duplicate emissions.
+    let claimed = Arc::new(crate::clang_parser::ClaimedSymbols::new());
     db.begin().expect("Failed to begin full rebuild transaction");
     db.clear().expect("Failed to clear SQLite tables before full rebuild");
     for (batch_index, batch) in discovered_files
@@ -1308,6 +1314,7 @@ fn run_full(
             &registry,
             batch_start,
             discovered_files.len(),
+            Some(&claimed),
         );
         db.write_raw_symbols(&raw_symbols)
             .expect("Failed to write batch raw symbols");
@@ -1623,6 +1630,9 @@ fn run_incremental(
     if log_diagnostics {
         print_memory_snapshot("incremental start");
     }
+    // MS25 hotfix: shared across the initial parse and any affected-header
+    // re-parse below, so cross-TU dedup spans the entire incremental run.
+    let claimed = Arc::new(crate::clang_parser::ClaimedSymbols::new());
     let initial_parse_start = Instant::now();
     let (
         parsed_symbols,
@@ -1633,7 +1643,7 @@ fn run_incremental(
         new_files,
         parse_metrics,
     ) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata)?
+        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata, Some(&claimed))?
     } else {
         (
             Vec::new(),
@@ -1753,7 +1763,7 @@ fn run_incremental(
             .map(|p| p.as_str())
             .collect();
         let affected_parse_results =
-            parse_paths_parallel(workspace_root, &affected_to_reparse, build_metadata)?;
+            parse_paths_parallel(workspace_root, &affected_to_reparse, build_metadata, Some(&claimed))?;
         // Separate skipped files first so we can batch-delete only parseable ones.
         let (to_process, skipped): (Vec<_>, Vec<_>) = affected_parse_results
             .into_iter()

@@ -5,6 +5,8 @@ Status:
 - Partially completed (2026-06-25). The workspace-aware emit gate is
   in. A residual mat.hpp-specific path remains XFAIL and is carried
   forward as `xfail_pending = "ms26-mat-hpp-body-visit"`.
+- Performance hotfix landed 2026-06-26: cross-TU header-symbol dedup.
+  See "Hotfix: Cross-TU Header Symbol Dedup" section below.
 
 ## Completion Evidence
 
@@ -192,3 +194,105 @@ revert chain is two clean SHAs.
 - Refreshing `eval_opencv.py`'s stale `BASELINE` counts. Still out
   of milestone scope; the drift signal stays visible until a
   deliberate baseline bump.
+
+## Hotfix: Cross-TU Header Symbol Dedup (2026-06-26)
+
+### Problem
+
+MS25's emit-broadly approach scales raw-symbol volume by inclusion
+fanout. opencv (826 TUs) absorbed it as a +47% wall-time penalty,
+which the trade-offs section called acceptable. But on a game-engine-
+shaped workspace (~19,379 files, much deeper precompiled-header
+chains) the indexer ran past 533 minutes at 60% progress, on a path
+that previously completed in ~90 minutes. The user's tolerance is
+< 120 min and the volume of work the indexer was doing scaled
+super-linearly with TU count: every TU re-emitted every header
+symbol it could see, and headers near the bottom of a precompiled-
+header chain are visible to almost every TU.
+
+### Fix
+
+A process-wide `ClaimedSymbols` set, scoped to a single indexer run.
+When a TU's libclang visit reaches a workspace-header entity, the
+emit site calls `ClaimedSymbols::claim(usr)`. The first caller for a
+given USR receives `true` and emits the row; later callers receive
+`false` and drop the row at emission. Merge already collapses
+USR-duplicate rows, so the dropped rows are the same ones merge
+would have dropped — only one of them now reaches `symbols_raw` to
+begin with. The final `symbols` table is unchanged.
+
+- `clang_parser.rs`: `ClaimedSymbols { seen_usrs: Mutex<HashSet<String>> }`
+  with `claim(&str) -> bool`. The Mutex's atomic `insert` provides
+  the race-safe "exactly one winner" property.
+- `VisitorState` carries `Option<Arc<ClaimedSymbols>>`. The Symbol
+  push site at `visit_entity` consults it only when
+  `in_workspace_header` (in-TU symbols continue to emit
+  unconditionally — they have exactly one emitter by construction).
+- A post-cache-hit filter in `indexing.rs`
+  (`dedup_header_symbols_after_cache_hit`) applies the same dedup
+  to `ParseResult.symbols` returned from MS22's parse cache. The
+  cache stores full pre-dedup output so its content-addressable key
+  stays correct; dedup is run-scoped and applies at consumption.
+- The Arc is constructed at the top of each run entry point
+  (`main.rs::run_incremental`, the full-rebuild loop in main.rs's
+  indexing flow, `watcher.rs::run_full_index`,
+  `watcher.rs::run_incremental_index`) and propagated through every
+  parse function. The single-file probe in `incremental.rs` passes
+  `None` because it is not part of a multi-TU run.
+
+### Measurements
+
+OpenCV (4,888 files, 826 cpp TUs), full reindex:
+
+| metric          | MS24 baseline | MS25 (no dedup) | MS25 + hotfix |
+|---|---|---|---|
+| parse stage     | 30.5 s        | 52.0 s          | **31.15 s**   |
+| total wall      | 60 s          | 88 s            | **65.7 s**    |
+| symbols         | 74,562        | 84,090          | **84,090**    |
+| calls           | 183,326       | 185,538         | 185,539       |
+
+Total wall recovers to MS24 + ~9.5 % — close to noise — while every
+recovered MS25 symbol survives. `symbols_raw` is smaller (the dropped
+rows would have collapsed at merge anyway).
+
+Fixtures: samples 5/5, opencv 5 OK + 2 XFAIL + 1 OK on
+`cv_AutoBuffer_class` (unchanged from MS25).
+
+Tests: 311 + 4 new (`claimed_symbols_first_claim_wins`,
+`claimed_symbols_distinct_usrs_independent`,
+`claimed_symbols_thread_safe_exactly_one_claim_wins`,
+`clang_dedup_skips_header_symbol_on_second_tu`).
+`cargo test` 315 / 0. `npx jest` 173 / 0.
+
+### Trade-offs accepted
+
+- **First-TU-wins selection.** Pre-hotfix, the same-USR cluster
+  reached merge with N representatives and `representative_rank`
+  (MS24) picked a winner. Post-hotfix, only the first TU's
+  representative reaches merge; merge has nothing to rank against.
+  In practice the indexer's `par_iter` order is workspace-stable
+  across runs (file discovery order is fixed), so this is
+  effectively deterministic per workspace; we accept the loss of
+  rank-driven selection on header-class rows specifically.
+  `cv_AutoBuffer_class` and equivalents still anchor to their
+  header path because all TUs see the same definition. If a
+  follow-up surfaces a case where this matters, the mitigation is
+  to record the score on first claim and let later TUs override
+  when they beat it — work for a future milestone.
+- **Cache-hit redundancy.** On a warm rerun, a cached TU returns
+  its full pre-dedup ParseResult; the new
+  `dedup_header_symbols_after_cache_hit` filter re-applies the
+  dedup per run. The first TU in the warm run claims everything it
+  saw on the cold run, and later TUs filter against that. This is
+  the right behavior but slightly different from a cold run's
+  per-TU live-parse dedup; both are correct, the final `symbols`
+  table is identical.
+
+### Verification of the hotfix on opencv vs. user workspace
+
+- opencv: ✓ wall time recovered (88 s → 65.7 s, within ~9 % of
+  MS24).
+- user 19,379-file workspace: TBD — the user reindexes locally;
+  the goal is < 120 min. If the hotfix doesn't deliver, the
+  rollback plan from the MS25 doc still applies (revert the MS25
+  commit; the hotfix and MS25 are stacked on the same branch).

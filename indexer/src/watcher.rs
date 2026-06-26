@@ -690,6 +690,8 @@ fn run_full_index(
     // --- Stage 1: parse in batches and stream raw data straight to DB ---
     let mut all_relation_events = Vec::new();
     let mut all_include_deps: Vec<crate::models::IncludeDependency> = Vec::new();
+    // MS25 hotfix: shared cross-TU header symbol ownership for this run.
+    let claimed = std::sync::Arc::new(crate::clang_parser::ClaimedSymbols::new());
     db.begin().map_err(|e| format!("DB begin: {}", e))?;
     db.clear().map_err(|e| format!("DB clear: {}", e))?;
     for (batch_index, batch) in files.chunks(WATCH_FULL_REBUILD_BATCH_SIZE).enumerate() {
@@ -714,6 +716,7 @@ fn run_full_index(
             &registry,
             batch_start,
             total_files,
+            Some(&claimed),
         );
         db.write_raw_symbols(&raw_symbols)
             .map_err(|e| format!("DB write raw symbols: {}", e))?;
@@ -893,6 +896,10 @@ fn run_incremental_index(
     verbose: bool,
     changed_paths: Option<&[PathBuf]>,
 ) -> Result<(), String> {
+    // MS25 hotfix: per-batch ownership map. Each debounced watcher run is
+    // its own indexer pass; the map starts empty so a quick edit-rebuild
+    // cycle is consistent with a cold full rebuild.
+    let claimed = std::sync::Arc::new(crate::clang_parser::ClaimedSymbols::new());
     let build_metadata = match build_metadata::load_build_metadata(workspace_root) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -1000,7 +1007,7 @@ fn run_incremental_index(
         new_files,
         _parse_metrics,
     ) = if !plan.to_index.is_empty() {
-        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata.as_ref())?
+        parse_files_strict(workspace_root, &plan.to_index, verbose, build_metadata.as_ref(), Some(&claimed))?
     } else {
         (
             Vec::new(),
@@ -1113,7 +1120,7 @@ fn run_incremental_index(
                 continue;
             }
 
-            let (result, _, lossy, skipped) = parse_file_strict(workspace_root, path, build_metadata.as_ref())?;
+            let (result, _, lossy, skipped) = parse_file_strict(workspace_root, path, build_metadata.as_ref(), Some(&claimed))?;
             if skipped {
                 println!("  SKIP: {}: oversized file", path);
                 continue;

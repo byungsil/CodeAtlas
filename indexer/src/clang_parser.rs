@@ -1,5 +1,6 @@
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
-use std::sync::OnceLock;
 use crate::models::{
     ParseResult, ParseMetrics, Symbol, RawCallSite, RawCallKind, RawQualifierKind,
     RawRelationEvent, RawRelationKind, RawEventSource, RawExtractionConfidence,
@@ -19,6 +20,53 @@ use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 /// content-addressable key so a version bump transparently invalidates every
 /// previously cached entry — old-format keys simply never match again.
 pub const PARSER_VERSION_TAG: &str = "cpp-clang-v2";
+
+// ─── MS25 hotfix: cross-TU header-symbol claim set ──────────────────────────
+//
+// MS25 admits libclang-reported entities from any workspace-internal header
+// that the current TU includes (mat.hpp's cv::Mat in matrix.cpp's TU, etc.).
+// Without dedup, each of N includer TUs emits the SAME `cv::Mat` row to
+// `symbols_raw`, scaling raw-symbol volume by inclusion fanout. The merge
+// stage collapses by USR so the `symbols` table is unchanged in size, but
+// the parse-stage cost scales linearly with N and exploded to >5× on game-
+// engine-shaped workspaces (19k files, deep precompiled headers).
+//
+// `ClaimedSymbols` is a run-local set keyed on the symbol's USR (the same
+// value `merge_symbols` uses as `id`). Each `claim(usr)` is atomic under
+// the inner Mutex: the first caller for a given USR receives `true` and
+// emits the row; subsequent callers receive `false` and drop the row at
+// emission time. The merge step's output is unchanged because the dropped
+// rows would have collapsed against the kept row anyway.
+//
+// A fresh `ClaimedSymbols` is built per indexer run (full, incremental, or
+// watcher batch) and dropped when the run ends, so each run starts with a
+// clean slate and no state crosses run boundaries.
+#[derive(Default)]
+pub struct ClaimedSymbols {
+    seen_usrs: Mutex<HashSet<String>>,
+}
+
+impl ClaimedSymbols {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` on the first claim of `usr`, `false` for every
+    /// subsequent claim. Caller emits the symbol row iff this returns
+    /// `true`.
+    pub fn claim(&self, usr: &str) -> bool {
+        let mut guard = self
+            .seen_usrs
+            .lock()
+            .expect("claimed-symbols mutex poisoned");
+        guard.insert(usr.to_string())
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.seen_usrs.lock().expect("poisoned").len()
+    }
+}
 
 // ─── Global Clang instance ────────────────────────────────────────────────────
 // We keep exactly ONE `Clang` guard alive for the process lifetime, initialised
@@ -223,6 +271,11 @@ struct VisitorState {
     /// mat.hpp while parsing matrix.cpp). When None, the visitor falls back
     /// to the legacy "TU-only" emission policy.
     workspace_root: Option<std::path::PathBuf>,
+    /// MS25 hotfix: when set, header-emitted symbols call into this set
+    /// before emission. The first TU to claim a given USR emits it; later
+    /// TUs in the same run drop their copy. None falls back to the
+    /// pre-hotfix MS25 behavior (every TU emits — fine for unit tests).
+    claimed_symbols: Option<Arc<ClaimedSymbols>>,
 }
 
 // ─── Phase D: Pre-scan — collect lambda ranges ──────────────────────────────
@@ -477,52 +530,72 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                 )
             };
 
-            state.symbols.push(Symbol {
-                id,
-                name,
-                qualified_name,
-                symbol_type,
-                file_path: emit_file_path.clone(),
-                line: start_line as usize,
-                end_line: end_line as usize,
-                signature,
-                parameter_count,
-                scope_qualified_name,
-                scope_kind,
-                symbol_role: Some({
-                    // Pure-virtual and virtual annotations only apply to methods.
-                    // For all other kinds fall back to definition / declaration.
-                    let is_method_kind = matches!(
-                        kind,
-                        EntityKind::Method | EntityKind::Destructor | EntityKind::ConversionFunction
-                    );
-                    if is_method_kind && entity.is_pure_virtual_method() {
-                        "pure_virtual"
-                    } else if is_method_kind && entity.is_virtual_method() {
-                        "virtual"
-                    } else if is_def {
-                        "definition"
-                    } else {
-                        "declaration"
-                    }
-                    .to_string()
-                }),
-                declaration_file_path: decl_file,
-                declaration_line: decl_line,
-                declaration_end_line: decl_end_line,
-                definition_file_path: def_file,
-                definition_line: def_line,
-                definition_end_line: def_end_line,
-                parent_id,
-                module: None,
-                subsystem: None,
-                project_area: None,
-                artifact_kind: None,
-                header_role: None,
-                parse_fragility: None,
-                macro_sensitivity: None,
-                include_heaviness: None,
-            });
+            // MS25 hotfix: cross-TU header-symbol dedup. Only gate header-
+            // admitted symbols (the ones a different TU could also see) on
+            // the run-local claim set. In-TU symbols are TU-anchored and
+            // emitted by exactly one TU, so gating them is unnecessary and
+            // would lose locally-scoped functions / lambdas / etc.
+            //
+            // Note: when a TU loses the claim for a header class, we still
+            // recurse into its children (scope_stack push happens further
+            // down) — but children are themselves header entities and will
+            // re-test their own claims. This keeps emission complete on the
+            // winning TU's pass and effectively no-ops on the loser's pass.
+            let dedup_skip = in_workspace_header
+                && state
+                    .claimed_symbols
+                    .as_ref()
+                    .map(|c| !c.claim(&id))
+                    .unwrap_or(false);
+
+            if !dedup_skip {
+                state.symbols.push(Symbol {
+                    id: id.clone(),
+                    name: name.clone(),
+                    qualified_name: qualified_name.clone(),
+                    symbol_type: symbol_type.clone(),
+                    file_path: emit_file_path.clone(),
+                    line: start_line as usize,
+                    end_line: end_line as usize,
+                    signature,
+                    parameter_count,
+                    scope_qualified_name,
+                    scope_kind,
+                    symbol_role: Some({
+                        // Pure-virtual and virtual annotations only apply to methods.
+                        // For all other kinds fall back to definition / declaration.
+                        let is_method_kind = matches!(
+                            kind,
+                            EntityKind::Method | EntityKind::Destructor | EntityKind::ConversionFunction
+                        );
+                        if is_method_kind && entity.is_pure_virtual_method() {
+                            "pure_virtual"
+                        } else if is_method_kind && entity.is_virtual_method() {
+                            "virtual"
+                        } else if is_def {
+                            "definition"
+                        } else {
+                            "declaration"
+                        }
+                        .to_string()
+                    }),
+                    declaration_file_path: decl_file,
+                    declaration_line: decl_line,
+                    declaration_end_line: decl_end_line,
+                    definition_file_path: def_file,
+                    definition_line: def_line,
+                    definition_end_line: def_end_line,
+                    parent_id,
+                    module: None,
+                    subsystem: None,
+                    project_area: None,
+                    artifact_kind: None,
+                    header_role: None,
+                    parse_fragility: None,
+                    macro_sensitivity: None,
+                    include_heaviness: None,
+                });
+            }
         }
     }
 
@@ -769,6 +842,7 @@ pub fn parse_cpp_file(
     source: &str,
     compile_args: &[String],
     workspace_root: Option<&std::path::Path>,
+    claimed_symbols: Option<&Arc<ClaimedSymbols>>,
 ) -> Result<ParseResult, String> {
     let start = Instant::now();
 
@@ -822,6 +896,7 @@ pub fn parse_cpp_file(
         lambda_ranges,
         seen_call_sites: std::collections::HashSet::new(),
         workspace_root: workspace_root.map(|r| r.to_path_buf()),
+        claimed_symbols: claimed_symbols.cloned(),
     };
 
     let root = tu.get_entity();
@@ -876,7 +951,7 @@ mod tests {
         // Use .cpp extension so libclang infers C++ language mode (not C).
         // workspace_root = None is fine since is_in_main_file() handles location
         // matching without path comparison.
-        parse_cpp_file("test.cpp", source, &[], None).expect("parse failed")
+        parse_cpp_file("test.cpp", source, &[], None, None).expect("parse failed")
     }
 
     #[test]
@@ -1198,6 +1273,7 @@ void outer() {
             &["-x".into(), "c++".into(), "-std=c++17".into(),
               format!("-I{}", workspace.to_string_lossy())],
             Some(workspace),
+            None,
         ).expect("parse failed");
 
         let header_class = result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass")
@@ -1244,11 +1320,118 @@ void outer() {
             &["-x".into(), "c++".into(), "-std=c++17".into(),
               format!("-I{}", workspace.to_string_lossy())],
             None,
+            None,
         ).expect("parse failed");
 
         assert!(
             result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass").is_none(),
             "header symbols must stay suppressed when workspace_root is None"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MS25 hotfix: cross-TU header-symbol dedup (ClaimedSymbols)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn claimed_symbols_first_claim_wins() {
+        let claimed = ClaimedSymbols::new();
+        assert!(claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-X"));
+    }
+
+    #[test]
+    fn claimed_symbols_distinct_usrs_independent() {
+        let claimed = ClaimedSymbols::new();
+        assert!(claimed.claim("usr-X"));
+        assert!(claimed.claim("usr-Y"));
+        assert!(!claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-Y"));
+        assert_eq!(claimed.len(), 2);
+    }
+
+    #[test]
+    fn claimed_symbols_thread_safe_exactly_one_claim_wins() {
+        // Spawn many threads racing to claim the same USR. Exactly one must
+        // see `true`; HashSet::insert under the Mutex provides that
+        // atomicity, so under any scheduling order the invariant holds.
+        let claimed = Arc::new(ClaimedSymbols::new());
+        let threads = 32;
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let c = Arc::clone(&claimed);
+                std::thread::spawn(move || c.claim("contested-usr"))
+            })
+            .collect();
+        let wins = handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "exactly one thread should claim the USR");
+        assert_eq!(claimed.len(), 1);
+    }
+
+    #[test]
+    fn clang_dedup_skips_header_symbol_on_second_tu() {
+        // Two TUs both `#include "header.hpp"`. With a shared
+        // ClaimedSymbols, only the first TU emits the header's class — the
+        // second TU's libclang visit is a no-op at the emission step.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        let header_rel = "include/header.hpp";
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join(header_rel),
+            "namespace ns { class HeaderClass { void method(); }; }\n",
+        ).unwrap();
+
+        let claimed = Arc::new(ClaimedSymbols::new());
+
+        let tu_a_src = format!("#include \"{}\"\nvoid a(ns::HeaderClass& h) {{}}\n", header_rel);
+        std::fs::write(workspace.join("main_a.cpp"), &tu_a_src).unwrap();
+        let result_a = parse_cpp_file(
+            "main_a.cpp",
+            &tu_a_src,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+            Some(&claimed),
+        ).expect("parse a failed");
+
+        let a_has_header_class = result_a
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "ns::HeaderClass");
+        assert!(a_has_header_class,
+            "first TU must emit the header class");
+
+        let tu_b_src = format!("#include \"{}\"\nvoid b(ns::HeaderClass& h) {{}}\n", header_rel);
+        std::fs::write(workspace.join("main_b.cpp"), &tu_b_src).unwrap();
+        let result_b = parse_cpp_file(
+            "main_b.cpp",
+            &tu_b_src,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+            Some(&claimed),
+        ).expect("parse b failed");
+
+        let b_has_header_class = result_b
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "ns::HeaderClass");
+        assert!(!b_has_header_class,
+            "second TU must NOT re-emit the already-claimed header class");
+
+        // TU-anchored symbols on the second TU MUST still be emitted (in-TU
+        // entities skip the dedup gate). The free function `b` lives in
+        // main_b.cpp and must reach the result.
+        let b_has_local = result_b
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "b" || s.name == "b");
+        assert!(b_has_local, "second TU's own free function must still be emitted");
     }
 }
