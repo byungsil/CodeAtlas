@@ -1320,28 +1320,37 @@ fn run_full(
             .expect("Failed to write batch raw symbols");
         db.write_raw_calls(&raw_calls)
             .expect("Failed to write batch raw calls");
+        drop(raw_calls);
         db.write_propagation_events(&local_propagation_events)
             .expect("Failed to write batch local propagation");
+        drop(local_propagation_events);
         db.write_callable_flow_summaries(&callable_flow_summaries, &raw_symbols)
             .expect("Failed to write batch callable summaries");
+        drop(callable_flow_summaries);
+        drop(raw_symbols);
         db.write_files(&file_records)
             .expect("Failed to write batch file records");
+        drop(file_records);
         if !include_dependencies.is_empty() {
             db.write_include_dependencies(&include_dependencies)
                 .expect("Failed to write include dependencies");
         }
+        drop(include_dependencies);
         if !macro_definitions.is_empty() {
             db.write_macro_definitions(&macro_definitions)
                 .expect("Failed to write macro definitions");
         }
+        drop(macro_definitions);
         if !conditional_blocks.is_empty() {
             db.write_conditional_blocks(&conditional_blocks)
                 .expect("Failed to write conditional blocks");
         }
+        drop(conditional_blocks);
         if !conditional_symbols.is_empty() {
             db.write_conditional_symbols(&conditional_symbols)
                 .expect("Failed to write conditional symbols");
         }
+        drop(conditional_symbols);
         all_relation_events.extend(relation_events);
         accumulate_parse_metrics(&mut parse_metrics, &batch_metrics);
         if !verbose {

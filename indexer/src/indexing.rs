@@ -36,6 +36,13 @@ const DEFAULT_CPP_SKIP_THRESHOLD_BYTES: usize = 2 * 1024 * 1024;
 const CPP_SKIP_CONTENT_SAMPLE_BYTES: usize = 64 * 1024;
 static INDEXER_THREAD_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 const SKIP_CPP_LARGER_THAN_BYTES_ENV: &str = "CODEATLAS_SKIP_CPP_LARGER_THAN_BYTES";
+/// Inner parse chunk size: number of files collected per rayon par_iter batch
+/// inside parse_discovered_files_with_progress. Smaller values reduce the peak
+/// memory from holding all ParseResults in memory simultaneously, at the cost of
+/// slightly reduced rayon scheduling granularity. Override with
+/// CODEATLAS_PARSE_INNER_CHUNK_SIZE (default 256).
+const PARSE_INNER_CHUNK_SIZE_ENV: &str = "CODEATLAS_PARSE_INNER_CHUNK_SIZE";
+const DEFAULT_PARSE_INNER_CHUNK_SIZE: usize = 256;
 /// When set to a positive integer, caps the indexing thread pool size.
 /// Used in watch/background mode to avoid starving the foreground process.
 pub const BACKGROUND_THREADS_ENV: &str = "CODEATLAS_BACKGROUND_THREADS";
@@ -514,6 +521,14 @@ fn read_stack_size_from_env(name: &str) -> Option<usize> {
     parse_stack_size_bytes(&value)
 }
 
+fn configured_parse_inner_chunk_size() -> usize {
+    std::env::var(PARSE_INNER_CHUNK_SIZE_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_PARSE_INNER_CHUNK_SIZE)
+}
+
 fn configured_cpp_skip_threshold_bytes() -> Option<usize> {
     match std::env::var(SKIP_CPP_LARGER_THAN_BYTES_ENV) {
         Ok(value) => parse_optional_threshold_bytes(&value),
@@ -766,147 +781,7 @@ pub fn parse_discovered_files_with_progress(
         None
     };
 
-    let results: Vec<(String, Result<ParseResult, String>, String, bool)> = indexing_thread_pool().install(|| {
-        discovered_files
-            .par_iter()
-            .map(|discovered| {
-                let rel_path = make_relative(workspace_root, &discovered.path);
-                {
-                    let mut active = active_files.lock().expect("active parse tracker poisoned");
-                    active.insert(
-                        rel_path.clone(),
-                        ActiveParseEntry {
-                            language: discovered.language,
-                            started_at: Instant::now(),
-                        },
-                    );
-                }
-                let (content, hash, lossy) = match read_source_file(&discovered.path) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        let _ = active_files
-                            .lock()
-                            .map(|mut active| active.remove(&rel_path));
-                        let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
-                        if !verbose {
-                            eprintln!(
-                                "  Parsing: {}/{} | read error in {}",
-                                current, total, rel_path
-                            );
-                        }
-                        return (rel_path.clone(), Err(format!("Read error: {}", e)), String::new(), false);
-                    }
-                };
-                if let Some(skip_reason) = skip_reason_before_parse(discovered.language, &content) {
-                    let _ = active_files
-                        .lock()
-                        .map(|mut active| active.remove(&rel_path));
-                    let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
-                    if verbose {
-                        println!(
-                            "  [{}/{}] SKIP: {}: {} ({} bytes)",
-                            current,
-                            total,
-                            rel_path,
-                            skip_reason,
-                            content.len()
-                        );
-                    } else {
-                        eprintln!(
-                            "  Parsing: {}/{} | skipped file {}: {} ({} bytes)",
-                            current,
-                            total,
-                            rel_path,
-                            skip_reason,
-                            content.len()
-                        );
-                    }
-                    return (rel_path, Ok(empty_parse_result()), hash, lossy);
-                }
-                let mut result = registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root), claimed_symbols);
-                let elapsed = {
-                    let mut active = active_files.lock().expect("active parse tracker poisoned");
-                    active
-                        .remove(&rel_path)
-                        .map(|entry| entry.started_at.elapsed())
-                        .unwrap_or_default()
-                };
-                let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
-                if verbose {
-                    match &result {
-                        Ok(pr) => {
-                            if lossy {
-                                println!("  [{}/{}] LOSSY: {}: non-UTF8 bytes replaced during parsing", current, total, rel_path);
-                            }
-                            println!(
-                                "  [{}/{}] INDEX: {}: {} symbols, {} raw calls",
-                                current,
-                                total,
-                                rel_path,
-                                pr.symbols.len(),
-                                pr.raw_calls.len()
-                            );
-                        }
-                        Err(e) => {
-                            if is_parse_timeout_error(e) {
-                                println!("  [{}/{}] TIMEOUT: {}: {}", current, total, rel_path, e);
-                            } else {
-                                println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
-                            }
-                        }
-                    }
-                } else if let Err(err) = &result {
-                    if is_parse_timeout_error(err) {
-                        eprintln!(
-                            "  Parse timeout: {}/{} after {} | {} ({:?}) | {}",
-                            current,
-                            total,
-                            format_elapsed_ms(elapsed),
-                            rel_path,
-                            discovered.language,
-                            err
-                        );
-                    } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
-                        eprintln!(
-                            "  Slow failure: {}/{} after {} | {} ({:?}) | {}",
-                            current,
-                            total,
-                            format_elapsed_ms(elapsed),
-                            rel_path,
-                            discovered.language,
-                            err
-                        );
-                    }
-                } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
-                    match &result {
-                        Ok(pr) => {
-                            eprintln!(
-                                "  Slow parse: {}/{} done in {} | {} ({:?}) | {} symbols, {} raw calls | {}",
-                                current,
-                                total,
-                                format_elapsed_ms(elapsed),
-                                rel_path,
-                                discovered.language,
-                                pr.symbols.len(),
-                                pr.raw_calls.len(),
-                                summarize_parse_metrics(&pr.metrics),
-                            );
-                        }
-                        Err(_) => {}
-                    }
-                }
-                if let Ok(pr) = &mut result {
-                    discard_runtime_only_parse_payload(pr);
-                }
-                (rel_path, result, hash, lossy)
-            })
-            .collect()
-    });
-    parsing_complete.store(true, Ordering::Relaxed);
-    if let Some(handle) = monitor_handle {
-        let _ = handle.join();
-    }
-
+    let inner_chunk_size = configured_parse_inner_chunk_size();
     let mut symbols = Vec::new();
     let mut raw_calls = Vec::new();
     let mut relation_events = Vec::new();
@@ -919,67 +794,218 @@ pub fn parse_discovered_files_with_progress(
     let mut file_records = Vec::new();
     let mut metrics = ParseMetrics::default();
 
-    for (rel_path, result, hash, _lossy) in results {
-        match result {
-            Ok(pr) => {
-                let mut file_record = FileRecord {
-                    path: rel_path,
-                    content_hash: hash,
-                    last_indexed: Utc::now().to_rfc3339(),
-                    symbol_count: pr.symbols.len(),
-                    module: None,
-                    subsystem: None,
-                    project_area: None,
-                    artifact_kind: None,
-                    header_role: None,
-                    parse_fragility: None,
-                    macro_sensitivity: None,
-                    include_heaviness: None,
-                };
-                apply_metadata_to_file_record_with_context(&mut file_record, build_metadata);
-                apply_risk_signals_to_file_record(&mut file_record, &pr.file_risk_signals);
-                file_records.push(file_record);
-                extend_non_call_relation_events(&mut relation_events, pr.relation_events);
-                propagation_events.extend(pr.propagation_events);
-                callable_flow_summaries.extend(pr.callable_flow_summaries);
-                metrics.tree_sitter_parse_ms += pr.metrics.tree_sitter_parse_ms;
-                metrics.syntax_walk_ms += pr.metrics.syntax_walk_ms;
-                metrics.local_propagation_ms += pr.metrics.local_propagation_ms;
-                metrics.local_function_discovery_ms += pr.metrics.local_function_discovery_ms;
-                metrics.local_owner_lookup_ms += pr.metrics.local_owner_lookup_ms;
-                metrics.local_seed_ms += pr.metrics.local_seed_ms;
-                metrics.local_event_walk_ms += pr.metrics.local_event_walk_ms;
-                metrics.local_declaration_ms += pr.metrics.local_declaration_ms;
-                metrics.local_expression_statement_ms += pr.metrics.local_expression_statement_ms;
-                metrics.local_return_statement_ms += pr.metrics.local_return_statement_ms;
-                metrics.local_nested_block_ms += pr.metrics.local_nested_block_ms;
-                metrics.local_return_collection_ms += pr.metrics.local_return_collection_ms;
-                metrics.graph_relation_ms += pr.metrics.graph_relation_ms;
-                metrics.graph_rule_compile_ms += pr.metrics.graph_rule_compile_ms;
-                metrics.graph_rule_execute_ms += pr.metrics.graph_rule_execute_ms;
-                metrics.reference_normalization_ms += pr.metrics.reference_normalization_ms;
-                let mut enriched_symbols = pr.symbols;
-                for symbol in &mut enriched_symbols {
-                    apply_metadata_to_symbol_with_context(symbol, build_metadata);
-                    apply_risk_signals_to_symbol(symbol, &pr.file_risk_signals);
+    // Parse in inner chunks so that each chunk's ParseResults are collected,
+    // decomposed, and dropped before the next chunk starts. This prevents
+    // accumulating all batch_size ParseResults in memory simultaneously —
+    // reducing peak memory by roughly (batch_size / inner_chunk_size - 1)x
+    // compared to a single par_iter().collect() over the full batch.
+    for inner_chunk in discovered_files.chunks(inner_chunk_size) {
+        let chunk_results: Vec<(String, Result<ParseResult, String>, String, bool)> =
+            indexing_thread_pool().install(|| {
+                inner_chunk
+                    .par_iter()
+                    .map(|discovered| {
+                        let rel_path = make_relative(workspace_root, &discovered.path);
+                        {
+                            let mut active = active_files.lock().expect("active parse tracker poisoned");
+                            active.insert(
+                                rel_path.clone(),
+                                ActiveParseEntry {
+                                    language: discovered.language,
+                                    started_at: Instant::now(),
+                                },
+                            );
+                        }
+                        let (content, hash, lossy) = match read_source_file(&discovered.path) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                let _ = active_files
+                                    .lock()
+                                    .map(|mut active| active.remove(&rel_path));
+                                let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
+                                if !verbose {
+                                    eprintln!(
+                                        "  Parsing: {}/{} | read error in {}",
+                                        current, total, rel_path
+                                    );
+                                }
+                                return (rel_path.clone(), Err(format!("Read error: {}", e)), String::new(), false);
+                            }
+                        };
+                        if let Some(skip_reason) = skip_reason_before_parse(discovered.language, &content) {
+                            let _ = active_files
+                                .lock()
+                                .map(|mut active| active.remove(&rel_path));
+                            let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
+                            if verbose {
+                                println!(
+                                    "  [{}/{}] SKIP: {}: {} ({} bytes)",
+                                    current,
+                                    total,
+                                    rel_path,
+                                    skip_reason,
+                                    content.len()
+                                );
+                            } else {
+                                eprintln!(
+                                    "  Parsing: {}/{} | skipped file {}: {} ({} bytes)",
+                                    current,
+                                    total,
+                                    rel_path,
+                                    skip_reason,
+                                    content.len()
+                                );
+                            }
+                            return (rel_path, Ok(empty_parse_result()), hash, lossy);
+                        }
+                        let mut result = registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root), claimed_symbols);
+                        let elapsed = {
+                            let mut active = active_files.lock().expect("active parse tracker poisoned");
+                            active
+                                .remove(&rel_path)
+                                .map(|entry| entry.started_at.elapsed())
+                                .unwrap_or_default()
+                        };
+                        let current = progress_offset + progress.fetch_add(1, Ordering::Relaxed) + 1;
+                        if verbose {
+                            match &result {
+                                Ok(pr) => {
+                                    if lossy {
+                                        println!("  [{}/{}] LOSSY: {}: non-UTF8 bytes replaced during parsing", current, total, rel_path);
+                                    }
+                                    println!(
+                                        "  [{}/{}] INDEX: {}: {} symbols, {} raw calls",
+                                        current,
+                                        total,
+                                        rel_path,
+                                        pr.symbols.len(),
+                                        pr.raw_calls.len()
+                                    );
+                                }
+                                Err(e) => {
+                                    if is_parse_timeout_error(e) {
+                                        println!("  [{}/{}] TIMEOUT: {}: {}", current, total, rel_path, e);
+                                    } else {
+                                        println!("  [{}/{}] FAILED: {}: {}", current, total, rel_path, e);
+                                    }
+                                }
+                            }
+                        } else if let Err(err) = &result {
+                            if is_parse_timeout_error(err) {
+                                eprintln!(
+                                    "  Parse timeout: {}/{} after {} | {} ({:?}) | {}",
+                                    current,
+                                    total,
+                                    format_elapsed_ms(elapsed),
+                                    rel_path,
+                                    discovered.language,
+                                    err
+                                );
+                            } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
+                                eprintln!(
+                                    "  Slow failure: {}/{} after {} | {} ({:?}) | {}",
+                                    current,
+                                    total,
+                                    format_elapsed_ms(elapsed),
+                                    rel_path,
+                                    discovered.language,
+                                    err
+                                );
+                            }
+                        } else if elapsed >= PARSE_SLOW_FILE_THRESHOLD {
+                            match &result {
+                                Ok(pr) => {
+                                    eprintln!(
+                                        "  Slow parse: {}/{} done in {} | {} ({:?}) | {} symbols, {} raw calls | {}",
+                                        current,
+                                        total,
+                                        format_elapsed_ms(elapsed),
+                                        rel_path,
+                                        discovered.language,
+                                        pr.symbols.len(),
+                                        pr.raw_calls.len(),
+                                        summarize_parse_metrics(&pr.metrics),
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        if let Ok(pr) = &mut result {
+                            discard_runtime_only_parse_payload(pr);
+                        }
+                        (rel_path, result, hash, lossy)
+                    })
+                    .collect()
+            });
+
+        // Decompose chunk_results immediately; chunk backing is freed at end of this block.
+        for (rel_path, result, hash, _lossy) in chunk_results {
+            match result {
+                Ok(pr) => {
+                    let mut file_record = FileRecord {
+                        path: rel_path,
+                        content_hash: hash,
+                        last_indexed: Utc::now().to_rfc3339(),
+                        symbol_count: pr.symbols.len(),
+                        module: None,
+                        subsystem: None,
+                        project_area: None,
+                        artifact_kind: None,
+                        header_role: None,
+                        parse_fragility: None,
+                        macro_sensitivity: None,
+                        include_heaviness: None,
+                    };
+                    apply_metadata_to_file_record_with_context(&mut file_record, build_metadata);
+                    apply_risk_signals_to_file_record(&mut file_record, &pr.file_risk_signals);
+                    file_records.push(file_record);
+                    extend_non_call_relation_events(&mut relation_events, pr.relation_events);
+                    propagation_events.extend(pr.propagation_events);
+                    callable_flow_summaries.extend(pr.callable_flow_summaries);
+                    metrics.tree_sitter_parse_ms += pr.metrics.tree_sitter_parse_ms;
+                    metrics.syntax_walk_ms += pr.metrics.syntax_walk_ms;
+                    metrics.local_propagation_ms += pr.metrics.local_propagation_ms;
+                    metrics.local_function_discovery_ms += pr.metrics.local_function_discovery_ms;
+                    metrics.local_owner_lookup_ms += pr.metrics.local_owner_lookup_ms;
+                    metrics.local_seed_ms += pr.metrics.local_seed_ms;
+                    metrics.local_event_walk_ms += pr.metrics.local_event_walk_ms;
+                    metrics.local_declaration_ms += pr.metrics.local_declaration_ms;
+                    metrics.local_expression_statement_ms += pr.metrics.local_expression_statement_ms;
+                    metrics.local_return_statement_ms += pr.metrics.local_return_statement_ms;
+                    metrics.local_nested_block_ms += pr.metrics.local_nested_block_ms;
+                    metrics.local_return_collection_ms += pr.metrics.local_return_collection_ms;
+                    metrics.graph_relation_ms += pr.metrics.graph_relation_ms;
+                    metrics.graph_rule_compile_ms += pr.metrics.graph_rule_compile_ms;
+                    metrics.graph_rule_execute_ms += pr.metrics.graph_rule_execute_ms;
+                    metrics.reference_normalization_ms += pr.metrics.reference_normalization_ms;
+                    let mut enriched_symbols = pr.symbols;
+                    for symbol in &mut enriched_symbols {
+                        apply_metadata_to_symbol_with_context(symbol, build_metadata);
+                        apply_risk_signals_to_symbol(symbol, &pr.file_risk_signals);
+                    }
+                    symbols.extend(enriched_symbols);
+                    raw_calls.extend(pr.raw_calls);
+                    include_dependencies.extend(pr.include_dependencies);
+                    macro_definitions.extend(pr.macro_definitions);
+                    conditional_blocks.extend(pr.conditional_blocks);
+                    conditional_symbols.extend(pr.conditional_symbols);
                 }
-                symbols.extend(enriched_symbols);
-                raw_calls.extend(pr.raw_calls);
-                include_dependencies.extend(pr.include_dependencies);
-                macro_definitions.extend(pr.macro_definitions);
-                conditional_blocks.extend(pr.conditional_blocks);
-                conditional_symbols.extend(pr.conditional_symbols);
-            }
-            Err(e) => {
-                if !verbose {
-                    if is_parse_timeout_error(&e) {
-                        eprintln!("  TIMEOUT: {}: {}", rel_path, e);
-                    } else {
-                        eprintln!("  FAILED: {}: {}", rel_path, e);
+                Err(e) => {
+                    if !verbose {
+                        if is_parse_timeout_error(&e) {
+                            eprintln!("  TIMEOUT: {}: {}", rel_path, e);
+                        } else {
+                            eprintln!("  FAILED: {}: {}", rel_path, e);
+                        }
                     }
                 }
             }
         }
+        // chunk_results dropped here, freeing all ParseResult heap memory for this chunk
+    }
+    parsing_complete.store(true, Ordering::Relaxed);
+    if let Some(handle) = monitor_handle {
+        let _ = handle.join();
     }
 
     (
