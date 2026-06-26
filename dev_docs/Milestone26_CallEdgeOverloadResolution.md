@@ -1,6 +1,6 @@
 # Milestone 26. Call Edge Overload Resolution Improvement
 
-Status: In progress (2026-06-26).
+Status: Completed (2026-06-26).
 
 ## Goal
 

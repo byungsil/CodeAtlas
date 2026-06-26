@@ -903,7 +903,7 @@ pub fn extract_conditional_symbols(
         let end = (block.end_line as usize).min(lines.len());
 
         // Scan lines within this block for symbol definitions
-        for (i, line) in lines.iter().enumerate().skip(start).take(end - start) {
+        for (i, line) in lines.iter().enumerate().skip(start).take(end.saturating_sub(start)) {
             let trimmed = line.trim_start();
 
             // Detect function definitions: look for identifier followed by '('
