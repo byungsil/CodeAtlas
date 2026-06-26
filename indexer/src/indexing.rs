@@ -1083,7 +1083,7 @@ fn spawn_parse_progress_monitor(
 
 fn summarize_parse_metrics(metrics: &ParseMetrics) -> String {
     format!(
-        "tree-sitter {} | syntax-walk {} | local-propagation {} | graph-relations {} | graph-execute {}",
+        "parse {} | syntax-walk {} | local-propagation {} | graph-relations {} | graph-execute {}",
         format_elapsed_u128_ms(metrics.tree_sitter_parse_ms),
         format_elapsed_u128_ms(metrics.syntax_walk_ms),
         format_elapsed_u128_ms(metrics.local_propagation_ms),
