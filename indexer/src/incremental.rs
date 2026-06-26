@@ -197,8 +197,11 @@ fn analyze_changed_headers(
             .read_raw_symbols_for_file(header_path)
             .map_err(|e| format!("Failed to read old symbols for {}: {}", header_path, e))?;
 
-        // Re-parse header to get new symbols
-        let parse_result = parse_file_strict(workspace_root, header_path, None);
+        // Re-parse header to get new symbols. This is a single-file probe
+        // used to decide whether a header change is body-only or affects
+        // symbols; no run-scope dedup needed (and any incidental header
+        // symbols collapse at merge regardless).
+        let parse_result = parse_file_strict(workspace_root, header_path, None, None);
         let new_symbols = match parse_result {
             Ok((result, _, _, _)) => result.symbols,
             Err(_) => {

@@ -31,17 +31,17 @@ description = "OpenCV real-project regression fixtures."
 [[symbol]]
 id             = "cv_Mat_Mat_ctor"
 qualified_name = "cv::Mat::Mat"
-# MS24 cannot fix this on its own: the indexer extracts only ONE row for
-# cv::Mat::Mat (the CUDA inline variant). The 20+ other constructor overloads
-# defined in mat.hpp / mat.inl.hpp / matrix.cpp are missing — an extraction
-# bug, not a scoring bug. Tag as expected-failure pending the extraction
-# audit; when MS25 lands and the rows appear, this flips to XPASS and the
-# tag should be removed.
-xfail_pending = "ms25-extraction-audit"
+# MS25 extracted 13+ cv:: classes that used to be missing (see cv_AutoBuffer
+# below as a positive flip), but cv::Mat itself remained absent: every other
+# .cpp TU's libclang visit of mat.hpp ends up missing the non-template class
+# bodies (Mat, UMat, SparseMat, _InputArray, ...). Tree-sitter's mat.hpp
+# parse — the one path that *does* reach those lines — produces a single
+# 3800-line ERROR span and recovers only enums and the two templated
+# classes. Both routes fail on this file; the remaining work is to teach
+# the libclang path to visit mat.hpp's body when it's pulled in by a TU.
+xfail_pending = "ms26-mat-hpp-body-visit"
 
   [symbol.representative]
-  # Currently anchored to cuda.inl.hpp:752 (CUDA-specialized inline).
-  # Target: primary cv::Mat declaration under modules/core/include/opencv2/core/.
   required_path_patterns  = ["modules/core/include/opencv2/core/(mat\\.hpp|mat\\.inl\\.hpp)"]
   forbidden_path_patterns = ["cuda\\.inl\\.hpp", "/test/", "/samples/"]
 
@@ -55,10 +55,13 @@ xfail_pending = "ms25-extraction-audit"
 [[symbol]]
 id             = "cv_Mat_class"
 qualified_name = "cv::Mat"
-# Same root cause as cv_Mat_Mat_ctor: the cv::Mat class declaration is
-# not in the index at all. Out of MS24 scope; tagged for the same
-# extraction audit.
-xfail_pending = "ms25-extraction-audit"
+# Same root cause as cv_Mat_Mat_ctor: mat.hpp's non-template class bodies
+# (incl. cv::Mat at line 839) are not picked up by any TU's libclang
+# visit, even after MS25 admitted workspace-header symbols broadly. The
+# investigation suggests the include-guard / macro state in opencv's
+# precomp chain consumes mat.hpp before the bodies are visited. Out of
+# MS25 scope; carried as a regression target for a future milestone.
+xfail_pending = "ms26-mat-hpp-body-visit"
 
   [symbol.representative]
   required_path_patterns = ["modules/core/include/opencv2/core/mat\\.hpp"]
@@ -68,6 +71,24 @@ xfail_pending = "ms25-extraction-audit"
   mode      = "count_band"
   min_count = 50
   max_count = 1000000
+
+# ════════════════════════════════════════════════════════════════════════
+# B'. MS25 positive flip — header class recovered via workspace-aware emit
+# ════════════════════════════════════════════════════════════════════════
+# Before MS25 every cv:: class declared in a workspace header that has no
+# compile_commands.json entry of its own was lost — the indexer routed
+# such headers to tree-sitter, which crashes on macro-heavy declarations.
+# After MS25, libclang's visit of those headers via includer TUs admits
+# the symbols. cv::AutoBuffer (utility.hpp) is the canonical case: not in
+# compile_commands, but seen by hundreds of .cpp TUs through core.hpp.
+
+[[symbol]]
+id             = "cv_AutoBuffer_class"
+qualified_name = "cv::AutoBuffer"
+
+  [symbol.representative]
+  required_path_patterns  = ["modules/core/include/opencv2/core/utility\\.hpp"]
+  forbidden_path_patterns = ["/test/", "/samples/"]
 
 # ════════════════════════════════════════════════════════════════════════
 # C. Currently-passing smoke cases

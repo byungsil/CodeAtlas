@@ -1,5 +1,6 @@
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
-use std::sync::OnceLock;
 use crate::models::{
     ParseResult, ParseMetrics, Symbol, RawCallSite, RawCallKind, RawQualifierKind,
     RawRelationEvent, RawRelationKind, RawEventSource, RawExtractionConfidence,
@@ -18,7 +19,54 @@ use clang::{Clang, Entity, EntityKind, EntityVisitResult, Index, Unsaved};
 /// scheme tweaks, etc.). The parse cache (MS22) folds this tag into its
 /// content-addressable key so a version bump transparently invalidates every
 /// previously cached entry — old-format keys simply never match again.
-pub const PARSER_VERSION_TAG: &str = "cpp-clang-v1";
+pub const PARSER_VERSION_TAG: &str = "cpp-clang-v2";
+
+// ─── MS25 hotfix: cross-TU header-symbol claim set ──────────────────────────
+//
+// MS25 admits libclang-reported entities from any workspace-internal header
+// that the current TU includes (mat.hpp's cv::Mat in matrix.cpp's TU, etc.).
+// Without dedup, each of N includer TUs emits the SAME `cv::Mat` row to
+// `symbols_raw`, scaling raw-symbol volume by inclusion fanout. The merge
+// stage collapses by USR so the `symbols` table is unchanged in size, but
+// the parse-stage cost scales linearly with N and exploded to >5× on game-
+// engine-shaped workspaces (19k files, deep precompiled headers).
+//
+// `ClaimedSymbols` is a run-local set keyed on the symbol's USR (the same
+// value `merge_symbols` uses as `id`). Each `claim(usr)` is atomic under
+// the inner Mutex: the first caller for a given USR receives `true` and
+// emits the row; subsequent callers receive `false` and drop the row at
+// emission time. The merge step's output is unchanged because the dropped
+// rows would have collapsed against the kept row anyway.
+//
+// A fresh `ClaimedSymbols` is built per indexer run (full, incremental, or
+// watcher batch) and dropped when the run ends, so each run starts with a
+// clean slate and no state crosses run boundaries.
+#[derive(Default)]
+pub struct ClaimedSymbols {
+    seen_usrs: Mutex<HashSet<String>>,
+}
+
+impl ClaimedSymbols {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` on the first claim of `usr`, `false` for every
+    /// subsequent claim. Caller emits the symbol row iff this returns
+    /// `true`.
+    pub fn claim(&self, usr: &str) -> bool {
+        let mut guard = self
+            .seen_usrs
+            .lock()
+            .expect("claimed-symbols mutex poisoned");
+        guard.insert(usr.to_string())
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.seen_usrs.lock().expect("poisoned").len()
+    }
+}
 
 // ─── Global Clang instance ────────────────────────────────────────────────────
 // We keep exactly ONE `Clang` guard alive for the process lifetime, initialised
@@ -60,6 +108,68 @@ fn is_system_path(path: &str) -> bool {
         || p.contains("/lib/clang")
         || p.contains("/usr/include")
         || p.contains("/usr/lib")
+}
+
+/// Normalize a path for case-fold comparison: backslashes → slashes, lowercase,
+/// strip any Windows extended-length prefix (`\\?\` / `//?/`), trim trailing
+/// slashes. Used only for the workspace-membership predicate below; not a
+/// substitute for `metadata::normalize_path` which carries more semantics.
+fn normalize_for_compare(path: &str) -> String {
+    let stripped = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path);
+    stripped
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// True when `path` is inside `workspace_root` (or equal to it). Uses the
+/// case-insensitive form of the path because libclang returns mixed-case
+/// Windows paths and the workspace_root may have different casing than the
+/// entity location libclang reports.
+fn is_inside_workspace(path: &str, workspace_root: Option<&std::path::Path>) -> bool {
+    let Some(root) = workspace_root else { return false; };
+    let root_norm = normalize_for_compare(&root.to_string_lossy());
+    if root_norm.is_empty() {
+        return false;
+    }
+    let path_norm = normalize_for_compare(path);
+    path_norm == root_norm || path_norm.starts_with(&format!("{}/", root_norm))
+}
+
+/// Return a POSIX-style workspace-relative path string when `path` is inside
+/// `workspace_root`, mirroring the casing of the original `path` (so the
+/// stored Symbol.file_path matches what the indexer's files table holds for
+/// the same on-disk file). Returns None when the path is outside the
+/// workspace or `workspace_root` is None.
+fn workspace_relative(path: &str, workspace_root: Option<&std::path::Path>) -> Option<String> {
+    let root = workspace_root?;
+    let root_norm = normalize_for_compare(&root.to_string_lossy());
+    if root_norm.is_empty() {
+        return None;
+    }
+    // Preserve original casing in the suffix; lowercase only for the prefix
+    // match length. Strip any \\?\ prefix from the raw path first so we line
+    // up with how root_norm was computed.
+    let path_clean = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path)
+        .replace('\\', "/");
+    let path_lower = path_clean.to_ascii_lowercase();
+    let prefix = format!("{}/", root_norm);
+    if path_lower == root_norm {
+        return Some(String::new());
+    }
+    if !path_lower.starts_with(&prefix) {
+        return None;
+    }
+    // Trim the same number of bytes off the original-cased string. Because we
+    // only lowercased ASCII letters, byte lengths line up.
+    Some(path_clean[prefix.len()..].trim_start_matches('/').to_string())
 }
 
 // ─── Scope-stack helpers ──────────────────────────────────────────────────────
@@ -156,6 +266,16 @@ struct VisitorState {
     /// Phase D: deduplicate call sites that libclang visits more than once
     /// (same CallExpr exposed both as sibling of LambdaExpr and as its child).
     seen_call_sites: std::collections::HashSet<(u32, u32)>,  // (line, col)
+    /// MS25: workspace root, used to admit symbols declared in workspace
+    /// headers that the current TU includes (e.g. `cv::Mat` defined in
+    /// mat.hpp while parsing matrix.cpp). When None, the visitor falls back
+    /// to the legacy "TU-only" emission policy.
+    workspace_root: Option<std::path::PathBuf>,
+    /// MS25 hotfix: when set, header-emitted symbols call into this set
+    /// before emission. The first TU to claim a given USR emits it; later
+    /// TUs in the same run drop their copy. None falls back to the
+    /// pre-hotfix MS25 behavior (every TU emits — fine for unit tests).
+    claimed_symbols: Option<Arc<ClaimedSymbols>>,
 }
 
 // ─── Phase D: Pre-scan — collect lambda ranges ──────────────────────────────
@@ -223,6 +343,21 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
             || ep.ends_with(&format!("/{}", indexed_path))
     }).unwrap_or(false);
 
+    // MS25: also admit symbols whose entity location is a workspace-internal
+    // header that the current TU includes. The same merge_symbols pass that
+    // already collapses MS24-determined representatives will fold the per-TU
+    // duplicates back to a single row keyed by USR.
+    //
+    // Call sites, propagation events, and other TU-attributed rows stay gated
+    // on in_indexed_file alone — those are observation-bound to the TU and
+    // must not be re-anchored to header paths.
+    let in_workspace_header = !in_indexed_file
+        && entity_path.as_deref().map(|ep| {
+            !is_system_path(ep)
+                && is_inside_workspace(ep, state.workspace_root.as_deref())
+        }).unwrap_or(false);
+    let emittable_location = in_indexed_file || in_workspace_header;
+
     let kind = entity.get_kind();
 
     // Kinds that open a new scope frame (affect scope_stack / current_function_usr).
@@ -241,7 +376,11 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
     );
 
     // Kinds that produce a Symbol entry.
-    let is_emittable = in_indexed_file
+    // MS25: emittable_location admits workspace-header entities too, so a
+    // .cpp TU's parse of `#include "mat.hpp"` now contributes mat.hpp's
+    // class/method symbols. Calls and relation events below remain on
+    // in_indexed_file alone.
+    let is_emittable = emittable_location
         && matches!(
             kind,
             EntityKind::Namespace
@@ -334,6 +473,20 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
             //   • declaration_file_path/line/end_line = current file + range
             //   • Try get_definition() to cross-link; only use the result when
             //     the definition is in a non-system file.
+            // MS25: when the entity lives in a workspace header (not the TU
+            // itself), anchor file_path / decl_file / def_file to that
+            // workspace-relative header path rather than to the TU. For
+            // in-TU entities the legacy behavior is preserved bit-for-bit so
+            // existing tests and call/propagation joins are unaffected.
+            let emit_file_path: String = if in_workspace_header {
+                entity_path
+                    .as_deref()
+                    .and_then(|ep| workspace_relative(ep, state.workspace_root.as_deref()))
+                    .unwrap_or_else(|| indexed_path.to_string())
+            } else {
+                indexed_path.to_string()
+            };
+
             let is_def = entity.is_definition();
             let (decl_file, decl_line, decl_end_line, def_file, def_line, def_end_line) = if is_def {
                 // This entity is the definition.
@@ -341,7 +494,7 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                     None,
                     None,
                     None,
-                    Some(indexed_path.to_string()),
+                    Some(emit_file_path.clone()),
                     Some(start_line as usize),
                     Some(end_line as usize),
                 )
@@ -358,66 +511,91 @@ fn visit_entity<'tu>(entity: Entity<'tu>, state: &mut VisitorState, indexed_path
                     }
                     let def_start = def_range.get_start().get_file_location().line as usize;
                     let def_end   = def_range.get_end().get_file_location().line as usize;
-                    Some((def_file_path, def_start, def_end))
+                    // Normalize cross-linked definition path to workspace-relative
+                    // form when it falls inside the workspace, matching the
+                    // file_path convention applied to header symbols above.
+                    let def_path_rel = workspace_relative(&def_file_path, state.workspace_root.as_deref())
+                        .unwrap_or(def_file_path);
+                    Some((def_path_rel, def_start, def_end))
                 });
                 let (df, dl, de) = match maybe_def {
                     Some((f, l, e)) => (Some(f), Some(l), Some(e)),
                     None            => (None, None, None),
                 };
                 (
-                    Some(indexed_path.to_string()),
+                    Some(emit_file_path.clone()),
                     Some(start_line as usize),
                     Some(end_line as usize),
                     df, dl, de,
                 )
             };
 
-            state.symbols.push(Symbol {
-                id,
-                name,
-                qualified_name,
-                symbol_type,
-                file_path: indexed_path.to_string(),
-                line: start_line as usize,
-                end_line: end_line as usize,
-                signature,
-                parameter_count,
-                scope_qualified_name,
-                scope_kind,
-                symbol_role: Some({
-                    // Pure-virtual and virtual annotations only apply to methods.
-                    // For all other kinds fall back to definition / declaration.
-                    let is_method_kind = matches!(
-                        kind,
-                        EntityKind::Method | EntityKind::Destructor | EntityKind::ConversionFunction
-                    );
-                    if is_method_kind && entity.is_pure_virtual_method() {
-                        "pure_virtual"
-                    } else if is_method_kind && entity.is_virtual_method() {
-                        "virtual"
-                    } else if is_def {
-                        "definition"
-                    } else {
-                        "declaration"
-                    }
-                    .to_string()
-                }),
-                declaration_file_path: decl_file,
-                declaration_line: decl_line,
-                declaration_end_line: decl_end_line,
-                definition_file_path: def_file,
-                definition_line: def_line,
-                definition_end_line: def_end_line,
-                parent_id,
-                module: None,
-                subsystem: None,
-                project_area: None,
-                artifact_kind: None,
-                header_role: None,
-                parse_fragility: None,
-                macro_sensitivity: None,
-                include_heaviness: None,
-            });
+            // MS25 hotfix: cross-TU header-symbol dedup. Only gate header-
+            // admitted symbols (the ones a different TU could also see) on
+            // the run-local claim set. In-TU symbols are TU-anchored and
+            // emitted by exactly one TU, so gating them is unnecessary and
+            // would lose locally-scoped functions / lambdas / etc.
+            //
+            // Note: when a TU loses the claim for a header class, we still
+            // recurse into its children (scope_stack push happens further
+            // down) — but children are themselves header entities and will
+            // re-test their own claims. This keeps emission complete on the
+            // winning TU's pass and effectively no-ops on the loser's pass.
+            let dedup_skip = in_workspace_header
+                && state
+                    .claimed_symbols
+                    .as_ref()
+                    .map(|c| !c.claim(&id))
+                    .unwrap_or(false);
+
+            if !dedup_skip {
+                state.symbols.push(Symbol {
+                    id: id.clone(),
+                    name: name.clone(),
+                    qualified_name: qualified_name.clone(),
+                    symbol_type: symbol_type.clone(),
+                    file_path: emit_file_path.clone(),
+                    line: start_line as usize,
+                    end_line: end_line as usize,
+                    signature,
+                    parameter_count,
+                    scope_qualified_name,
+                    scope_kind,
+                    symbol_role: Some({
+                        // Pure-virtual and virtual annotations only apply to methods.
+                        // For all other kinds fall back to definition / declaration.
+                        let is_method_kind = matches!(
+                            kind,
+                            EntityKind::Method | EntityKind::Destructor | EntityKind::ConversionFunction
+                        );
+                        if is_method_kind && entity.is_pure_virtual_method() {
+                            "pure_virtual"
+                        } else if is_method_kind && entity.is_virtual_method() {
+                            "virtual"
+                        } else if is_def {
+                            "definition"
+                        } else {
+                            "declaration"
+                        }
+                        .to_string()
+                    }),
+                    declaration_file_path: decl_file,
+                    declaration_line: decl_line,
+                    declaration_end_line: decl_end_line,
+                    definition_file_path: def_file,
+                    definition_line: def_line,
+                    definition_end_line: def_end_line,
+                    parent_id,
+                    module: None,
+                    subsystem: None,
+                    project_area: None,
+                    artifact_kind: None,
+                    header_role: None,
+                    parse_fragility: None,
+                    macro_sensitivity: None,
+                    include_heaviness: None,
+                });
+            }
         }
     }
 
@@ -664,6 +842,7 @@ pub fn parse_cpp_file(
     source: &str,
     compile_args: &[String],
     workspace_root: Option<&std::path::Path>,
+    claimed_symbols: Option<&Arc<ClaimedSymbols>>,
 ) -> Result<ParseResult, String> {
     let start = Instant::now();
 
@@ -716,6 +895,8 @@ pub fn parse_cpp_file(
         current_function_usr: None,
         lambda_ranges,
         seen_call_sites: std::collections::HashSet::new(),
+        workspace_root: workspace_root.map(|r| r.to_path_buf()),
+        claimed_symbols: claimed_symbols.cloned(),
     };
 
     let root = tu.get_entity();
@@ -770,7 +951,7 @@ mod tests {
         // Use .cpp extension so libclang infers C++ language mode (not C).
         // workspace_root = None is fine since is_in_main_file() handles location
         // matching without path comparison.
-        parse_cpp_file("test.cpp", source, &[], None).expect("parse failed")
+        parse_cpp_file("test.cpp", source, &[], None, None).expect("parse failed")
     }
 
     #[test]
@@ -1012,5 +1193,245 @@ void outer() {
             Some(outer_sym.id.as_str()),
             "lambda's parent_id should be outer function's USR"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MS25: workspace-aware emission helpers + integration
+    // ─────────────────────────────────────────────────────────────────────
+
+    use std::path::PathBuf;
+
+    #[test]
+    fn is_inside_workspace_accepts_paths_under_root() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert!(is_inside_workspace("F:/dev/opencv/modules/core/include/opencv2/core/mat.hpp", Some(&root)));
+        // Same path, equal to root.
+        assert!(is_inside_workspace("F:/dev/opencv", Some(&root)));
+        // Backslash form from libclang.
+        assert!(is_inside_workspace(r"F:\dev\opencv\modules\core\include\opencv2\core\mat.hpp", Some(&root)));
+        // Case fold (libclang sometimes lower-cases drive letters).
+        assert!(is_inside_workspace("f:/dev/OpenCV/modules/core/mat.hpp", Some(&root)));
+    }
+
+    #[test]
+    fn is_inside_workspace_rejects_unrelated_or_sibling_paths() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert!(!is_inside_workspace("F:/dev/other/file.hpp", Some(&root)));
+        // Sibling whose path starts with the same prefix string but is a
+        // different directory at the boundary.
+        assert!(!is_inside_workspace("F:/dev/opencv-extras/file.hpp", Some(&root)));
+        // No workspace → always false.
+        assert!(!is_inside_workspace("F:/dev/opencv/mat.hpp", None));
+    }
+
+    #[test]
+    fn is_inside_workspace_handles_extended_length_prefix() {
+        let root = PathBuf::from(r"\\?\F:\dev\opencv");
+        // Either side may carry the \\?\ prefix.
+        assert!(is_inside_workspace("F:/dev/opencv/modules/core/mat.hpp", Some(&root)));
+        assert!(is_inside_workspace(r"\\?\F:\dev\opencv\modules\core\mat.hpp", Some(&root)));
+    }
+
+    #[test]
+    fn workspace_relative_strips_root_and_uses_forward_slashes() {
+        let root = PathBuf::from("F:/dev/opencv");
+        let rel = workspace_relative("F:/dev/opencv/modules/core/mat.hpp", Some(&root));
+        assert_eq!(rel.as_deref(), Some("modules/core/mat.hpp"));
+        // Backslash input normalized.
+        let rel = workspace_relative(r"F:\dev\opencv\modules\core\mat.hpp", Some(&root));
+        assert_eq!(rel.as_deref(), Some("modules/core/mat.hpp"));
+    }
+
+    #[test]
+    fn workspace_relative_returns_none_when_outside_or_unset() {
+        let root = PathBuf::from("F:/dev/opencv");
+        assert_eq!(workspace_relative("F:/dev/other/foo.hpp", Some(&root)), None);
+        assert_eq!(workspace_relative("F:/dev/opencv/foo.hpp", None), None);
+    }
+
+    #[test]
+    fn clang_emits_header_class_when_workspace_root_admits_include() {
+        // Drive a 2-file scenario through libclang: write a header and a TU
+        // that includes it under a temporary workspace_root. Verify the
+        // header's class becomes a Symbol anchored at the header file_path.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        let header_rel = "include/header.hpp";
+        let tu_rel = "main.cpp";
+
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join(header_rel),
+            "namespace ns { class HeaderClass { public: void method(); }; }\n",
+        ).unwrap();
+        let tu_source = format!("#include \"{}\"\nvoid use_it(ns::HeaderClass& h) {{ h.method(); }}\n", header_rel);
+        std::fs::write(workspace.join(tu_rel), &tu_source).unwrap();
+
+        let result = parse_cpp_file(
+            tu_rel,
+            &tu_source,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+            None,
+        ).expect("parse failed");
+
+        let header_class = result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass")
+            .expect("ns::HeaderClass must be emitted from the included header");
+        assert_eq!(
+            header_class.file_path.replace('\\', "/"),
+            header_rel,
+            "header class file_path must be the workspace-relative header path"
+        );
+        assert_eq!(header_class.symbol_type, "class");
+
+        let method_sym = result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass::method")
+            .expect("ns::HeaderClass::method must be emitted from the header");
+        assert_eq!(
+            method_sym.file_path.replace('\\', "/"),
+            header_rel,
+            "method file_path must be the workspace-relative header path"
+        );
+        assert_eq!(method_sym.parent_id.as_deref(), Some(header_class.id.as_str()),
+            "method's parent_id must be HeaderClass's USR");
+    }
+
+    #[test]
+    fn clang_does_not_emit_header_symbols_when_workspace_root_is_none() {
+        // Legacy behavior: without a workspace_root, the indexer must NOT
+        // start picking up symbols from included headers — pre-MS25 tests
+        // and the strict TU-only contract continue to hold.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join("include/header.hpp"),
+            "namespace ns { class HeaderClass { void method(); }; }\n",
+        ).unwrap();
+        let tu_source = "#include \"include/header.hpp\"\nvoid use_it(ns::HeaderClass& h) {}\n";
+        std::fs::write(workspace.join("main.cpp"), tu_source).unwrap();
+
+        // Pass an absolute TU path so libclang can resolve the include even
+        // though we are NOT passing workspace_root (None).
+        let abs_tu = workspace.join("main.cpp").to_string_lossy().replace('\\', "/");
+        let result = parse_cpp_file(
+            &abs_tu,
+            tu_source,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            None,
+            None,
+        ).expect("parse failed");
+
+        assert!(
+            result.symbols.iter().find(|s| s.qualified_name == "ns::HeaderClass").is_none(),
+            "header symbols must stay suppressed when workspace_root is None"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // MS25 hotfix: cross-TU header-symbol dedup (ClaimedSymbols)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn claimed_symbols_first_claim_wins() {
+        let claimed = ClaimedSymbols::new();
+        assert!(claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-X"));
+    }
+
+    #[test]
+    fn claimed_symbols_distinct_usrs_independent() {
+        let claimed = ClaimedSymbols::new();
+        assert!(claimed.claim("usr-X"));
+        assert!(claimed.claim("usr-Y"));
+        assert!(!claimed.claim("usr-X"));
+        assert!(!claimed.claim("usr-Y"));
+        assert_eq!(claimed.len(), 2);
+    }
+
+    #[test]
+    fn claimed_symbols_thread_safe_exactly_one_claim_wins() {
+        // Spawn many threads racing to claim the same USR. Exactly one must
+        // see `true`; HashSet::insert under the Mutex provides that
+        // atomicity, so under any scheduling order the invariant holds.
+        let claimed = Arc::new(ClaimedSymbols::new());
+        let threads = 32;
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let c = Arc::clone(&claimed);
+                std::thread::spawn(move || c.claim("contested-usr"))
+            })
+            .collect();
+        let wins = handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "exactly one thread should claim the USR");
+        assert_eq!(claimed.len(), 1);
+    }
+
+    #[test]
+    fn clang_dedup_skips_header_symbol_on_second_tu() {
+        // Two TUs both `#include "header.hpp"`. With a shared
+        // ClaimedSymbols, only the first TU emits the header's class — the
+        // second TU's libclang visit is a no-op at the emission step.
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let workspace = tmp.path();
+        let header_rel = "include/header.hpp";
+        std::fs::create_dir_all(workspace.join("include")).unwrap();
+        std::fs::write(
+            workspace.join(header_rel),
+            "namespace ns { class HeaderClass { void method(); }; }\n",
+        ).unwrap();
+
+        let claimed = Arc::new(ClaimedSymbols::new());
+
+        let tu_a_src = format!("#include \"{}\"\nvoid a(ns::HeaderClass& h) {{}}\n", header_rel);
+        std::fs::write(workspace.join("main_a.cpp"), &tu_a_src).unwrap();
+        let result_a = parse_cpp_file(
+            "main_a.cpp",
+            &tu_a_src,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+            Some(&claimed),
+        ).expect("parse a failed");
+
+        let a_has_header_class = result_a
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "ns::HeaderClass");
+        assert!(a_has_header_class,
+            "first TU must emit the header class");
+
+        let tu_b_src = format!("#include \"{}\"\nvoid b(ns::HeaderClass& h) {{}}\n", header_rel);
+        std::fs::write(workspace.join("main_b.cpp"), &tu_b_src).unwrap();
+        let result_b = parse_cpp_file(
+            "main_b.cpp",
+            &tu_b_src,
+            &["-x".into(), "c++".into(), "-std=c++17".into(),
+              format!("-I{}", workspace.to_string_lossy())],
+            Some(workspace),
+            Some(&claimed),
+        ).expect("parse b failed");
+
+        let b_has_header_class = result_b
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "ns::HeaderClass");
+        assert!(!b_has_header_class,
+            "second TU must NOT re-emit the already-claimed header class");
+
+        // TU-anchored symbols on the second TU MUST still be emitted (in-TU
+        // entities skip the dedup gate). The free function `b` lives in
+        // main_b.cpp and must reach the result.
+        let b_has_local = result_b
+            .symbols
+            .iter()
+            .any(|s| s.qualified_name == "b" || s.name == "b");
+        assert!(b_has_local, "second TU's own free function must still be emitted");
     }
 }

@@ -110,7 +110,14 @@ struct ActiveParseEntry {
 
 pub trait LanguageAdapter: Send + Sync {
     fn language(&self) -> SourceLanguage;
-    fn parse_file(&self, file_path: &str, source: &str, build_metadata: Option<&BuildMetadataContext>, workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String>;
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        build_metadata: Option<&BuildMetadataContext>,
+        workspace_root: Option<&std::path::Path>,
+        claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String>;
 }
 
 struct CppLanguageAdapter;
@@ -124,7 +131,14 @@ impl LanguageAdapter for CppLanguageAdapter {
         SourceLanguage::Cpp
     }
 
-    fn parse_file(&self, file_path: &str, source: &str, build_metadata: Option<&BuildMetadataContext>, workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        build_metadata: Option<&BuildMetadataContext>,
+        workspace_root: Option<&std::path::Path>,
+        claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String> {
         let mut args = Vec::new();
         let has_file_entry = build_metadata
             .and_then(|meta| meta.entry_for_file(file_path))
@@ -180,7 +194,16 @@ impl LanguageAdapter for CppLanguageAdapter {
         // the key, forcing a real re-parse.
         let cache_key = compute_parse_cache_key(source, file_path, &args, workspace_root);
         if let Some(ref key) = cache_key {
-            if let Some(cached) = crate::parse_cache::lookup(key) {
+            if let Some(mut cached) = crate::parse_cache::lookup(key) {
+                // MS25 hotfix: cache stores the full ParseResult (header symbols
+                // included). Apply the same cross-TU dedup the live-parse path
+                // does, otherwise cached TUs would re-emit every header symbol
+                // and the cache becomes a regression source on warm runs.
+                dedup_header_symbols_after_cache_hit(
+                    &mut cached.symbols,
+                    file_path,
+                    claimed_symbols,
+                );
                 return Ok(cached);
             }
         }
@@ -189,13 +212,28 @@ impl LanguageAdapter for CppLanguageAdapter {
         // multi-GB RSS spikes. Released automatically when the guard is dropped.
         let _permit = acquire_cpp_parse_permit();
 
-        let result = crate::clang_parser::parse_cpp_file(file_path, source, &args, workspace_root)?;
+        let result = crate::clang_parser::parse_cpp_file(
+            file_path,
+            source,
+            &args,
+            workspace_root,
+            claimed_symbols,
+        )?;
 
         // Store on a miss — but never cache macro-sensitive TUs. Their parse
         // output depends on preprocessor state our cheap direct-include key does
         // not fully capture, so they must always be parsed fresh (matches MS16's
         // macro fallback philosophy). Skipping the store means such a file never
         // has an entry and therefore always misses → always parses.
+        //
+        // Note: live-parse dedup is applied inside visit_entity, so the stored
+        // result reflects what THIS TU contributed AFTER dedup. That's fine —
+        // cache entries are content-addressable, and a TU's pre-dedup vs.
+        // post-dedup output only differs on header symbols that some OTHER TU
+        // in this run already emitted. On a warm run those same other TUs run
+        // first and claim again. The cache thus over-filters slightly for the
+        // first TU of a warm run, which is recovered by every later TU
+        // emitting whatever header symbols are still un-claimed.
         if let Some(ref key) = cache_key {
             if result.file_risk_signals.macro_sensitivity != MacroSensitivity::High {
                 crate::parse_cache::store(key, &result);
@@ -204,6 +242,30 @@ impl LanguageAdapter for CppLanguageAdapter {
 
         Ok(result)
     }
+}
+
+/// Filter cached `ParseResult.symbols` for cross-TU header-symbol dedup
+/// (MS25 hotfix). Header-anchored symbols (file_path != indexed TU path)
+/// must claim their USR with the run's `ClaimedSymbols` set; in-TU symbols
+/// pass through unchanged.
+fn dedup_header_symbols_after_cache_hit(
+    symbols: &mut Vec<crate::models::Symbol>,
+    indexed_path: &str,
+    claimed: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+) {
+    let Some(claimed) = claimed else { return; };
+    // Match the file_path comparison used at emission time. The indexer
+    // passes the workspace-relative POSIX form into Symbol.file_path for
+    // in-TU symbols, so a string-equality check against the same form
+    // identifies "this symbol came from the TU itself".
+    let indexed_norm = indexed_path.replace('\\', "/");
+    symbols.retain(|s| {
+        let path_norm = s.file_path.replace('\\', "/");
+        if path_norm == indexed_norm {
+            return true; // in-TU symbol — never gated
+        }
+        claimed.claim(&s.id)
+    });
 }
 
 /// Build the MS22 parse-cache key for a C++ translation unit, or `None` when the
@@ -285,7 +347,14 @@ impl LanguageAdapter for LuaLanguageAdapter {
         SourceLanguage::Lua
     }
 
-    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        _build_metadata: Option<&BuildMetadataContext>,
+        _workspace_root: Option<&std::path::Path>,
+        _claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String> {
         lua_parser::parse_lua_file_dual(file_path, source)
     }
 }
@@ -295,7 +364,14 @@ impl LanguageAdapter for PythonLanguageAdapter {
         SourceLanguage::Python
     }
 
-    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        _build_metadata: Option<&BuildMetadataContext>,
+        _workspace_root: Option<&std::path::Path>,
+        _claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String> {
         python_parser::parse_python_file_dual(file_path, source)
     }
 }
@@ -305,7 +381,14 @@ impl LanguageAdapter for TypeScriptLanguageAdapter {
         SourceLanguage::TypeScript
     }
 
-    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        _build_metadata: Option<&BuildMetadataContext>,
+        _workspace_root: Option<&std::path::Path>,
+        _claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String> {
         typescript_parser::parse_typescript_file_dual(file_path, source)
     }
 }
@@ -315,7 +398,14 @@ impl LanguageAdapter for RustLanguageAdapter {
         SourceLanguage::Rust
     }
 
-    fn parse_file(&self, file_path: &str, source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+    fn parse_file(
+        &self,
+        file_path: &str,
+        source: &str,
+        _build_metadata: Option<&BuildMetadataContext>,
+        _workspace_root: Option<&std::path::Path>,
+        _claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+    ) -> Result<ParseResult, String> {
         rust_parser::parse_rust_file_dual(file_path, source)
     }
 }
@@ -354,12 +444,13 @@ impl LanguageRegistry {
         source: &str,
         build_metadata: Option<&BuildMetadataContext>,
         workspace_root: Option<&std::path::Path>,
+        claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
     ) -> Result<ParseResult, String> {
         let adapter = self
             .adapters
             .get(&language)
             .ok_or_else(|| format!("No language adapter registered for {}", language.display_name()))?;
-        adapter.parse_file(file_path, source, build_metadata, workspace_root)
+        adapter.parse_file(file_path, source, build_metadata, workspace_root, claimed_symbols)
     }
 }
 
@@ -610,6 +701,7 @@ pub fn parse_discovered_files(
     verbose: bool,
     build_metadata: Option<&BuildMetadataContext>,
     registry: &LanguageRegistry,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> (
     Vec<Symbol>,
     Vec<RawCallSite>,
@@ -631,6 +723,7 @@ pub fn parse_discovered_files(
         registry,
         0,
         discovered_files.len(),
+        claimed_symbols,
     )
 }
 
@@ -642,6 +735,7 @@ pub fn parse_discovered_files_with_progress(
     registry: &LanguageRegistry,
     progress_offset: usize,
     overall_total: usize,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> (
     Vec<Symbol>,
     Vec<RawCallSite>,
@@ -729,7 +823,7 @@ pub fn parse_discovered_files_with_progress(
                     }
                     return (rel_path, Ok(empty_parse_result()), hash, lossy);
                 }
-                let mut result = registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root));
+                let mut result = registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root), claimed_symbols);
                 let elapsed = {
                     let mut active = active_files.lock().expect("active parse tracker poisoned");
                     active
@@ -1006,6 +1100,7 @@ pub fn parse_paths_parallel(
     workspace_root: &Path,
     paths: &[&str],
     build_metadata: Option<&BuildMetadataContext>,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> Result<Vec<(String, ParseResult, bool, bool)>, String> {
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -1014,7 +1109,7 @@ pub fn parse_paths_parallel(
         paths
             .par_iter()
             .map(|path| {
-                parse_file_strict(workspace_root, path, build_metadata)
+                parse_file_strict(workspace_root, path, build_metadata, claimed_symbols)
                     .map(|(result, _hash, lossy, skipped)| (path.to_string(), result, lossy, skipped))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -1025,6 +1120,7 @@ pub fn parse_file_strict(
     workspace_root: &Path,
     rel_path: &str,
     build_metadata: Option<&BuildMetadataContext>,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> Result<(ParseResult, String, bool, bool), String> {
     let registry = default_language_registry();
     let language = registry
@@ -1034,7 +1130,7 @@ pub fn parse_file_strict(
         path: workspace_root.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)),
         language,
     };
-    parse_discovered_file_strict(workspace_root, &discovered, build_metadata, &registry)
+    parse_discovered_file_strict(workspace_root, &discovered, build_metadata, &registry, claimed_symbols)
 }
 
 pub fn parse_discovered_file_strict(
@@ -1042,6 +1138,7 @@ pub fn parse_discovered_file_strict(
     discovered: &DiscoveredSourceFile,
     build_metadata: Option<&BuildMetadataContext>,
     registry: &LanguageRegistry,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> Result<(ParseResult, String, bool, bool), String> {
     let rel_path = make_relative(workspace_root, &discovered.path);
     let (content, hash, lossy) = read_source_file(&discovered.path)
@@ -1049,7 +1146,7 @@ pub fn parse_discovered_file_strict(
     if skip_reason_before_parse(discovered.language, &content).is_some() {
         return Ok((empty_parse_result(), hash, lossy, true));
     }
-    let result = match registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root)) {
+    let result = match registry.parse_file(discovered.language, &rel_path, &content, build_metadata, Some(workspace_root), claimed_symbols) {
         Ok(result) => result,
         Err(e) => {
             let message = format!("Parse error for {}: {}", rel_path, e);
@@ -1072,6 +1169,7 @@ pub fn parse_files_strict(
     relative_paths: &[String],
     verbose: bool,
     build_metadata: Option<&BuildMetadataContext>,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> Result<(
     Vec<Symbol>,
     Vec<RawCallSite>,
@@ -1100,6 +1198,7 @@ pub fn parse_files_strict(
         verbose,
         build_metadata,
         &registry,
+        claimed_symbols,
     )
 }
 
@@ -1109,6 +1208,7 @@ pub fn parse_discovered_files_strict(
     verbose: bool,
     build_metadata: Option<&BuildMetadataContext>,
     registry: &LanguageRegistry,
+    claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
 ) -> Result<(
     Vec<Symbol>,
     Vec<RawCallSite>,
@@ -1134,6 +1234,7 @@ pub fn parse_discovered_files_strict(
                         discovered,
                         build_metadata,
                         registry,
+                        claimed_symbols,
                     );
                     (rel_path, result)
                 })
@@ -1266,7 +1367,14 @@ mod tests {
             SourceLanguage::Lua
         }
 
-        fn parse_file(&self, file_path: &str, _source: &str, _build_metadata: Option<&BuildMetadataContext>, _workspace_root: Option<&std::path::Path>) -> Result<ParseResult, String> {
+        fn parse_file(
+            &self,
+            file_path: &str,
+            _source: &str,
+            _build_metadata: Option<&BuildMetadataContext>,
+            _workspace_root: Option<&std::path::Path>,
+            _claimed_symbols: Option<&Arc<crate::clang_parser::ClaimedSymbols>>,
+        ) -> Result<ParseResult, String> {
             Ok(ParseResult {
                 symbols: vec![Symbol {
                     id: "game.update".into(),
@@ -1332,7 +1440,7 @@ mod tests {
         }];
 
         let (symbols, raw_calls, references, propagation, summaries, files, include_deps, macro_defs, cond_blocks, cond_symbols, metrics) =
-            parse_discovered_files(dir.path(), &discovered, false, None, &registry);
+            parse_discovered_files(dir.path(), &discovered, false, None, &registry, None);
         assert!(include_deps.is_empty());
         assert!(macro_defs.is_empty());
         assert!(cond_blocks.is_empty());
